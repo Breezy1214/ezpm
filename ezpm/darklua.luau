@@ -8,13 +8,23 @@ local INVERTED_SHORTCUTS: { [string]: string }? = nil
 local SORTED_INVERTED_SHORTCUTS: { { realPath: string, shortcut: string } }? = nil
 local SORTED_SRC_SHORTCUTS: { { shortcut: string, realPath: string } }? = nil
 
-local function loadShortcuts(): { [string]: string }
+local function loadShortcuts(configAliases: { [string]: string }?): { [string]: string }
 	if SHORTCUTS then
 		return SHORTCUTS
 	end
 
 	local shortcuts = {}
 
+	-- If config aliases provided, use them directly
+	if configAliases and next(configAliases) ~= nil then
+		for name, path in configAliases do
+			shortcuts["@" .. name .. "/"] = path
+		end
+		SHORTCUTS = shortcuts
+		return shortcuts
+	end
+
+	-- Fall back to reading .darklua.json
 	if not fs.isFile(".darklua.json") then
 		warn("No .darklua.json file found. Please ensure you have run DarkLua to generate it.")
 		SHORTCUTS = shortcuts
@@ -85,16 +95,17 @@ local function getSortedInvertedShortcuts(): { { realPath: string, shortcut: str
 	return sorted
 end
 
-local function getSortedSrcShortcuts(): { { shortcut: string, realPath: string } }
+local function getSortedSrcShortcuts(srcPath: string?): { { shortcut: string, realPath: string } }
 	if SORTED_SRC_SHORTCUTS then
 		return SORTED_SRC_SHORTCUTS
 	end
 
 	local shortcuts = loadShortcuts()
 	local sorted = {}
+	local prefix = (srcPath or "src") .. "/"
 	for shortcut, realPath in shortcuts do
-		-- Only process shortcuts that map to src/ paths
-		if realPath:match("^src/") then
+		-- Only process shortcuts that map to source paths
+		if realPath:sub(1, #prefix) == prefix then
 			table.insert(sorted, { shortcut = shortcut, realPath = realPath })
 		end
 	end
@@ -161,6 +172,13 @@ local function formatPathAndExecute(path: string, srcPath: string, buildPath: st
 	return process(path, darkLuaPath)
 end
 
+local function clearCache()
+	SHORTCUTS = nil
+	INVERTED_SHORTCUTS = nil
+	SORTED_INVERTED_SHORTCUTS = nil
+	SORTED_SRC_SHORTCUTS = nil
+end
+
 return {
 	loadShortcuts = loadShortcuts,
 	getInvertedShortcuts = getInvertedShortcuts,
@@ -169,4 +187,5 @@ return {
 	process = process,
 	formatPathToDarkLua = formatPathToDarkLua,
 	formatPathAndExecute = formatPathAndExecute,
+	clearCache = clearCache,
 }

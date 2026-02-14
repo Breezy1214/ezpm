@@ -10,13 +10,9 @@ local darklua = require("./darklua")
 local requireFixer = require("./require-fixer")
 local toolchain = require("./toolchain")
 local utils = require("./utils")
+local configModule = require("./config")
 
-type EzpmConfig = {
-	SRC_PATH: string,
-	DARKLUA_BUILD_PATH: string,
-	DISPLAY_FILE_CHANGES: boolean,
-	IGNORE_LIST: { string },
-}
+type EzpmConfig = configModule.EzpmConfig
 
 local function start(cfg: EzpmConfig)
 	print("Setting up Rojo serve...")
@@ -24,7 +20,7 @@ local function start(cfg: EzpmConfig)
 	print("Updating build.project.json...")
 	local success, err = pcall(function()
 		utils.modifyFileContents("default.project.json", function(contents)
-			return string.gsub(contents, "src/", "darklua_build/")
+			return string.gsub(contents, cfg.SRC_PATH .. "/", cfg.DARKLUA_BUILD_PATH .. "/")
 		end, "build.project.json")
 	end)
 

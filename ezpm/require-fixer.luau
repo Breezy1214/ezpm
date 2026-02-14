@@ -110,7 +110,7 @@ local function fixRequirePaths(rootDir: string, displayFileChanges: boolean, ign
 						foundMatch = true
 						if displayFileChanges then
 							print(
-								"  ✓ Fixed src/ path in "
+								"  ✓ Fixed source path in "
 									.. filePath:gsub(rootDir .. "/", "")
 									.. " | "
 									.. requiredPath
@@ -124,7 +124,7 @@ local function fixRequirePaths(rootDir: string, displayFileChanges: boolean, ign
 
 				if foundMatch then
 					continue
-				elseif requiredPath:match("^src/") then
+				elseif requiredPath:match("^" .. rootDir .. "/") then
 					-- Handle other src/ paths by searching for the file
 					local expectedFileName = requiredPath:match("([^/]+)$")
 					local newFilePath = findFileByName(expectedFileName, rootDir)
@@ -144,7 +144,7 @@ local function fixRequirePaths(rootDir: string, displayFileChanges: boolean, ign
 						didMakeChange = true
 						if displayFileChanges then
 							print(
-								"  ✓ Fixed src/ path in "
+								"  ✓ Fixed source path in "
 									.. filePath:gsub(rootDir .. "/", "")
 									.. " | "
 									.. requiredPath
@@ -155,7 +155,7 @@ local function fixRequirePaths(rootDir: string, displayFileChanges: boolean, ign
 
 						continue
 					else
-						warn("Could not find file for src/ path: " .. requiredPath .. " in file: " .. filePath)
+						warn("Could not find file for source path: " .. requiredPath .. " in file: " .. filePath)
 						continue
 					end
 				end

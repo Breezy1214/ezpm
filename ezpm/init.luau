@@ -10,6 +10,10 @@
 		lune run ezpm lint             # Selene + StyLua --check
 		lune run ezpm format           # StyLua format
 		lune run ezpm init             # Scaffold project + generate ezpm.toml
+		lune run ezpm alias            # Manage aliases
+		lune run ezpm alias add        # Add a new alias
+		lune run ezpm alias remove     # Remove an alias
+		lune run ezpm alias list       # List all aliases
 		lune run ezpm docs             # Moonwave dev
 		lune run ezpm help             # Print usage
 ]]
@@ -19,11 +23,13 @@ local process = require("@lune/process")
 local serde = require("@lune/serde")
 local stdio = require("@lune/stdio")
 
-local config = require("./config")
-local utils = require("./utils")
-local requireFixer = require("./require-fixer")
-local toolchain = require("./toolchain")
-local serve = require("./serve")
+local config = require("@self/config")
+local configGenerator = require("@self/config-generator")
+local utils = require("@self/utils")
+local requireFixer = require("@self/require-fixer")
+local toolchain = require("@self/toolchain")
+local serve = require("@self/serve")
+local darklua = require("@self/darklua")
 
 -- Load configuration
 local CONFIG = config.loadConfig()
@@ -44,6 +50,10 @@ Commands:
   lint            Run Selene linter + StyLua --check (if installed)
   format          Format code with StyLua (if installed)
   init            Scaffold project + generate ezpm.toml
+  alias           Manage path aliases
+  alias add       Add a new path alias
+  alias remove    Remove an existing alias
+  alias list      List all configured aliases
   docs            Open documentation via Moonwave
   help            Print this help message
 
@@ -53,6 +63,122 @@ Flags:
 
 local function printHelp()
 	print(HELP_TEXT)
+end
+
+------------------------// Alias Commands //--------------------------
+
+local function aliasAdd()
+	local name = stdio.prompt("text", "Alias name (e.g., Client): ")
+	if not name or name == "" then
+		print("Aborted.")
+		return
+	end
+
+	local path = stdio.prompt("text", "Path (e.g., src/client/): ")
+	if not path or path == "" then
+		print("Aborted.")
+		return
+	end
+
+	-- Ensure trailing slash
+	if not path:match("/$") then
+		path = path .. "/"
+	end
+
+	CONFIG.ALIASES[name] = path
+	config.saveConfig(CONFIG)
+	configGenerator.regenerateConfigFiles(CONFIG.ALIASES)
+
+	-- Update derived fields
+	CONFIG.IGNORE_LIST = config.deriveIgnoreList(CONFIG.ALIASES, CONFIG.SRC_PATH)
+	CONFIG.REQUIRED_DIRS = config.deriveRequiredDirs(CONFIG.ALIASES, CONFIG.SRC_PATH)
+
+	-- Optionally create directory
+	local dir = path:gsub("/$", "")
+	if not fs.isDir(dir) then
+		local createDir = stdio.prompt("confirm", "Create directory '" .. dir .. "'?")
+		if createDir then
+			fs.writeDir(dir)
+			print("  Created directory:", dir)
+		end
+	end
+
+	darklua.clearCache()
+	print("✓ Added alias @" .. name .. " -> " .. path)
+end
+
+local function aliasRemove()
+	local names = {}
+	for name in CONFIG.ALIASES do
+		table.insert(names, name)
+	end
+	table.sort(names)
+
+	if #names == 0 then
+		print("No aliases configured.")
+		return
+	end
+
+	local options = {}
+	for _, name in names do
+		table.insert(options, name .. " -> " .. CONFIG.ALIASES[name])
+	end
+
+	local selected = stdio.prompt("select", "Select alias to remove:", options)
+	if not selected then
+		print("Aborted.")
+		return
+	end
+
+	local selectedName = names[selected]
+	CONFIG.ALIASES[selectedName] = nil
+	config.saveConfig(CONFIG)
+	configGenerator.regenerateConfigFiles(CONFIG.ALIASES)
+
+	CONFIG.IGNORE_LIST = config.deriveIgnoreList(CONFIG.ALIASES, CONFIG.SRC_PATH)
+	CONFIG.REQUIRED_DIRS = config.deriveRequiredDirs(CONFIG.ALIASES, CONFIG.SRC_PATH)
+
+	darklua.clearCache()
+	print("✓ Removed alias @" .. selectedName)
+end
+
+local function aliasList()
+	local names = {}
+	for name in CONFIG.ALIASES do
+		table.insert(names, name)
+	end
+	table.sort(names)
+
+	if #names == 0 then
+		print("No aliases configured.")
+		return
+	end
+
+	print("")
+	print("Configured aliases:")
+	print(string.rep("-", 50))
+	for _, name in names do
+		print(string.format("  @%-20s -> %s", name, CONFIG.ALIASES[name]))
+	end
+	print(string.rep("-", 50))
+	print("")
+end
+
+local function aliasMenu()
+	print("")
+	print("=== Alias Management ===")
+	print("")
+
+	local options = { "Add Alias", "Remove Alias", "List Aliases" }
+	local selected = stdio.prompt("select", "Choose an action:", options)
+
+	if selected == 1 then
+		aliasAdd()
+	elseif selected == 2 then
+		aliasRemove()
+	elseif selected == 3 then
+		aliasList()
+	end
 end
 
 ------------------------// Init Command //--------------------------
@@ -92,9 +218,11 @@ local function runInit()
 	if hasDarklua then
 		print("  Detected .darklua.json")
 	end
+
 	if hasRokit then
 		print("  Detected rokit.toml")
 	end
+
 	if hasWally then
 		print("  Detected wally.toml")
 	end
@@ -123,23 +251,69 @@ wally-package-types = "JohnnyMorganz/wally-package-types@1.3.2"
 		end
 	end
 
-	-- Create missing required directories
-	local requiredDirs = { "src", "src/client", "src/server", "src/shared" }
-	for _, dir in ipairs(requiredDirs) do
+	-- Handle aliases
+	local initConfig = config.getDefaultConfig()
+	initConfig.PROJECT_NAME = projectName
+
+	local aliases = {}
+
+	if hasDarklua then
+		local importAliases = stdio.prompt("confirm", "Import aliases from existing .darklua.json?")
+		if importAliases then
+			aliases = configGenerator.importAliasesFromDarklua()
+			local aliasCount = 0
+
+			for _ in aliases do
+				aliasCount += 1
+			end
+			
+			if aliasCount > 0 then
+				print("  Imported", aliasCount, "aliases from .darklua.json")
+			end
+		end
+	end
+
+	-- If no aliases yet, offer defaults
+	if next(aliases) == nil then
+		local useDefaults =
+			stdio.prompt("confirm", "Use default aliases (Client, Server, Shared, Packages, ServerPackages)?")
+		if useDefaults then
+			aliases = {
+				Client = "src/client/",
+				Server = "src/server/",
+				Shared = "src/shared/",
+				Packages = "Packages/",
+				ServerPackages = "ServerPackages/",
+			}
+		end
+	end
+
+	initConfig.ALIASES = aliases
+
+	-- Create directories derived from aliases
+	local dirsToCreate = config.deriveRequiredDirs(aliases, initConfig.SRC_PATH)
+	for _, dir in dirsToCreate do
 		if not fs.isDir(dir) then
 			fs.writeDir(dir)
 			print("  Created directory:", dir)
 		end
 	end
 
-	-- Generate ezpm.toml
-	local initConfig = config.getDefaultConfig()
-	initConfig.PROJECT_NAME = projectName
-
-	local tomlString = config.generateTomlString(initConfig)
-	fs.writeFile("ezpm.toml", tomlString)
+	-- Save ezpm.toml
+	config.saveConfig(initConfig)
 	print("")
 	print("✓ Generated ezpm.toml")
+
+	-- Regenerate .darklua.json and .luaurc from aliases
+	if next(aliases) ~= nil then
+		configGenerator.regenerateConfigFiles(aliases)
+		print("✓ Generated .darklua.json")
+		print("✓ Generated .luaurc")
+	end
+
+	-- Reload config
+	CONFIG = config.loadConfig()
+
 	print("")
 	print("You can now run 'lune run ezpm' to start the interactive menu,")
 	print("or 'lune run ezpm serve' to start developing.")
@@ -159,7 +333,9 @@ local function runInteractiveMenu()
 		[1] = {
 			Name = "Setup Wally Packages",
 			Description = "Installs the latest Wally Packages, generates their type defs, and sets up the source map.",
-			Execute = toolchain.setupWallyPackages,
+			Execute = function()
+				toolchain.setupWallyPackages(CONFIG)
+			end,
 		},
 		[2] = {
 			Name = "Serve Rojo",
@@ -192,7 +368,9 @@ local function runInteractiveMenu()
 		[6] = {
 			Name = "Install Tools",
 			Description = "Installs all development tools (Rokit + Wally packages).",
-			Execute = toolchain.installTools,
+			Execute = function()
+				toolchain.installTools(CONFIG)
+			end,
 		},
 		[7] = {
 			Name = "Open Documentation",
@@ -200,6 +378,11 @@ local function runInteractiveMenu()
 			Execute = function()
 				toolchain.openDocumentation(CONFIG.DOCS_ENABLED)
 			end,
+		},
+		[8] = {
+			Name = "Manage Aliases",
+			Description = "Add, remove, or list path aliases for your project.",
+			Execute = aliasMenu,
 		},
 		[0] = {
 			Name = "EXIT",
@@ -264,7 +447,7 @@ local COMMANDS = {
 		requireFixer.fixRequirePaths(CONFIG.SRC_PATH, CONFIG.DISPLAY_FILE_CHANGES, CONFIG.IGNORE_LIST)
 	end,
 	install = function()
-		toolchain.installTools()
+		toolchain.installTools(CONFIG)
 	end,
 	lint = function()
 		toolchain.runLinting(CONFIG.SRC_PATH)
@@ -273,6 +456,18 @@ local COMMANDS = {
 		toolchain.formatCode(CONFIG.SRC_PATH)
 	end,
 	init = runInit,
+	alias = function()
+		local subAction = process.args[2]
+		if subAction == "add" then
+			aliasAdd()
+		elseif subAction == "remove" then
+			aliasRemove()
+		elseif subAction == "list" then
+			aliasList()
+		else
+			aliasMenu()
+		end
+	end,
 	docs = function()
 		toolchain.openDocumentation(CONFIG.DOCS_ENABLED)
 	end,

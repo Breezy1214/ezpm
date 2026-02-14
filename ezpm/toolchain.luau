@@ -2,6 +2,9 @@ local fs = require("@lune/fs")
 local process = require("@lune/process")
 
 local utils = require("./utils")
+local configModule = require("./config")
+
+type EzpmConfig = configModule.EzpmConfig
 
 local PACKAGE_PATH: string? = nil
 local TOOL_AVAILABILITY_CACHE: { [string]: boolean } = {}
@@ -93,7 +96,32 @@ local function generateSeleneRobloxStd()
 	end
 end
 
-local function setupWallyPackages()
+local function getPackageDirs(cfg: EzpmConfig): { string }
+	local dirsSet = {}
+	local escapedSrc = cfg.SRC_PATH:gsub("([%(%)%.%+%-%*%?%[%]%^%$%%])", "%%%1")
+	for _, path in cfg.ALIASES do
+		local dir = path:gsub("/$", "")
+		if not dir:match("^" .. escapedSrc .. "/") and dir ~= cfg.SRC_PATH then
+			local topDir = dir:match("^([^/]+)")
+			if topDir then
+				dirsSet[topDir] = true
+			end
+		end
+	end
+	local dirs = {}
+	for dir in dirsSet do
+		table.insert(dirs, dir)
+	end
+	table.sort(dirs)
+	return dirs
+end
+
+local function setupWallyPackages(cfg: EzpmConfig?)
+	if not fs.isFile("wally.toml") then
+		print("No wally.toml found, skipping Wally setup.")
+		return
+	end
+
 	print("Setting up Wally packages...")
 	print("Clearing current systems...")
 	if fs.isFile("sourcemap.json") then
@@ -102,11 +130,18 @@ local function setupWallyPackages()
 	if fs.isFile("wally.lock") then
 		fs.removeFile("wally.lock")
 	end
-	if fs.isDir("Packages") then
-		fs.removeDir("Packages")
+
+	local packageDirs
+	if cfg then
+		packageDirs = getPackageDirs(cfg)
+	else
+		packageDirs = { "Packages", "ServerPackages" }
 	end
-	if fs.isDir("ServerPackages") then
-		fs.removeDir("ServerPackages")
+
+	for _, dir in packageDirs do
+		if fs.isDir(dir) then
+			fs.removeDir(dir)
+		end
 	end
 
 	print("Installing Wally packages...")
@@ -120,21 +155,17 @@ local function setupWallyPackages()
 	print("Generating source map...")
 	generateSourceMap()
 
-	print("Setting up package types...")
-	local typesResult = executeViaToolchainManager("wally-package-types", "--sourcemap", "sourcemap.json", "Packages")
-	if not typesResult.ok then
-		warn("Package types generation failed:", typesResult.stderr)
-	else
-		print("Package types generated successfully")
-	end
-
-	print("Setting up ServerPackages types...")
-	local serverTypesResult =
-		executeViaToolchainManager("wally-package-types", "--sourcemap", "sourcemap.json", "ServerPackages")
-	if not serverTypesResult.ok then
-		warn("ServerPackages types generation failed:", serverTypesResult.stderr)
-	else
-		print("ServerPackages types generated successfully")
+	for _, dir in packageDirs do
+		if fs.isDir(dir) then
+			print("Setting up types for " .. dir .. "...")
+			local typesResult =
+				executeViaToolchainManager("wally-package-types", "--sourcemap", "sourcemap.json", dir)
+			if not typesResult.ok then
+				warn(dir .. " types generation failed:", typesResult.stderr)
+			else
+				print(dir .. " types generated successfully")
+			end
+		end
 	end
 
 	generateSourceMap()
@@ -174,7 +205,7 @@ local function runLinting(srcPath: string)
 		if not styluaResult.ok then
 			warn("StyLua formatting issues found:")
 			print(styluaResult.stdout)
-			print("Run 'stylua src/' to fix formatting issues")
+			print("Run 'stylua " .. srcPath .. "/' to fix formatting issues")
 			return false
 		else
 			print("✓ StyLua formatting is correct")
@@ -204,7 +235,7 @@ local function formatCode(srcPath: string)
 	return true
 end
 
-local function installTools()
+local function installTools(cfg: EzpmConfig?)
 	print("Installing development tools...")
 
 	print("Installing Rokit tools...")
@@ -215,8 +246,10 @@ local function installTools()
 	end
 	print("✓ Rokit tools installed")
 
-	print("Installing Wally packages...")
-	setupWallyPackages()
+	if fs.isFile("wally.toml") then
+		print("Installing Wally packages...")
+		setupWallyPackages(cfg)
+	end
 
 	print("✓ All tools installed successfully!")
 	return true
