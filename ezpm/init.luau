@@ -119,16 +119,29 @@ local function aliasRemove()
 		return
 	end
 
-	local options = {}
-	for _, name in names do
-		table.insert(options, name .. " -> " .. CONFIG.ALIASES[name])
+	print("")
+	print("Select alias to remove:")
+	for i, name in names do
+		stdio.write(stdio.style("bold"))
+		stdio.write("[" .. i .. "] ")
+		utils.resetStyle()
+		print(name .. " -> " .. CONFIG.ALIASES[name])
 	end
+	print("")
 
-	local selected = stdio.prompt("select", "Select alias to remove:", options)
-	if not selected then
-		print("Aborted.")
-		return
-	end
+	local selected = nil
+	repeat
+		local input = stdio.prompt("text", "ENTER OPTION: ")
+		local number = tonumber(input)
+		if number and number >= 1 and number <= #names then
+			selected = number
+		elseif input == "" then
+			print("Aborted.")
+			return
+		else
+			warn("Invalid choice. Please try again.")
+		end
+	until selected
 
 	local selectedName = names[selected]
 	CONFIG.ALIASES[selectedName] = nil
@@ -170,7 +183,24 @@ local function aliasMenu()
 	print("")
 
 	local options = { "Add Alias", "Remove Alias", "List Aliases" }
-	local selected = stdio.prompt("select", "Choose an action:", options)
+	for i, option in options do
+		stdio.write(stdio.style("bold"))
+		stdio.write("[" .. i .. "] ")
+		utils.resetStyle()
+		print(option)
+	end
+	print("")
+
+	local selected = nil
+	repeat
+		local input = stdio.prompt("text", "ENTER OPTION: ")
+		local number = tonumber(input)
+		if number and number >= 1 and number <= #options then
+			selected = number
+		else
+			warn("Invalid choice. Please try again.")
+		end
+	until selected
 
 	if selected == 1 then
 		aliasAdd()
@@ -428,6 +458,9 @@ local function runInteractiveMenu()
 			local shouldExit = selectedOption.Execute()
 			if shouldExit then
 				EXIT = true
+			else
+				print("")
+				stdio.prompt("text", "Press ENTER to return to main menu...")
 			end
 		else
 			warn("No execute function found for option.")
