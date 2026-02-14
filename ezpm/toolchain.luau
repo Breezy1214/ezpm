@@ -158,8 +158,7 @@ local function setupWallyPackages(cfg: EzpmConfig?)
 	for _, dir in packageDirs do
 		if fs.isDir(dir) then
 			print("Setting up types for " .. dir .. "...")
-			local typesResult =
-				executeViaToolchainManager("wally-package-types", "--sourcemap", "sourcemap.json", dir)
+			local typesResult = executeViaToolchainManager("wally-package-types", "--sourcemap", "sourcemap.json", dir)
 			if not typesResult.ok then
 				warn(dir .. " types generation failed:", typesResult.stderr)
 			else
@@ -235,8 +234,45 @@ local function formatCode(srcPath: string)
 	return true
 end
 
+local REQUIRED_TOOLS: { [string]: string } = {
+	rojo = "rojo-rbx/rojo@7.6.1",
+	darklua = "seaofvoices/darklua@0.17.3",
+	wally = "UpliftGames/wally@0.3.2",
+	["wally-package-types"] = "JohnnyMorganz/wally-package-types@1.6.2",
+	lune = "lune-org/lune@0.10.4",
+}
+
+local function ensureRequiredTools()
+	if not fs.isFile("rokit.toml") then
+		return
+	end
+
+	local tomlContents = fs.readFile("rokit.toml")
+	local addedAny = false
+
+	for toolName, toolSpec in REQUIRED_TOOLS do
+		local pattern = toolName .. "%s*="
+		if not tomlContents:match(pattern) then
+			print(`Adding {toolName} to rokit.toml...`)
+			local result = utils.executeString(`rokit add {toolSpec}`)
+			if result.ok then
+				print(`✓ Added {toolName}`)
+				addedAny = true
+			else
+				warn(`Failed to add {toolName}:`, result.stderr)
+			end
+		end
+	end
+
+	if addedAny then
+		TOOL_AVAILABILITY_CACHE = {}
+	end
+end
+
 local function installTools(cfg: EzpmConfig?)
 	print("Installing development tools...")
+
+	ensureRequiredTools()
 
 	print("Installing Rokit tools...")
 	local rokitResult = utils.executeString("rokit install")
