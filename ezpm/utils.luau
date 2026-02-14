@@ -70,6 +70,43 @@ local function resetStyle()
 	stdio.write(stdio.style("reset"))
 end
 
+local function printHeader(title: string, subtitle: string?)
+	print("")
+	stdio.write(stdio.style("bold"))
+	stdio.write(stdio.color("blue"))
+	print(title)
+	resetStyle()
+	if subtitle then
+		stdio.write(stdio.color("black"))
+		print(subtitle)
+		resetStyle()
+	end
+	print(string.rep("-", 40))
+	print("")
+end
+
+local function printSuccess(message: string)
+	stdio.write(stdio.style("bold"))
+	stdio.write(stdio.color("green"))
+	stdio.write("OK ")
+	resetStyle()
+	print(message)
+end
+
+local function printError(message: string)
+	stdio.write(stdio.style("bold"))
+	stdio.write(stdio.color("red"))
+	stdio.write("ERROR ")
+	resetStyle()
+	print(message)
+end
+
+local function printDim(message: string)
+	stdio.write(stdio.color("black"))
+	print(message)
+	resetStyle()
+end
+
 return {
 	getCurrentTime = getCurrentTime,
 	execute = execute,
@@ -79,4 +116,8 @@ return {
 	removeLastPathIdx = removeLastPathIdx,
 	printChanges = printChanges,
 	resetStyle = resetStyle,
+	printHeader = printHeader,
+	printSuccess = printSuccess,
+	printError = printError,
+	printDim = printDim,
 }

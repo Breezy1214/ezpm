@@ -1,21 +1,11 @@
 --[[
 	ezpm - EZ Project Manager CLI
-	Entry point: arg parsing, command dispatch, interactive menu, init command
+	Interactive menu-first interface with subcommand shortcuts.
 
 	Usage:
-		lune run ezpm                  # Interactive menu
-		lune run ezpm serve            # Watch + DarkLua + Rojo serve
-		lune run ezpm fix-requires     # One-shot require path fix
-		lune run ezpm install          # rokit install + Wally packages
-		lune run ezpm lint             # Selene + StyLua --check
-		lune run ezpm format           # StyLua format
-		lune run ezpm init             # Scaffold project + generate ezpm.toml
-		lune run ezpm alias            # Manage aliases
-		lune run ezpm alias add        # Add a new alias
-		lune run ezpm alias remove     # Remove an alias
-		lune run ezpm alias list       # List all aliases
-		lune run ezpm docs             # Moonwave dev
-		lune run ezpm help             # Print usage
+		lune run ezpm            # Interactive menu (primary interface)
+		lune run ezpm <command>  # Direct subcommand shortcut
+		lune run ezpm help       # List available subcommands
 ]]
 
 local fs = require("@lune/fs")
@@ -40,25 +30,21 @@ local HELP_TEXT = [[
 ezpm - EZ Project Manager
 
 Usage:
-  lune run ezpm [command]
+  lune run ezpm              Interactive menu (primary interface)
 
-Commands:
-  (none)          Interactive menu
-  serve           Watch files + DarkLua + Rojo serve
-  fix-requires    One-shot require path fix
-  install         Install tools (rokit install + Wally packages)
-  lint            Run Selene linter + StyLua --check (if installed)
-  format          Format code with StyLua (if installed)
-  init            Scaffold project + generate ezpm.toml
-  alias           Manage path aliases
-  alias add       Add a new path alias
-  alias remove    Remove an existing alias
-  alias list      List all configured aliases
-  docs            Open documentation via Moonwave
-  help            Print this help message
+Subcommands:
+  serve         Dev server (file watcher + DarkLua + Rojo)
+  fix-requires  One-shot require path fix
+  install       Install tools (rokit + Wally packages)
+  lint          Selene + StyLua --check
+  format        StyLua format
+  init          Scaffold project + generate ezpm.toml
+  alias         Manage path aliases (add/remove/list)
+  docs          Moonwave documentation server
+  help          Print this help message
 
 Flags:
-  -h, --help      Print this help message
+  -h, --help    Print this help message
 ]]
 
 local function printHelp()
@@ -99,12 +85,12 @@ local function aliasAdd()
 		local createDir = stdio.prompt("confirm", "Create directory '" .. dir .. "'?")
 		if createDir then
 			fs.writeDir(dir)
-			print("  Created directory:", dir)
+			utils.printDim("  Created directory: " .. dir)
 		end
 	end
 
 	darklua.clearCache()
-	print("✓ Added alias @" .. name .. " -> " .. path)
+	utils.printSuccess("Added alias @" .. name .. " -> " .. path)
 end
 
 local function aliasRemove()
@@ -119,31 +105,25 @@ local function aliasRemove()
 		return
 	end
 
-	print("")
-	print("Select alias to remove:")
-	for i, name in names do
-		stdio.write(stdio.style("bold"))
-		stdio.write("[" .. i .. "] ")
-		utils.resetStyle()
-		print(name .. " -> " .. CONFIG.ALIASES[name])
+	-- Build labels for select prompt
+	local labels = {}
+	for _, name in names do
+		table.insert(labels, name .. " -> " .. CONFIG.ALIASES[name])
 	end
-	print("")
+	table.insert(labels, "Cancel")
 
-	local selected = nil
-	repeat
-		local input = stdio.prompt("text", "ENTER OPTION: ")
-		local number = tonumber(input)
-		if number and number >= 1 and number <= #names then
-			selected = number
-		elseif input == "" then
-			print("Aborted.")
-			return
-		else
-			warn("Invalid choice. Please try again.")
-		end
-	until selected
+	local selected = stdio.prompt("select", "Select alias to remove", labels)
+	if selected == nil or selected == #labels then
+		return
+	end
 
 	local selectedName = names[selected]
+
+	local confirm = stdio.prompt("confirm", "Remove alias @" .. selectedName .. "?")
+	if not confirm then
+		return
+	end
+
 	CONFIG.ALIASES[selectedName] = nil
 	config.saveConfig(CONFIG)
 	configGenerator.regenerateConfigFiles(CONFIG.ALIASES)
@@ -152,7 +132,7 @@ local function aliasRemove()
 	CONFIG.REQUIRED_DIRS = config.deriveRequiredDirs(CONFIG.ALIASES, CONFIG.SRC_PATH)
 
 	darklua.clearCache()
-	print("✓ Removed alias @" .. selectedName)
+	utils.printSuccess("Removed alias @" .. selectedName)
 end
 
 local function aliasList()
@@ -168,56 +148,39 @@ local function aliasList()
 	end
 
 	print("")
-	print("Configured aliases:")
-	print(string.rep("-", 50))
 	for _, name in names do
-		print(string.format("  @%-20s -> %s", name, CONFIG.ALIASES[name]))
+		stdio.write(stdio.style("bold"))
+		stdio.write("  @" .. name)
+		utils.resetStyle()
+		utils.printDim("    -> " .. CONFIG.ALIASES[name])
 	end
-	print(string.rep("-", 50))
 	print("")
 end
 
 local function aliasMenu()
-	print("")
-	print("=== Alias Management ===")
-	print("")
+	local options = { "Add Alias", "Remove Alias", "List Aliases", "Back" }
 
-	local options = { "Add Alias", "Remove Alias", "List Aliases" }
-	for i, option in options do
-		stdio.write(stdio.style("bold"))
-		stdio.write("[" .. i .. "] ")
-		utils.resetStyle()
-		print(option)
-	end
-	print("")
-
-	local selected = nil
-	repeat
-		local input = stdio.prompt("text", "ENTER OPTION: ")
-		local number = tonumber(input)
-		if number and number >= 1 and number <= #options then
-			selected = number
-		else
-			warn("Invalid choice. Please try again.")
+	while true do
+		utils.printHeader("Alias Management")
+		local selected = stdio.prompt("select", "Choose an action", options)
+		if selected == nil or selected == #options then
+			break
 		end
-	until selected
 
-	if selected == 1 then
-		aliasAdd()
-	elseif selected == 2 then
-		aliasRemove()
-	elseif selected == 3 then
-		aliasList()
+		if selected == 1 then
+			aliasAdd()
+		elseif selected == 2 then
+			aliasRemove()
+		elseif selected == 3 then
+			aliasList()
+		end
 	end
 end
 
 ------------------------// Init Command //--------------------------
 
 local function runInit()
-	print("")
-	print("=== ezpm init ===")
-	print("Scaffolding project configuration...")
-	print("")
+	utils.printHeader("Initialize Project", "Scaffolding project configuration")
 
 	-- Check if ezpm.toml already exists
 	if fs.isFile("ezpm.toml") then
@@ -240,21 +203,21 @@ local function runInit()
 			local parseSuccess, projectJson = pcall(serde.decode, "json", contents)
 			if parseSuccess and projectJson.name then
 				projectName = projectJson.name
-				print("  Detected project name:", projectName)
+				utils.printDim("  Detected project name: " .. projectName)
 			end
 		end
 	end
 
 	if hasDarklua then
-		print("  Detected .darklua.json")
+		utils.printDim("  Detected .darklua.json")
 	end
 
 	if hasRokit then
-		print("  Detected rokit.toml")
+		utils.printDim("  Detected rokit.toml")
 	end
 
 	if hasWally then
-		print("  Detected wally.toml")
+		utils.printDim("  Detected wally.toml")
 	end
 
 	-- Prompt to scaffold rokit if missing
@@ -266,18 +229,18 @@ local function runInit()
 # For more information, see https://github.com/rojo-rbx/rokit
 
 [tools]
-lune = "lune-org/lune@0.10.2"
-rojo = "rojo-rbx/rojo@7.4.4"
-darklua = "seaofvoices/darklua@0.14.1"
+lune = "lune-org/lune@0.10.4"
+wally-package-types = "JohnnyMorganz/wally-package-types@1.6.2"
 wally = "UpliftGames/wally@0.3.2"
-wally-package-types = "JohnnyMorganz/wally-package-types@1.3.2"
+rojo = "rojo-rbx/rojo@7.6.1"
+darklua = "seaofvoices/darklua@0.17.3"
 
 # Optional — install with `rokit add <tool>`
 # selene = "Kampfkarren/selene@0.27.1"
 # stylua = "JohnnyMorganz/StyLua@2.0.2"
 ]]
 			fs.writeFile("rokit.toml", rokitToml)
-			print("  Created rokit.toml")
+			utils.printDim("  Created rokit.toml")
 		end
 	end
 
@@ -296,9 +259,9 @@ wally-package-types = "JohnnyMorganz/wally-package-types@1.3.2"
 			for _ in aliases do
 				aliasCount += 1
 			end
-			
+
 			if aliasCount > 0 then
-				print("  Imported", aliasCount, "aliases from .darklua.json")
+				utils.printDim("  Imported " .. aliasCount .. " aliases from .darklua.json")
 			end
 		end
 	end
@@ -325,145 +288,96 @@ wally-package-types = "JohnnyMorganz/wally-package-types@1.3.2"
 	for _, dir in dirsToCreate do
 		if not fs.isDir(dir) then
 			fs.writeDir(dir)
-			print("  Created directory:", dir)
+			utils.printDim("  Created directory: " .. dir)
 		end
 	end
 
 	-- Save ezpm.toml
 	config.saveConfig(initConfig)
 	print("")
-	print("✓ Generated ezpm.toml")
+	utils.printSuccess("Generated ezpm.toml")
 
 	-- Regenerate .darklua.json and .luaurc from aliases
 	if next(aliases) ~= nil then
 		configGenerator.regenerateConfigFiles(aliases)
-		print("✓ Generated .darklua.json")
-		print("✓ Generated .luaurc")
+		utils.printSuccess("Generated .darklua.json")
+		utils.printSuccess("Generated .luaurc")
 	end
 
 	-- Reload config
 	CONFIG = config.loadConfig()
 
 	print("")
-	print("You can now run 'lune run ezpm' to start the interactive menu,")
-	print("or 'lune run ezpm serve' to start developing.")
+	print("Select Serve from the menu to start developing,")
+	print("or run 'lune run ezpm serve' directly.")
 end
 
 ------------------------// Interactive Menu //--------------------------
 
 local function runInteractiveMenu()
-	print("")
-	print("=== EZ Project Manager ===")
-	print("Modular CLI with comprehensive development tools")
-	print("")
-
-	print("Project Manager ready! Choose an option below:")
-
-	local Options = {
-		[1] = {
-			Name = "Setup Wally Packages",
-			Description = "Installs the latest Wally Packages, generates their type defs, and sets up the source map.",
-			Execute = function()
-				toolchain.setupWallyPackages(CONFIG)
-			end,
-		},
-		[2] = {
-			Name = "Serve Rojo",
-			Description = "Processes the Dark Lua files, watches for changes, and serves the Rojo project with live file monitoring.",
-			Execute = function()
+	local options = {
+		{
+			label = "Serve",
+			execute = function()
 				serve.start(CONFIG)
 			end,
 		},
-		[3] = {
-			Name = "Fix require paths",
-			Description = "Automatically fixes require paths in all files in the '" .. CONFIG.SRC_PATH .. "' directory.",
-			Execute = function()
+		{
+			label = "Setup Wally Packages",
+			execute = function()
+				toolchain.setupWallyPackages(CONFIG)
+			end,
+		},
+		{
+			label = "Fix Require Paths",
+			execute = function()
 				requireFixer.fixRequirePaths(CONFIG.SRC_PATH, CONFIG.DISPLAY_FILE_CHANGES, CONFIG.IGNORE_LIST)
 			end,
 		},
-		[4] = {
-			Name = "Run Code Quality Checks",
-			Description = "Runs Selene linting and StyLua formatting checks (if installed).",
-			Execute = function()
+		{
+			label = "Run Code Quality Checks",
+			execute = function()
 				toolchain.runLinting(CONFIG.SRC_PATH)
 			end,
 		},
-		[5] = {
-			Name = "Format Code",
-			Description = "Formats all code using StyLua (if installed).",
-			Execute = function()
+		{
+			label = "Format Code",
+			execute = function()
 				toolchain.formatCode(CONFIG.SRC_PATH)
 			end,
 		},
-		[6] = {
-			Name = "Install Tools",
-			Description = "Installs all development tools (Rokit + Wally packages).",
-			Execute = function()
+		{
+			label = "Install Tools",
+			execute = function()
 				toolchain.installTools(CONFIG)
 			end,
 		},
-		[7] = {
-			Name = "Open Documentation",
-			Description = "Opens the local documentation for the project via moonwave.",
-			Execute = function()
+		{ label = "Manage Aliases", execute = aliasMenu },
+		{ label = "Initialize Project", execute = runInit },
+		{
+			label = "Open Documentation",
+			execute = function()
 				toolchain.openDocumentation(CONFIG.DOCS_ENABLED)
 			end,
 		},
-		[8] = {
-			Name = "Manage Aliases",
-			Description = "Add, remove, or list path aliases for your project.",
-			Execute = aliasMenu,
-		},
-		[0] = {
-			Name = "EXIT",
-			Description = "Exits the program.",
-			Execute = function()
-				return true
-			end,
-		},
+		{ label = "Exit" },
 	}
 
-	local EXIT = false
+	local labels = {}
+	for _, option in options do
+		table.insert(labels, option.label)
+	end
 
-	while not EXIT do
-		print("-------------")
-		print("| Main Menu |")
-		print("-------------")
-		for i, option in Options do
-			if option then
-				stdio.write(stdio.style("bold"))
-				stdio.write(i .. ") ")
-				utils.resetStyle()
-				print(option.Name)
-				stdio.write(stdio.color("black"))
-				print("   - " .. option.Description)
-				utils.resetStyle()
-			end
+	while true do
+		utils.printHeader("ezpm", "Roblox Project Manager")
+		local selected = stdio.prompt("select", "What would you like to do?", labels)
+		if selected == nil or selected == #options then
+			break
 		end
-		print("-------------")
 
-		local selectedOption = nil
-		repeat
-			local input = stdio.prompt("text", "ENTER OPTION: ")
-			local inputArgs = string.split(input, " ")
-			local number = tonumber(inputArgs[1])
-			if number and Options[number] then
-				selectedOption = Options[number]
-			else
-				warn("Invalid Choice. Please try again.")
-			end
-		until selectedOption
-
-		if selectedOption.Execute then
-			local shouldExit = selectedOption.Execute()
-			if shouldExit then
-				EXIT = true
-			else
-				print("")
-				stdio.prompt("text", "Press ENTER to return to main menu...")
-			end
-		else
-			warn("No execute function found for option.")
+		local option = options[selected]
+		if option.execute then
+			option.execute()
 		end
 	end
 
@@ -507,28 +421,18 @@ local COMMANDS = {
 	help = printHelp,
 }
 
--- Parse args
 local subcommand = process.args[1]
 
--- Check for help flags anywhere in args
-for _, arg in ipairs(process.args) do
-	if arg == "-h" or arg == "--help" then
-		printHelp()
-		return
-	end
-end
-
-if subcommand then
-	local handler = COMMANDS[subcommand]
-	if handler then
-		handler()
-	else
+if subcommand == "-h" or subcommand == "--help" then
+	printHelp()
+elseif subcommand and COMMANDS[subcommand] then
+	COMMANDS[subcommand]()
+else
+	if subcommand then
 		warn(`Unknown command: {subcommand}`)
 		print("")
 		printHelp()
 		process.exit(1)
 	end
-else
-	-- No subcommand: run interactive menu
 	runInteractiveMenu()
 end
