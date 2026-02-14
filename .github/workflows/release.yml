@@ -1,0 +1,42 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ezpm.toml'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Extract current version
+        id: current
+        run: |
+          VERSION=$(grep -E '^version\s*=' ezpm.toml | head -1 | sed 's/.*=\s*"\(.*\)"/\1/')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Extract previous version
+        id: previous
+        run: |
+          PREV=$(git show HEAD~1:ezpm.toml 2>/dev/null | grep -E '^version\s*=' | head -1 | sed 's/.*=\s*"\(.*\)"/\1/' || echo "")
+          echo "version=$PREV" >> "$GITHUB_OUTPUT"
+
+      - name: Create release if version changed
+        if: steps.current.outputs.version != '' && steps.current.outputs.version != steps.previous.outputs.version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v${{ steps.current.outputs.version }}"
+          if git ls-remote --tags origin "refs/tags/$TAG" | grep -q "$TAG"; then
+            echo "Tag $TAG already exists. Skipping."
+            exit 0
+          fi
+          gh release create "$TAG" --title "$TAG" --generate-notes --target main

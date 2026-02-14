@@ -14,6 +14,7 @@ export type EzpmConfig = {
 	REQUIRED_DIRS: { string },
 	REQUIRED_FILES: { string },
 	PROJECT_NAME: string?,
+	VERSION: string?,
 	ALIASES: { [string]: string },
 }
 
@@ -103,6 +104,10 @@ local function loadConfig(): EzpmConfig
 					if tomlConfig.project.name then
 						config.PROJECT_NAME = tomlConfig.project.name
 					end
+					
+					if tomlConfig.project.version then
+						config.VERSION = tomlConfig.project.version
+					end
 				end
 
 				if tomlConfig.aliases then
@@ -132,6 +137,7 @@ local function generateTomlString(config: EzpmConfig): string
 	local tomlData = {
 		project = {
 			name = config.PROJECT_NAME or "my-roblox-game",
+			version = config.VERSION,
 		},
 
 		paths = {
