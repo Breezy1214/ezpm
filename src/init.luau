@@ -229,9 +229,16 @@ local function runInit()
 		end
 	end
 
+	-- Prompt for source directory
+	local srcPath = stdio.prompt("text", "Source directory (default: src): ")
+	if srcPath == nil or srcPath == "" then
+		srcPath = "src"
+	end
+
 	-- Handle aliases
 	local initConfig = config.getDefaultConfig()
 	initConfig.PROJECT_NAME = projectName
+	initConfig.SRC_PATH = srcPath
 
 	local aliases = {}
 
