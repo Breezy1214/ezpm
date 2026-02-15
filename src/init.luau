@@ -296,6 +296,57 @@ local function runInit()
 		utils.printSuccess("Generated .luaurc")
 	end
 
+	-- Scaffold default.project.json if missing
+	if not fs.isFile("default.project.json") then
+		local projectTree: { [string]: any } = {
+			["$className"] = "DataModel",
+		}
+
+		-- Map aliases to Rojo tree locations using common conventions
+		local serviceMap: { [string]: { service: string, container: string? } } = {
+			Client = { service = "StarterPlayer", container = "StarterPlayerScripts" },
+			Server = { service = "ServerScriptService" },
+			Shared = { service = "ReplicatedStorage" },
+		}
+
+		local srcPath = initConfig.SRC_PATH
+		local escapedSrc = srcPath:gsub("([%(%)%.%+%-%*%?%[%]%^%$%%])", "%%%1")
+
+		for aliasName, aliasPath in aliases do
+			if aliasPath:match("^" .. escapedSrc .. "/") then
+				local mapping = serviceMap[aliasName]
+				if mapping then
+					if mapping.container then
+						if not projectTree[mapping.service] then
+							projectTree[mapping.service] = {}
+						end
+						projectTree[mapping.service][mapping.container] = {
+							[aliasName] = { ["$path"] = aliasPath:gsub("/$", "") },
+						}
+					else
+						if not projectTree[mapping.service] then
+							projectTree[mapping.service] = {}
+						end
+						projectTree[mapping.service][aliasName] = { ["$path"] = aliasPath:gsub("/$", "") }
+					end
+				else
+					-- Unknown alias under src — default to ReplicatedStorage
+					if not projectTree["ReplicatedStorage"] then
+						projectTree["ReplicatedStorage"] = {}
+					end
+					projectTree["ReplicatedStorage"][aliasName] = { ["$path"] = aliasPath:gsub("/$", "") }
+				end
+			end
+		end
+
+		local projectJson = {
+			name = initConfig.PROJECT_NAME or "my-roblox-game",
+			tree = projectTree,
+		}
+		fs.writeFile("default.project.json", serde.encode("json", projectJson))
+		utils.printSuccess("Generated default.project.json")
+	end
+
 	-- Reload config
 	CONFIG = config.loadConfig()
 

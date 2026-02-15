@@ -15,6 +15,11 @@ type EzpmConfig = configModule.EzpmConfig
 local function start(cfg: EzpmConfig)
 	print("Setting up Rojo serve...")
 
+	if not fs.isFile("default.project.json") then
+		warn("Missing default.project.json — run 'ezpm init' to generate it, or create one manually.")
+		return
+	end
+
 	print("Updating build.project.json...")
 	local success, err = pcall(function()
 		utils.modifyFileContents("default.project.json", function(contents)
