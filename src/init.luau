@@ -224,20 +224,7 @@ local function runInit()
 	if not hasRokit then
 		local scaffoldRokit = stdio.prompt("confirm", "No rokit.toml found. Create one with default tools?")
 		if scaffoldRokit then
-			local rokitToml = [[
-# This file lists tools managed by Rokit, a toolchain manager for Roblox projects.
-# For more information, see https://github.com/rojo-rbx/rokit
-
-[tools]
-lune = "lune-org/lune@0.10.4"
-wally-package-types = "JohnnyMorganz/wally-package-types@1.6.2"
-wally = "UpliftGames/wally@0.3.2"
-rojo = "rojo-rbx/rojo@7.6.1"
-darklua = "seaofvoices/darklua@0.17.3"
-selene = "Kampfkarren/selene@0.30.0"
-stylua = "JohnnyMorganz/StyLua@2.3.1"
-]]
-			fs.writeFile("rokit.toml", rokitToml)
+			fs.writeFile("rokit.toml", toolchain.generateRokitToml())
 			utils.printDim("  Created rokit.toml")
 		end
 	end

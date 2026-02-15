@@ -9,6 +9,39 @@ type EzpmConfig = configModule.EzpmConfig
 local PACKAGE_PATH: string? = nil
 local TOOL_AVAILABILITY_CACHE: { [string]: boolean } = {}
 
+type ToolDef = { spec: string, required: boolean }
+
+local DEFAULT_TOOLS: { [string]: ToolDef } = {
+	lune = { spec = "lune-org/lune@0.10.4", required = true },
+	rojo = { spec = "rojo-rbx/rojo@7.6.1", required = true },
+	darklua = { spec = "seaofvoices/darklua@0.17.3", required = true },
+	wally = { spec = "UpliftGames/wally@0.3.2", required = true },
+	["wally-package-types"] = { spec = "JohnnyMorganz/wally-package-types@1.6.2", required = true },
+	selene = { spec = "Kampfkarren/selene@0.30.0", required = false },
+	stylua = { spec = "JohnnyMorganz/StyLua@2.3.1", required = false },
+}
+
+local function parseRokitTools(): { [string]: string }
+	if not fs.isFile("rokit.toml") then
+		return {}
+	end
+	local contents = fs.readFile("rokit.toml")
+	local tools = {}
+	for name, spec in contents:gmatch('(%S+)%s*=%s*"([^"]+)"') do
+		tools[name] = spec
+	end
+	return tools
+end
+
+local function getToolSpec(toolName: string): string
+	local rokitTools = parseRokitTools()
+	if rokitTools[toolName] then
+		return rokitTools[toolName]
+	end
+	local def = DEFAULT_TOOLS[toolName]
+	return if def then def.spec else toolName
+end
+
 local function getPackagePath(): string
 	if PACKAGE_PATH then
 		return PACKAGE_PATH
@@ -179,8 +212,8 @@ local function runLinting(srcPath: string)
 
 	if not hasSelene and not hasStylua then
 		warn("No linting tools installed.")
-		print("Install them with: rokit add Kampfkarren/selene@0.27.1")
-		print("                    rokit add JohnnyMorganz/StyLua@2.0.2")
+		print("Install them with: rokit add " .. getToolSpec("selene"))
+		print("                    rokit add " .. getToolSpec("stylua"))
 		return false
 	end
 
@@ -195,7 +228,7 @@ local function runLinting(srcPath: string)
 			print("✓ Selene linting passed")
 		end
 	else
-		print("Skipping Selene (not installed — run `rokit add Kampfkarren/selene@0.27.1`)")
+		print("Skipping Selene (not installed — run `rokit add " .. getToolSpec("selene") .. "`)")
 	end
 
 	if hasStylua then
@@ -210,7 +243,7 @@ local function runLinting(srcPath: string)
 			print("✓ StyLua formatting is correct")
 		end
 	else
-		print("Skipping StyLua (not installed — run `rokit add JohnnyMorganz/StyLua@2.0.2`)")
+		print("Skipping StyLua (not installed — run `rokit add " .. getToolSpec("stylua") .. "`)")
 	end
 
 	print("✓ All code quality checks passed!")
@@ -220,7 +253,7 @@ end
 local function formatCode(srcPath: string)
 	if not isToolAvailable("stylua") then
 		warn("StyLua is not installed.")
-		print("Install it with: rokit add JohnnyMorganz/StyLua@2.0.2")
+		print("Install it with: rokit add " .. getToolSpec("stylua"))
 		return false
 	end
 
@@ -234,14 +267,6 @@ local function formatCode(srcPath: string)
 	return true
 end
 
-local REQUIRED_TOOLS: { [string]: string } = {
-	rojo = "rojo-rbx/rojo@7.6.1",
-	darklua = "seaofvoices/darklua@0.17.3",
-	wally = "UpliftGames/wally@0.3.2",
-	["wally-package-types"] = "JohnnyMorganz/wally-package-types@1.6.2",
-	lune = "lune-org/lune@0.10.4",
-}
-
 local function ensureRequiredTools()
 	if not fs.isFile("rokit.toml") then
 		return
@@ -250,11 +275,14 @@ local function ensureRequiredTools()
 	local tomlContents = fs.readFile("rokit.toml")
 	local addedAny = false
 
-	for toolName, toolSpec in REQUIRED_TOOLS do
+	for toolName, def in DEFAULT_TOOLS do
+		if not def.required then
+			continue
+		end
 		local pattern = toolName .. "%s*="
 		if not tomlContents:match(pattern) then
 			print(`Adding {toolName} to rokit.toml...`)
-			local result = utils.executeString(`rokit add {toolSpec}`)
+			local result = utils.executeString(`rokit add {def.spec}`)
 			if result.ok then
 				print(`✓ Added {toolName}`)
 				addedAny = true
@@ -300,6 +328,40 @@ local function openDocumentation(docsEnabled: boolean)
 	utils.executeString("moonwave.cmd dev")
 end
 
+local function generateRokitToml(): string
+	local requiredLines = {}
+	local optionalLines = {}
+
+	for toolName, def in DEFAULT_TOOLS do
+		local line = toolName .. ' = "' .. def.spec .. '"'
+		if def.required then
+			table.insert(requiredLines, line)
+		else
+			table.insert(optionalLines, line)
+		end
+	end
+
+	table.sort(requiredLines)
+	table.sort(optionalLines)
+
+	local lines = {
+		"# This file lists tools managed by Rokit, a toolchain manager for Roblox projects.",
+		"# For more information, see https://github.com/rojo-rbx/rokit",
+		"",
+		"[tools]",
+	}
+
+	for _, line in requiredLines do
+		table.insert(lines, line)
+	end
+	
+	for _, line in optionalLines do
+		table.insert(lines, line)
+	end
+
+	return table.concat(lines, "\n") .. "\n"
+end
+
 return {
 	getPackagePath = getPackagePath,
 	isToolAvailable = isToolAvailable,
@@ -311,4 +373,5 @@ return {
 	formatCode = formatCode,
 	installTools = installTools,
 	openDocumentation = openDocumentation,
+	generateRokitToml = generateRokitToml,
 }
