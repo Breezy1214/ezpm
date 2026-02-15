@@ -67,7 +67,7 @@ local function getDefaultConfig(): EzpmConfig
 		DISPLAY_FILE_CHANGES = true,
 		HELP_ARGS = { "-h", "--help", "help" },
 		IGNORE_LIST = {},
-		REQUIRED_DIRS = { "src" },
+		REQUIRED_DIRS = {},
 		REQUIRED_FILES = { "rokit.toml" },
 		ALIASES = {},
 	}

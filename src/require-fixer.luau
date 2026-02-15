@@ -13,7 +13,7 @@ local function fixRequirePaths(rootDir: string, displayFileChanges: boolean, ign
 
 	local shortcuts = darklua.loadShortcuts()
 	local sortedInvertedShortcuts = darklua.getSortedInvertedShortcuts()
-	local sortedSrcShortcuts = darklua.getSortedSrcShortcuts()
+	local sortedSrcShortcuts = darklua.getSortedSrcShortcuts(rootDir)
 
 	local function collectFiles(dir)
 		local files = {}

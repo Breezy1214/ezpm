@@ -257,9 +257,9 @@ local function runInit()
 			stdio.prompt("confirm", "Use default aliases (Client, Server, Shared, Packages, ServerPackages)?")
 		if useDefaults then
 			aliases = {
-				Client = "src/client/",
-				Server = "src/server/",
-				Shared = "src/shared/",
+				Client = initConfig.SRC_PATH .. "/client/",
+				Server = initConfig.SRC_PATH .. "/server/",
+				Shared = initConfig.SRC_PATH .. "/shared/",
 				Packages = "Packages/",
 				ServerPackages = "ServerPackages/",
 			}

@@ -95,14 +95,14 @@ local function getSortedInvertedShortcuts(): { { realPath: string, shortcut: str
 	return sorted
 end
 
-local function getSortedSrcShortcuts(srcPath: string?): { { shortcut: string, realPath: string } }
+local function getSortedSrcShortcuts(srcPath: string): { { shortcut: string, realPath: string } }
 	if SORTED_SRC_SHORTCUTS then
 		return SORTED_SRC_SHORTCUTS
 	end
 
 	local shortcuts = loadShortcuts()
 	local sorted = {}
-	local prefix = (srcPath or "src") .. "/"
+	local prefix = srcPath .. "/"
 	for shortcut, realPath in shortcuts do
 		-- Only process shortcuts that map to source paths
 		if realPath:sub(1, #prefix) == prefix then
@@ -119,13 +119,11 @@ local function getSortedSrcShortcuts(srcPath: string?): { { shortcut: string, re
 end
 
 local function process(
-	srcPath: string?,
-	buildPath: string?,
+	srcPath: string,
+	buildPath: string,
 	printResults: boolean?,
 	dontRetry: boolean?
 ): utils.ExecResult
-	srcPath = srcPath or "src"
-	buildPath = buildPath or "darklua_build"
 
 	-- Validate input path exists
 	if not fs.isDir(srcPath) then
@@ -149,7 +147,7 @@ local function process(
 		warn("DarkLua Warning:", results.stderr)
 		if not dontRetry then
 			print("Build warning detected. Trying to rebuild DarkLua...")
-			return process(nil, nil, true, true)
+			return process(srcPath, buildPath, true, true)
 		end
 	elseif printResults and results.stdout ~= "" then
 		print("DarkLua Success:", results.stdout)
