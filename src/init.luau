@@ -3,9 +3,9 @@
 	Interactive menu-first interface with subcommand shortcuts.
 
 	Usage:
-		lune run ezpm            # Interactive menu (primary interface)
-		lune run ezpm <command>  # Direct subcommand shortcut
-		lune run ezpm help       # List available subcommands
+		ezpm            # Interactive menu (primary interface)
+		ezpm <command>  # Direct subcommand shortcut
+		ezpm help       # List available subcommands
 ]]
 
 local fs = require("@lune/fs")
@@ -30,7 +30,7 @@ local HELP_TEXT = [[
 ezpm - EZ Project Manager
 
 Usage:
-  lune run ezpm              Interactive menu (primary interface)
+  ezpm         	Interactive menu (primary interface)
 
 Subcommands:
   serve         Dev server (file watcher + DarkLua + Rojo)
@@ -307,7 +307,7 @@ stylua = "JohnnyMorganz/StyLua@2.3.1"
 
 	print("")
 	print("Select Serve from the menu to start developing,")
-	print("or run 'lune run ezpm serve' directly.")
+	print("or run 'ezpm serve' directly.")
 end
 
 ------------------------// Interactive Menu //--------------------------

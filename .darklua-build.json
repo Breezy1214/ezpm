@@ -1,0 +1,12 @@
+{
+  "bundle": {
+    "require_mode": {
+      "name": "path",
+      "sources": {
+        "@self": "./src/",
+        "@lune": ""
+      }
+    },
+    "excludes": ["@lune/**"]
+  }
+}

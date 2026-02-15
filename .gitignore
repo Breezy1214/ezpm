@@ -1,3 +1,5 @@
 /Test
 .darklua.json
 .luaurc
+build/
+dist/
