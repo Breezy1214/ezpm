@@ -4,3 +4,5 @@
 build/
 dist/
 ezpm.exe
+test.luau
+exe.luau
