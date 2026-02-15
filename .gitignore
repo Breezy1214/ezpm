@@ -3,3 +3,4 @@
 .luaurc
 build/
 dist/
+ezpm.exe
