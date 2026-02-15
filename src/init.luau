@@ -234,10 +234,8 @@ wally-package-types = "JohnnyMorganz/wally-package-types@1.6.2"
 wally = "UpliftGames/wally@0.3.2"
 rojo = "rojo-rbx/rojo@7.6.1"
 darklua = "seaofvoices/darklua@0.17.3"
-
-# Optional — install with `rokit add <tool>`
-# selene = "Kampfkarren/selene@0.27.1"
-# stylua = "JohnnyMorganz/StyLua@2.0.2"
+selene = "Kampfkarren/selene@0.30.0"
+stylua = "JohnnyMorganz/StyLua@2.3.1"
 ]]
 			fs.writeFile("rokit.toml", rokitToml)
 			utils.printDim("  Created rokit.toml")
