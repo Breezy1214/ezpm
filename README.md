@@ -18,7 +18,7 @@ ezpm is written in Luau, runs on [Lune](https://lune-org.github.io/docs), and co
 Requires [Rokit](https://github.com/rojo-rbx/rokit).
 
 ```bash
-rokit add Breezy1214/ezpm        # install ezpm
+rokit add Breezy1214/ezpm
 ```
 
 To update to the latest version:
