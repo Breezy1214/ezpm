@@ -1,5 +1,3 @@
-
-
 local fs = require("@lune/fs")
 local process = require("@lune/process")
 local stdio = require("@lune/stdio")
@@ -51,7 +49,8 @@ local function start(cfg: EzpmConfig)
 	task.wait(0.5)
 
 	print("Fixing require paths...")
-	local pathFixSuccess, pathFixErr = pcall(requireFixer.fixRequirePaths, cfg.SRC_PATH, cfg.DISPLAY_FILE_CHANGES, cfg.IGNORE_LIST)
+	local pathFixSuccess, pathFixErr =
+		pcall(requireFixer.fixRequirePaths, cfg.SRC_PATH, cfg.DISPLAY_FILE_CHANGES, cfg.IGNORE_LIST)
 	if not pathFixSuccess then
 		warn("Failed to fix require paths:", pathFixErr)
 		return
@@ -73,7 +72,8 @@ local function start(cfg: EzpmConfig)
 
 		onFileChanged = function(fullPath: string, _metadata)
 			utils.printChanges(cfg.DISPLAY_FILE_CHANGES, "File Changed:", fullPath)
-			local success1, err1 = pcall(requireFixer.fixRequirePaths, cfg.SRC_PATH, cfg.DISPLAY_FILE_CHANGES, cfg.IGNORE_LIST)
+			local success1, err1 =
+				pcall(requireFixer.fixRequirePaths, cfg.SRC_PATH, cfg.DISPLAY_FILE_CHANGES, cfg.IGNORE_LIST)
 			if not success1 then
 				warn("Error fixing paths after file change:", err1)
 			end
@@ -92,7 +92,8 @@ local function start(cfg: EzpmConfig)
 
 		onFileCreated = function(fullPath: string, _metadata)
 			utils.printChanges(cfg.DISPLAY_FILE_CHANGES, "File Created:", fullPath)
-			local success1, err1 = pcall(requireFixer.fixRequirePaths, cfg.SRC_PATH, cfg.DISPLAY_FILE_CHANGES, cfg.IGNORE_LIST)
+			local success1, err1 =
+				pcall(requireFixer.fixRequirePaths, cfg.SRC_PATH, cfg.DISPLAY_FILE_CHANGES, cfg.IGNORE_LIST)
 			if not success1 then
 				warn("Error fixing paths after file creation:", err1)
 			end
@@ -102,7 +103,8 @@ local function start(cfg: EzpmConfig)
 				warn("Error generating source map after file creation:", err2)
 			end
 
-			local success3, err3 = pcall(darklua.formatPathAndExecute, fullPath, cfg.SRC_PATH, cfg.DARKLUA_BUILD_PATH, true)
+			local success3, err3 =
+				pcall(darklua.formatPathAndExecute, fullPath, cfg.SRC_PATH, cfg.DARKLUA_BUILD_PATH, true)
 			if not success3 then
 				warn("Error processing DarkLua after file creation:", err3)
 			end
@@ -110,7 +112,8 @@ local function start(cfg: EzpmConfig)
 
 		onFileRemoved = function(fullPath: string)
 			utils.printChanges(cfg.DISPLAY_FILE_CHANGES, "File Removed:", fullPath)
-			local success1, err1 = pcall(requireFixer.fixRequirePaths, cfg.SRC_PATH, cfg.DISPLAY_FILE_CHANGES, cfg.IGNORE_LIST)
+			local success1, err1 =
+				pcall(requireFixer.fixRequirePaths, cfg.SRC_PATH, cfg.DISPLAY_FILE_CHANGES, cfg.IGNORE_LIST)
 			if not success1 then
 				warn("Error fixing paths after file removal:", err1)
 			end
@@ -137,7 +140,8 @@ local function start(cfg: EzpmConfig)
 
 		onDirectoryCreated = function(fullPath: string)
 			utils.printChanges(cfg.DISPLAY_FILE_CHANGES, "Directory Created:", fullPath)
-			local success1, err1 = pcall(requireFixer.fixRequirePaths, cfg.SRC_PATH, cfg.DISPLAY_FILE_CHANGES, cfg.IGNORE_LIST)
+			local success1, err1 =
+				pcall(requireFixer.fixRequirePaths, cfg.SRC_PATH, cfg.DISPLAY_FILE_CHANGES, cfg.IGNORE_LIST)
 			if not success1 then
 				warn("Error fixing paths after directory creation:", err1)
 			end
@@ -155,7 +159,8 @@ local function start(cfg: EzpmConfig)
 
 		onDirectoryRemoved = function(fullPath: string)
 			utils.printChanges(cfg.DISPLAY_FILE_CHANGES, "Directory Removed:", fullPath)
-			local success1, err1 = pcall(requireFixer.fixRequirePaths, cfg.SRC_PATH, cfg.DISPLAY_FILE_CHANGES, cfg.IGNORE_LIST)
+			local success1, err1 =
+				pcall(requireFixer.fixRequirePaths, cfg.SRC_PATH, cfg.DISPLAY_FILE_CHANGES, cfg.IGNORE_LIST)
 			if not success1 then
 				warn("Error fixing paths after directory removal:", err1)
 			end
@@ -204,6 +209,7 @@ local function start(cfg: EzpmConfig)
 	end)
 
 	local isMacOS = process.os == "macos"
+	print()
 	stdio.prompt("text", "Press Enter to stop serving and watching...")
 	stopWatcher()
 	task.cancel(watcherRoutine)
@@ -276,12 +282,9 @@ local function start(cfg: EzpmConfig)
 				print("No Rojo processes found on port 34872")
 			end
 		end
-	else
-		print("No Rojo process to terminate")
 	end
 
-	print("Serve stopped successfully.")
-	print()
+	print("Serve stopped.")
 end
 
 return {
