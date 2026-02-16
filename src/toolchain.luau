@@ -362,6 +362,11 @@ local function generateRokitToml(): string
 	return table.concat(lines, "\n") .. "\n"
 end
 
+local function isAzulAvailable(): boolean
+	local result = utils.executeWithOutput("azul", "--version")
+	return result.ok
+end
+
 return {
 	getPackagePath = getPackagePath,
 	isToolAvailable = isToolAvailable,
@@ -374,4 +379,5 @@ return {
 	installTools = installTools,
 	openDocumentation = openDocumentation,
 	generateRokitToml = generateRokitToml,
+	isAzulAvailable = isAzulAvailable,
 }

@@ -20,6 +20,7 @@ local requireFixer = require("@self/require-fixer")
 local toolchain = require("@self/toolchain")
 local serve = require("@self/serve")
 local darklua = require("@self/darklua")
+local sync = require("@self/sync")
 
 -- Load configuration
 local CONFIG = config.loadConfig()
@@ -33,7 +34,7 @@ Usage:
   ezpm         	Interactive menu (primary interface)
 
 Subcommands:
-  serve         Dev server (file watcher + DarkLua + Rojo)
+  serve         Dev server (file watcher + DarkLua + sync backend)
   fix-requires  One-shot require path fix
   install       Install tools (rokit + Wally packages)
   lint          Selene + StyLua --check
@@ -275,6 +276,30 @@ local function runInit()
 
 	initConfig.ALIASES = aliases
 
+	-- Prompt for sync backend
+	local syncOptions = { "Rojo (default)", "Azul (rojo-compat)", "Azul (native)", "Skip" }
+	local syncSelected = stdio.prompt("select", "Select sync backend", syncOptions)
+
+	if syncSelected == 1 then
+		-- Rojo default, no changes needed
+	elseif syncSelected == 2 then
+		initConfig.SYNC = {
+			BACKEND = "azul",
+			AZUL_MODE = "rojo-compat",
+			AZUL_PORT = 8080,
+			AZUL_SYNC_DIR = "",
+		}
+		utils.printDim("  Sync backend: Azul (rojo-compat)")
+	elseif syncSelected == 3 then
+		initConfig.SYNC = {
+			BACKEND = "azul",
+			AZUL_MODE = "native",
+			AZUL_PORT = 8080,
+			AZUL_SYNC_DIR = "",
+		}
+		utils.printDim("  Sync backend: Azul (native)")
+	end
+
 	-- Create directories derived from aliases
 	local dirsToCreate = config.deriveRequiredDirs(aliases, initConfig.SRC_PATH)
 	for _, dir in dirsToCreate do
@@ -358,9 +383,10 @@ end
 ------------------------// Interactive Menu //--------------------------
 
 local function runInteractiveMenu()
+	local serveLabel = "Serve (" .. sync.getBackendLabel(CONFIG) .. ")"
 	local options = {
 		{
-			label = "Serve",
+			label = serveLabel,
 			execute = function()
 				serve.start(CONFIG)
 			end,

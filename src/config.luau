@@ -1,8 +1,14 @@
-
 local fs = require("@lune/fs")
 local serde = require("@lune/serde")
 
 local configGenerator = require("./config-generator")
+
+export type SyncConfig = {
+	BACKEND: "rojo" | "azul",
+	AZUL_MODE: "rojo-compat" | "native",
+	AZUL_PORT: number,
+	AZUL_SYNC_DIR: string,
+}
 
 export type EzpmConfig = {
 	SRC_PATH: string,
@@ -16,6 +22,7 @@ export type EzpmConfig = {
 	PROJECT_NAME: string?,
 	VERSION: string?,
 	ALIASES: { [string]: string },
+	SYNC: SyncConfig,
 }
 
 local function deriveIgnoreList(aliases: { [string]: string }, srcPath: string): { string }
@@ -59,6 +66,15 @@ local function deriveRequiredDirs(aliases: { [string]: string }, srcPath: string
 	return dirs
 end
 
+local function getDefaultSyncConfig(): SyncConfig
+	return {
+		BACKEND = "rojo",
+		AZUL_MODE = "rojo-compat",
+		AZUL_PORT = 8080,
+		AZUL_SYNC_DIR = "",
+	}
+end
+
 local function getDefaultConfig(): EzpmConfig
 	return {
 		SRC_PATH = "src",
@@ -70,6 +86,7 @@ local function getDefaultConfig(): EzpmConfig
 		REQUIRED_DIRS = {},
 		REQUIRED_FILES = { "rokit.toml" },
 		ALIASES = {},
+		SYNC = getDefaultSyncConfig(),
 	}
 end
 
@@ -104,7 +121,7 @@ local function loadConfig(): EzpmConfig
 					if tomlConfig.project.name then
 						config.PROJECT_NAME = tomlConfig.project.name
 					end
-					
+
 					if tomlConfig.project.version then
 						config.VERSION = tomlConfig.project.version
 					end
@@ -112,6 +129,31 @@ local function loadConfig(): EzpmConfig
 
 				if tomlConfig.aliases then
 					config.ALIASES = tomlConfig.aliases
+				end
+
+				if tomlConfig.sync then
+					if tomlConfig.sync.backend then
+						local backend = tomlConfig.sync.backend
+						if backend == "rojo" or backend == "azul" then
+							config.SYNC.BACKEND = backend
+						else
+							warn("Unknown sync backend '" .. backend .. "', using 'rojo'")
+						end
+					end
+					if tomlConfig.sync.azul_mode then
+						local mode = tomlConfig.sync.azul_mode
+						if mode == "rojo-compat" or mode == "native" then
+							config.SYNC.AZUL_MODE = mode
+						else
+							warn("Unknown azul_mode '" .. mode .. "', using 'rojo-compat'")
+						end
+					end
+					if tomlConfig.sync.azul_port then
+						config.SYNC.AZUL_PORT = tomlConfig.sync.azul_port
+					end
+					if tomlConfig.sync.azul_sync_dir then
+						config.SYNC.AZUL_SYNC_DIR = tomlConfig.sync.azul_sync_dir
+					end
 				end
 			else
 				warn("Failed to parse ezpm.toml, using defaults")
@@ -134,7 +176,7 @@ local function loadConfig(): EzpmConfig
 end
 
 local function generateTomlString(config: EzpmConfig): string
-	local tomlData = {
+	local tomlData: { [string]: any } = {
 		project = {
 			name = config.PROJECT_NAME or "my-roblox-game",
 			version = config.VERSION,
@@ -149,9 +191,25 @@ local function generateTomlString(config: EzpmConfig): string
 			file_changes = config.DISPLAY_FILE_CHANGES,
 			docs_enabled = config.DOCS_ENABLED,
 		},
-		
+
 		aliases = config.ALIASES,
 	}
+
+	-- Only write [sync] section when backend is not the default "rojo"
+	if config.SYNC and config.SYNC.BACKEND ~= "rojo" then
+		local syncData: { [string]: any } = {
+			backend = config.SYNC.BACKEND,
+		}
+		
+		if config.SYNC.BACKEND == "azul" then
+			syncData.azul_mode = config.SYNC.AZUL_MODE
+			syncData.azul_port = config.SYNC.AZUL_PORT
+			if config.SYNC.AZUL_MODE == "native" and config.SYNC.AZUL_SYNC_DIR ~= "" then
+				syncData.azul_sync_dir = config.SYNC.AZUL_SYNC_DIR
+			end
+		end
+		tomlData.sync = syncData
+	end
 
 	return serde.encode("toml", tomlData)
 end

@@ -1,38 +1,43 @@
 local fs = require("@lune/fs")
-local process = require("@lune/process")
 local stdio = require("@lune/stdio")
 local task = require("@lune/task")
 
 local watcher = require("./watcher")
 local darklua = require("./darklua")
 local requireFixer = require("./require-fixer")
-local toolchain = require("./toolchain")
 local utils = require("./utils")
 local configModule = require("./config")
+local sync = require("./sync")
 
 type EzpmConfig = configModule.EzpmConfig
 
 local function start(cfg: EzpmConfig)
-	print("Setting up Rojo serve...")
+	local backendLabel = sync.getBackendLabel(cfg)
+	local isAzulNative = cfg.SYNC.BACKEND == "azul" and cfg.SYNC.AZUL_MODE == "native"
 
-	if not fs.isFile("default.project.json") then
-		warn("Missing default.project.json — run 'ezpm init' to generate it, or create one manually.")
-		return
+	print("Setting up " .. backendLabel .. " serve...")
+
+	-- Azul native mode doesn't need default.project.json or build.project.json
+	if not isAzulNative then
+		if not fs.isFile("default.project.json") then
+			warn("Missing default.project.json — run 'ezpm init' to generate it, or create one manually.")
+			return
+		end
+
+		print("Updating build.project.json...")
+		local success, err = pcall(function()
+			utils.modifyFileContents("default.project.json", function(contents)
+				return string.gsub(contents, cfg.SRC_PATH .. "/", cfg.DARKLUA_BUILD_PATH .. "/")
+			end, "build.project.json")
+		end)
+
+		if not success then
+			warn("Failed to update build.project.json:", err)
+			return
+		end
+
+		task.wait(0.5)
 	end
-
-	print("Updating build.project.json...")
-	local success, err = pcall(function()
-		utils.modifyFileContents("default.project.json", function(contents)
-			return string.gsub(contents, cfg.SRC_PATH .. "/", cfg.DARKLUA_BUILD_PATH .. "/")
-		end, "build.project.json")
-	end)
-
-	if not success then
-		warn("Failed to update build.project.json:", err)
-		return
-	end
-
-	task.wait(0.5)
 
 	if fs.isDir(cfg.DARKLUA_BUILD_PATH) then
 		print("Removing old DarkLua build...")
@@ -46,7 +51,7 @@ local function start(cfg: EzpmConfig)
 	end
 
 	print("Generating source map...")
-	local sourceMapResult = toolchain.generateSourceMap()
+	local sourceMapResult = sync.generateSourceMap(cfg)
 	if not sourceMapResult.ok then
 		warn("Failed to generate source map:", sourceMapResult.stderr)
 		return
@@ -71,6 +76,13 @@ local function start(cfg: EzpmConfig)
 	print("DarkLua build successful! Starting File-Watcher...")
 	task.wait(0.5)
 
+	local function regenerateSourceMap()
+		local smSuccess, smErr = pcall(sync.generateSourceMap, cfg)
+		if not smSuccess then
+			warn("Error generating source map:", smErr)
+		end
+	end
+
 	local startWatcher, stopWatcher = watcher.watchDirectory({
 		path = cfg.SRC_PATH,
 		pattern = "%.luau?$",
@@ -83,10 +95,7 @@ local function start(cfg: EzpmConfig)
 				warn("Error fixing paths after file change:", err1)
 			end
 
-			local success2, err2 = pcall(toolchain.generateSourceMap)
-			if not success2 then
-				warn("Error generating source map after file change:", err2)
-			end
+			regenerateSourceMap()
 
 			local dirPath = utils.removeLastPathIdx(fullPath)
 			local success3, err3 = pcall(darklua.formatPathAndExecute, dirPath, cfg.SRC_PATH, cfg.DARKLUA_BUILD_PATH)
@@ -103,10 +112,7 @@ local function start(cfg: EzpmConfig)
 				warn("Error fixing paths after file creation:", err1)
 			end
 
-			local success2, err2 = pcall(toolchain.generateSourceMap)
-			if not success2 then
-				warn("Error generating source map after file creation:", err2)
-			end
+			regenerateSourceMap()
 
 			local success3, err3 =
 				pcall(darklua.formatPathAndExecute, fullPath, cfg.SRC_PATH, cfg.DARKLUA_BUILD_PATH, true)
@@ -123,10 +129,7 @@ local function start(cfg: EzpmConfig)
 				warn("Error fixing paths after file removal:", err1)
 			end
 
-			local success2, err2 = pcall(toolchain.generateSourceMap)
-			if not success2 then
-				warn("Error generating source map after file removal:", err2)
-			end
+			regenerateSourceMap()
 
 			local darkLuaPath = darklua.formatPathToDarkLua(fullPath, cfg.SRC_PATH, cfg.DARKLUA_BUILD_PATH)
 			if fs.isFile(darkLuaPath) then
@@ -151,10 +154,7 @@ local function start(cfg: EzpmConfig)
 				warn("Error fixing paths after directory creation:", err1)
 			end
 
-			local success2, err2 = pcall(toolchain.generateSourceMap)
-			if not success2 then
-				warn("Error generating source map after directory creation:", err2)
-			end
+			regenerateSourceMap()
 
 			local success3, err3 = pcall(darklua.formatPathAndExecute, fullPath, cfg.SRC_PATH, cfg.DARKLUA_BUILD_PATH)
 			if not success3 then
@@ -170,10 +170,7 @@ local function start(cfg: EzpmConfig)
 				warn("Error fixing paths after directory removal:", err1)
 			end
 
-			local success2, err2 = pcall(toolchain.generateSourceMap)
-			if not success2 then
-				warn("Error generating source map after directory removal:", err2)
-			end
+			regenerateSourceMap()
 
 			local darkLuaPath = darklua.formatPathToDarkLua(fullPath, cfg.SRC_PATH, cfg.DARKLUA_BUILD_PATH)
 			if fs.isDir(darkLuaPath) then
@@ -188,17 +185,10 @@ local function start(cfg: EzpmConfig)
 		checkInterval = 1,
 	})
 
-	print("Serving Rojo and watching files...")
+	print("Serving " .. backendLabel .. " and watching files...")
 
-	local rojoChild = nil
-	local rojoSuccess, rojoErr = pcall(function()
-		local packagePath = toolchain.getPackagePath()
-		rojoChild = process.create(packagePath .. "rojo", { "serve", "build.project.json" })
-		print("Rojo serve started successfully")
-	end)
-
-	if not rojoSuccess then
-		warn("Failed to start Rojo serve:", rojoErr)
+	local syncProcess = sync.startSyncDaemon(cfg)
+	if not syncProcess then
 		return
 	end
 
@@ -213,81 +203,12 @@ local function start(cfg: EzpmConfig)
 		end
 	end)
 
-	local isMacOS = process.os == "macos"
 	print()
 	stdio.prompt("text", "Press Enter to stop serving and watching...")
 	stopWatcher()
 	task.cancel(watcherRoutine)
 
-	if rojoChild then
-		local killSuccess, killErr = pcall(function()
-			rojoChild:kill()
-		end)
-
-		if killSuccess then
-			task.wait(1.0)
-			if not isMacOS then
-				return
-			end
-
-			-- Check if rojo is still running on the port
-			local checkResult = utils.executeWithOutput("lsof", "-i", ":34872")
-			local isStillRunning = checkResult.ok and checkResult.stdout:find("rojo")
-
-			if not isStillRunning then
-				print("Rojo process terminated successfully")
-			else
-				-- Extract PID from lsof output and force kill it
-				local lines = string.split(checkResult.stdout, "\n")
-				for _, line in ipairs(lines) do
-					local pid = line:match("rojo%s+(%d+)")
-					if pid then
-						print("Force killing Rojo PID:", pid)
-						local forceKillResult = utils.executeWithOutput("kill", "-9", pid)
-						if forceKillResult.ok then
-							task.wait(0.5)
-							local verifyResult = utils.executeWithOutput("lsof", "-i", ":34872")
-							if not (verifyResult.ok and verifyResult.stdout:find("rojo")) then
-								print("Rojo process successfully terminated")
-							else
-								warn("Failed to terminate Rojo process - may need manual intervention")
-							end
-						else
-							warn("Failed to force kill Rojo process:", forceKillResult.stderr)
-						end
-						break
-					end
-				end
-			end
-		else
-			warn("Failed to terminate Rojo process via Lune:", killErr)
-			print("Attempting direct system cleanup...")
-
-			if not isMacOS then
-				return
-			end
-
-			-- Fallback: Find and kill rojo processes directly
-			local checkResult = utils.executeWithOutput("lsof", "-i", ":34872")
-			if checkResult.ok and checkResult.stdout:find("rojo") then
-				local lines = string.split(checkResult.stdout, "\n")
-				for _, line in ipairs(lines) do
-					local pid = line:match("rojo%s+(%d+)")
-					if pid then
-						print("Found Rojo PID:", pid, "- terminating...")
-						local killResult = utils.executeWithOutput("kill", "-9", pid)
-						if killResult.ok then
-							print("Rojo process terminated successfully")
-						else
-							warn("Failed to kill Rojo PID", pid .. ":", killResult.stderr)
-						end
-					end
-				end
-			else
-				print("No Rojo processes found on port 34872")
-			end
-		end
-	end
+	sync.stopSyncDaemon(syncProcess, cfg)
 
 	print("Serve stopped.")
 end
