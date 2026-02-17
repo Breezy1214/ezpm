@@ -25,6 +25,7 @@ To update to the latest version:
 
 ```bash
 rokit update ezpm
+rokit install
 ```
 
 ### Manual installation
