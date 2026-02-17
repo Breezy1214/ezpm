@@ -39,7 +39,7 @@ Subcommands:
   lint          Selene + StyLua --check
   format        StyLua format
   init          Scaffold project + generate ezpm.toml
-  alias         Manage path aliases (add/remove/list)
+  alias         Manage path aliases (add/remove/list/sync)
   docs          Moonwave documentation server
   help          Print this help message
 
@@ -157,8 +157,29 @@ local function aliasList()
 	print("")
 end
 
+local function aliasSync()
+	-- Reload config from ezpm.toml to pick up manually edited aliases
+	CONFIG = config.loadConfig()
+
+	if next(CONFIG.ALIASES) == nil then
+		print("No aliases found in ezpm.toml.")
+		return
+	end
+
+	configGenerator.regenerateConfigFiles(CONFIG.ALIASES)
+	darklua.clearCache()
+
+	local count = 0
+	for _ in CONFIG.ALIASES do
+		count += 1
+	end
+
+	utils.printSuccess("Synced " .. tostring(count) .. " aliases from ezpm.toml")
+	utils.printDim("  Regenerated .darklua.json and .luaurc")
+end
+
 local function aliasMenu()
-	local options = { "Add Alias", "Remove Alias", "List Aliases", "Back" }
+	local options = { "Add Alias", "Remove Alias", "List Aliases", "Sync from ezpm.toml", "Back" }
 
 	while true do
 		utils.printHeader("Alias Management")
@@ -173,6 +194,8 @@ local function aliasMenu()
 			aliasRemove()
 		elseif selected == 3 then
 			aliasList()
+		elseif selected == 4 then
+			aliasSync()
 		end
 	end
 end
@@ -454,6 +477,8 @@ local COMMANDS = {
 			aliasRemove()
 		elseif subAction == "list" then
 			aliasList()
+		elseif subAction == "sync" then
+			aliasSync()
 		else
 			aliasMenu()
 		end
