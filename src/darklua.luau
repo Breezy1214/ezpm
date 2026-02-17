@@ -24,9 +24,25 @@ local function loadShortcuts(configAliases: { [string]: string }?): { [string]: 
 		return shortcuts
 	end
 
-	-- Fall back to reading .darklua.json
+	-- Fall back to reading .luaurc (luau require mode) or .darklua.json (legacy path mode)
+	if fs.isFile(".luaurc") then
+		local success, luaurcContent = pcall(fs.readFile, ".luaurc")
+		if success then
+			local parseSuccess, luaurc = pcall(serde.decode, "json", luaurcContent)
+			if parseSuccess and luaurc and luaurc.aliases then
+				for name, path in luaurc.aliases do
+					if name ~= "lune" then
+						shortcuts["@" .. name .. "/"] = path
+					end
+				end
+				SHORTCUTS = shortcuts
+				return shortcuts
+			end
+		end
+	end
+
 	if not fs.isFile(".darklua.json") then
-		warn("No .darklua.json file found. Please ensure you have run DarkLua to generate it.")
+		warn("No .luaurc or .darklua.json file found. Please ensure you have run ezpm init.")
 		SHORTCUTS = shortcuts
 		return shortcuts
 	end
@@ -124,7 +140,6 @@ local function process(
 	printResults: boolean?,
 	dontRetry: boolean?
 ): utils.ExecResult
-
 	-- Validate input path exists
 	if not fs.isDir(srcPath) then
 		local errMsg = `Input path does not exist: {srcPath}`
@@ -139,7 +154,7 @@ local function process(
 		if results.stderr ~= "" then
 			warn("DarkLua Error:", results.stderr)
 		end
-		
+
 		if results.stdout ~= "" then
 			warn("DarkLua Output:", results.stdout)
 		end

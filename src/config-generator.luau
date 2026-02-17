@@ -11,18 +11,12 @@ local DARKLUA_OPTIMIZATION_RULES = {
 }
 
 local function generateDarkluaJson(aliases: { [string]: string }): string
-	local sources = {}
-	for name, path in aliases do
-		sources["@" .. name] = path
-	end
-
 	local darkluaConfig = {
 		process = {
 			{
 				rule = "convert_require",
 				current = {
-					name = "path",
-					sources = sources,
+					name = "luau",
 				},
 				target = {
 					name = "roblox",
@@ -93,6 +87,26 @@ end
 local function importAliasesFromDarklua(): { [string]: string }
 	local aliases = {}
 
+	-- Try .luaurc first (used by luau require mode)
+	if fs.isFile(".luaurc") then
+		local success, contents = pcall(fs.readFile, ".luaurc")
+		if success then
+			local parseSuccess, luaurc = pcall(serde.decode, "json", contents)
+			if parseSuccess and luaurc and luaurc.aliases then
+				for name, path in luaurc.aliases do
+					-- Skip the lune typedef alias — it's not a user alias
+					if name ~= "lune" then
+						aliases[name] = path
+					end
+				end
+				if next(aliases) ~= nil then
+					return aliases
+				end
+			end
+		end
+	end
+
+	-- Fall back to .darklua.json sources (legacy path mode)
 	if not fs.isFile(".darklua.json") then
 		return aliases
 	end

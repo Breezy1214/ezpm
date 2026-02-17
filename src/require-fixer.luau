@@ -92,6 +92,17 @@ local function fixRequirePaths(rootDir: string, displayFileChanges: boolean, ign
 					continue
 				end
 
+				-- Skip built-in Roblox require aliases (@self, @game)
+				local lowerPath = requiredPath:lower()
+				if
+					lowerPath:match("^@self/")
+					or lowerPath:match("^@self$")
+					or lowerPath:match("^@game/")
+					or lowerPath:match("^@game$")
+				then
+					continue
+				end
+
 				-- Handle direct src/ paths that need to be converted to aliases
 				local newRequirePath = requiredPath
 				local foundMatch = false
@@ -196,7 +207,7 @@ local function fixRequirePaths(rootDir: string, displayFileChanges: boolean, ign
 							convertedRequirePath:gsub("/init", ""):gsub("%.lua$", ""):gsub("%.luau$", "")
 
 						if requiredPath == convertedRequirePath then
-							continue 
+							continue
 						end
 
 						content = content:gsub(
@@ -234,7 +245,7 @@ local function fixRequirePaths(rootDir: string, displayFileChanges: boolean, ign
 
 			return didMakeChange
 		end
-		
+
 		return false
 	end
 
