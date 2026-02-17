@@ -73,6 +73,7 @@ ezpm init             Scaffold project and generate ezpm.toml
 ezpm alias add        Add a path alias
 ezpm alias remove     Remove a path alias
 ezpm alias list       List configured aliases
+ezpm alias sync       Reload aliases from ezpm.toml and regenerate configs
 ezpm docs             Moonwave documentation server
 ezpm help             Print usage
 ```
@@ -118,7 +119,10 @@ Aliases are the core mechanism for clean require paths. Define them under `[alia
 ezpm alias add       # interactive prompt for name and path
 ezpm alias remove    # select from existing aliases
 ezpm alias list      # display current aliases
+ezpm alias sync      # reload aliases from ezpm.toml and regenerate .darklua.json / .luaurc
 ```
+
+Use `alias sync` after manually editing aliases in `ezpm.toml` to regenerate the config files without re-running `init`.
 
 ### Toolchain
 
