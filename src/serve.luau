@@ -192,8 +192,7 @@ local function start(cfg: EzpmConfig)
 
 	local rojoChild = nil
 	local rojoSuccess, rojoErr = pcall(function()
-		local packagePath = toolchain.getPackagePath()
-		rojoChild = process.create(packagePath .. "rojo", { "serve", "build.project.json" })
+		rojoChild = process.create("rojo", { "serve", "build.project.json" }, { shell = true })
 		print("Rojo serve started successfully")
 	end)
 
