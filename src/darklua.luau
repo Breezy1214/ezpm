@@ -141,7 +141,7 @@ local function process(
 	dontRetry: boolean?
 ): utils.ExecResult
 	-- Validate input path exists
-	if not fs.isDir(srcPath) then
+	if not fs.isDir(srcPath) and not fs.isFile(srcPath) then
 		local errMsg = `Input path does not exist: {srcPath}`
 		warn(errMsg)
 		return { ok = false, code = 1, stdout = "", stderr = errMsg }
