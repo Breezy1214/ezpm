@@ -12,6 +12,37 @@ local configModule = require("./config")
 
 type EzpmConfig = configModule.EzpmConfig
 
+local function copyMetaFile(fullPath: string, srcPath: string, buildPath: string)
+	local destPath = string.gsub(fullPath, srcPath, buildPath, 1)
+	local content = fs.readFile(fullPath)
+	fs.writeFile(destPath, content)
+end
+
+local function copyAllMetaFiles(srcPath: string, buildPath: string)
+	local function scanAndCopy(dir: string)
+		local items = fs.readDir(dir)
+		for _, item in ipairs(items) do
+			local itemPath = dir .. "/" .. item
+			if fs.isDir(itemPath) then
+				scanAndCopy(itemPath)
+			elseif item == "init.meta.json" then
+				local ok, err = pcall(copyMetaFile, itemPath, srcPath, buildPath)
+				if not ok then
+					warn("Failed to copy meta file:", itemPath, err)
+				end
+			end
+		end
+	end
+	scanAndCopy(srcPath)
+end
+
+local function removeMetaFile(fullPath: string, srcPath: string, buildPath: string)
+	local destPath = string.gsub(fullPath, srcPath, buildPath, 1)
+	if fs.isFile(destPath) then
+		fs.removeFile(destPath)
+	end
+end
+
 local function start(cfg: EzpmConfig)
 	print("Setting up Rojo serve...")
 
@@ -68,14 +99,27 @@ local function start(cfg: EzpmConfig)
 		warn("DarkLua build failed! Please fix the errors above and try again.")
 		return
 	end
+
+	copyAllMetaFiles(cfg.SRC_PATH, cfg.DARKLUA_BUILD_PATH)
 	print("DarkLua build successful! Starting File-Watcher...")
 	task.wait(0.5)
 
 	local startWatcher, stopWatcher = watcher.watchDirectory({
 		path = cfg.SRC_PATH,
-		pattern = "%.luau?$",
+		pattern = function(name: string): boolean
+			return name:match("%.luau?$") ~= nil or name == "init.meta.json"
+		end,
 
 		onFileChanged = function(fullPath: string, _metadata)
+			if fullPath:match("init%.meta%.json$") then
+				utils.printChanges(cfg.DISPLAY_FILE_CHANGES, "Meta File Changed:", fullPath)
+				local ok, err = pcall(copyMetaFile, fullPath, cfg.SRC_PATH, cfg.DARKLUA_BUILD_PATH)
+				if not ok then
+					warn("Error copying meta file after change:", err)
+				end
+				return
+			end
+
 			utils.printChanges(cfg.DISPLAY_FILE_CHANGES, "File Changed:", fullPath)
 			local success1, err1 =
 				pcall(requireFixer.fixRequirePaths, cfg.SRC_PATH, cfg.DISPLAY_FILE_CHANGES, cfg.IGNORE_LIST)
@@ -96,6 +140,15 @@ local function start(cfg: EzpmConfig)
 		end,
 
 		onFileCreated = function(fullPath: string, _metadata)
+			if fullPath:match("init%.meta%.json$") then
+				utils.printChanges(cfg.DISPLAY_FILE_CHANGES, "Meta File Created:", fullPath)
+				local ok, err = pcall(copyMetaFile, fullPath, cfg.SRC_PATH, cfg.DARKLUA_BUILD_PATH)
+				if not ok then
+					warn("Error copying meta file after creation:", err)
+				end
+				return
+			end
+
 			utils.printChanges(cfg.DISPLAY_FILE_CHANGES, "File Created:", fullPath)
 			local success1, err1 =
 				pcall(requireFixer.fixRequirePaths, cfg.SRC_PATH, cfg.DISPLAY_FILE_CHANGES, cfg.IGNORE_LIST)
@@ -116,6 +169,15 @@ local function start(cfg: EzpmConfig)
 		end,
 
 		onFileRemoved = function(fullPath: string)
+			if fullPath:match("init%.meta%.json$") then
+				utils.printChanges(cfg.DISPLAY_FILE_CHANGES, "Meta File Removed:", fullPath)
+				local ok, err = pcall(removeMetaFile, fullPath, cfg.SRC_PATH, cfg.DARKLUA_BUILD_PATH)
+				if not ok then
+					warn("Error removing meta file:", err)
+				end
+				return
+			end
+
 			utils.printChanges(cfg.DISPLAY_FILE_CHANGES, "File Removed:", fullPath)
 			local success1, err1 =
 				pcall(requireFixer.fixRequirePaths, cfg.SRC_PATH, cfg.DISPLAY_FILE_CHANGES, cfg.IGNORE_LIST)
@@ -293,4 +355,7 @@ end
 
 return {
 	start = start,
+	copyMetaFile = copyMetaFile,
+	copyAllMetaFiles = copyAllMetaFiles,
+	removeMetaFile = removeMetaFile,
 }
