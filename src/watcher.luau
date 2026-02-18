@@ -3,7 +3,7 @@ local task = require("@lune/task")
 
 export type FileWatchOptions = {
 	path: string?,
-	pattern: string?,
+	pattern: (string | (string) -> boolean)?,
 	onFileCreated: (fullPath: string, metadata: any) -> (),
 	onFileChanged: (fullPath: string, metadata: any) -> (),
 	onFileRemoved: (fullPath: string) -> (),
@@ -12,9 +12,17 @@ export type FileWatchOptions = {
 	checkInterval: number?,
 }
 
-local function scanDirectory(dir: string, pattern: string)
+local function scanDirectory(dir: string, pattern: string | (string) -> boolean)
 	local files = {}
 	local directories = {}
+
+	local function matchesPattern(entry: string): boolean
+		if type(pattern) == "function" then
+			return pattern(entry) == true
+		else
+			return entry:match(pattern) ~= nil
+		end
+	end
 
 	local function scanRecursive(path)
 		local success, entries = pcall(fs.readDir, path)
@@ -42,7 +50,7 @@ local function scanDirectory(dir: string, pattern: string)
 			if isDirectory then
 				directories[fullPath] = true
 				scanRecursive(fullPath)
-			elseif isFile and entry:match(pattern) then
+			elseif isFile and matchesPattern(entry) then
 				local metaSuccess, metadata = pcall(fs.metadata, fullPath)
 				if metaSuccess then
 					files[fullPath] = metadata
