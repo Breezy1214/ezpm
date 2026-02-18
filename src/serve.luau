@@ -12,6 +12,37 @@ local configModule = require("./config")
 
 type EzpmConfig = configModule.EzpmConfig
 
+local function copyMetaFile(fullPath: string, srcPath: string, buildPath: string)
+	local destPath = string.gsub(fullPath, srcPath, buildPath, 1)
+	local content = fs.readFile(fullPath)
+	fs.writeFile(destPath, content)
+end
+
+local function copyAllMetaFiles(srcPath: string, buildPath: string)
+	local function scanAndCopy(dir: string)
+		local items = fs.readDir(dir)
+		for _, item in ipairs(items) do
+			local itemPath = dir .. "/" .. item
+			if fs.isDir(itemPath) then
+				scanAndCopy(itemPath)
+			elseif item == "init.meta.json" then
+				local ok, err = pcall(copyMetaFile, itemPath, srcPath, buildPath)
+				if not ok then
+					warn("Failed to copy meta file:", itemPath, err)
+				end
+			end
+		end
+	end
+	scanAndCopy(srcPath)
+end
+
+local function removeMetaFile(fullPath: string, srcPath: string, buildPath: string)
+	local destPath = string.gsub(fullPath, srcPath, buildPath, 1)
+	if fs.isFile(destPath) then
+		fs.removeFile(destPath)
+	end
+end
+
 local function start(cfg: EzpmConfig)
 	print("Setting up Rojo serve...")
 
@@ -68,37 +99,56 @@ local function start(cfg: EzpmConfig)
 		warn("DarkLua build failed! Please fix the errors above and try again.")
 		return
 	end
+
+	copyAllMetaFiles(cfg.SRC_PATH, cfg.DARKLUA_BUILD_PATH)
 	print("DarkLua build successful! Starting File-Watcher...")
 	task.wait(0.5)
 
 	local startWatcher, stopWatcher = watcher.watchDirectory({
 		path = cfg.SRC_PATH,
-		pattern = "%.luau?$",
+		pattern = function(name: string): boolean
+			return name:match("%.luau?$") ~= nil or name == "init.meta.json"
+		end,
 
 		onFileChanged = function(fullPath: string, _metadata)
+			if fullPath:match("init%.meta%.json$") then
+				utils.printChanges(cfg.DISPLAY_FILE_CHANGES, "Meta File Changed:", fullPath)
+				local ok, err = pcall(copyMetaFile, fullPath, cfg.SRC_PATH, cfg.DARKLUA_BUILD_PATH)
+				if not ok then
+					warn("Error copying meta file after change:", err)
+				end
+				return
+			end
+
 			utils.printChanges(cfg.DISPLAY_FILE_CHANGES, "File Changed:", fullPath)
+			-- Only fix requires in the changed file; sourcemap is unchanged
 			local success1, err1 =
-				pcall(requireFixer.fixRequirePaths, cfg.SRC_PATH, cfg.DISPLAY_FILE_CHANGES, cfg.IGNORE_LIST)
+				pcall(requireFixer.fixSingleFile, fullPath, cfg.SRC_PATH, cfg.DISPLAY_FILE_CHANGES, cfg.IGNORE_LIST)
 			if not success1 then
 				warn("Error fixing paths after file change:", err1)
 			end
 
-			local success2, err2 = pcall(toolchain.generateSourceMap)
-			if not success2 then
-				warn("Error generating source map after file change:", err2)
-			end
-
 			local dirPath = utils.removeLastPathIdx(fullPath)
-			local success3, err3 = pcall(darklua.formatPathAndExecute, dirPath, cfg.SRC_PATH, cfg.DARKLUA_BUILD_PATH)
-			if not success3 then
-				warn("Error processing DarkLua after file change:", err3)
+			local success2, err2 = pcall(darklua.formatPathAndExecute, dirPath, cfg.SRC_PATH, cfg.DARKLUA_BUILD_PATH)
+			if not success2 then
+				warn("Error processing DarkLua after file change:", err2)
 			end
 		end,
 
 		onFileCreated = function(fullPath: string, _metadata)
+			if fullPath:match("init%.meta%.json$") then
+				utils.printChanges(cfg.DISPLAY_FILE_CHANGES, "Meta File Created:", fullPath)
+				local ok, err = pcall(copyMetaFile, fullPath, cfg.SRC_PATH, cfg.DARKLUA_BUILD_PATH)
+				if not ok then
+					warn("Error copying meta file after creation:", err)
+				end
+				return
+			end
+
 			utils.printChanges(cfg.DISPLAY_FILE_CHANGES, "File Created:", fullPath)
+			-- Only fix requires in the new file
 			local success1, err1 =
-				pcall(requireFixer.fixRequirePaths, cfg.SRC_PATH, cfg.DISPLAY_FILE_CHANGES, cfg.IGNORE_LIST)
+				pcall(requireFixer.fixSingleFile, fullPath, cfg.SRC_PATH, cfg.DISPLAY_FILE_CHANGES, cfg.IGNORE_LIST)
 			if not success1 then
 				warn("Error fixing paths after file creation:", err1)
 			end
@@ -116,29 +166,32 @@ local function start(cfg: EzpmConfig)
 		end,
 
 		onFileRemoved = function(fullPath: string)
-			utils.printChanges(cfg.DISPLAY_FILE_CHANGES, "File Removed:", fullPath)
-			local success1, err1 =
-				pcall(requireFixer.fixRequirePaths, cfg.SRC_PATH, cfg.DISPLAY_FILE_CHANGES, cfg.IGNORE_LIST)
-			if not success1 then
-				warn("Error fixing paths after file removal:", err1)
+			if fullPath:match("init%.meta%.json$") then
+				utils.printChanges(cfg.DISPLAY_FILE_CHANGES, "Meta File Removed:", fullPath)
+				local ok, err = pcall(removeMetaFile, fullPath, cfg.SRC_PATH, cfg.DARKLUA_BUILD_PATH)
+				if not ok then
+					warn("Error removing meta file:", err)
+				end
+				return
 			end
 
-			local success2, err2 = pcall(toolchain.generateSourceMap)
-			if not success2 then
-				warn("Error generating source map after file removal:", err2)
+			utils.printChanges(cfg.DISPLAY_FILE_CHANGES, "File Removed:", fullPath)
+			local success1, err1 = pcall(toolchain.generateSourceMap)
+			if not success1 then
+				warn("Error generating source map after file removal:", err1)
 			end
 
 			local darkLuaPath = darklua.formatPathToDarkLua(fullPath, cfg.SRC_PATH, cfg.DARKLUA_BUILD_PATH)
 			if fs.isFile(darkLuaPath) then
-				local success3, err3 = pcall(fs.removeFile, darkLuaPath)
-				if not success3 then
-					warn("Error removing DarkLua file:", err3)
+				local success2, err2 = pcall(fs.removeFile, darkLuaPath)
+				if not success2 then
+					warn("Error removing DarkLua file:", err2)
 				end
 			end
 			if fs.isDir(darkLuaPath) then
-				local success4, err4 = pcall(fs.removeDir, darkLuaPath)
-				if not success4 then
-					warn("Error removing DarkLua directory:", err4)
+				local success3, err3 = pcall(fs.removeDir, darkLuaPath)
+				if not success3 then
+					warn("Error removing DarkLua directory:", err3)
 				end
 			end
 		end,
@@ -164,22 +217,17 @@ local function start(cfg: EzpmConfig)
 
 		onDirectoryRemoved = function(fullPath: string)
 			utils.printChanges(cfg.DISPLAY_FILE_CHANGES, "Directory Removed:", fullPath)
-			local success1, err1 =
-				pcall(requireFixer.fixRequirePaths, cfg.SRC_PATH, cfg.DISPLAY_FILE_CHANGES, cfg.IGNORE_LIST)
+			-- No require fixing needed — files in the removed directory are gone
+			local success1, err1 = pcall(toolchain.generateSourceMap)
 			if not success1 then
-				warn("Error fixing paths after directory removal:", err1)
-			end
-
-			local success2, err2 = pcall(toolchain.generateSourceMap)
-			if not success2 then
-				warn("Error generating source map after directory removal:", err2)
+				warn("Error generating source map after directory removal:", err1)
 			end
 
 			local darkLuaPath = darklua.formatPathToDarkLua(fullPath, cfg.SRC_PATH, cfg.DARKLUA_BUILD_PATH)
 			if fs.isDir(darkLuaPath) then
-				local success3, err3 = pcall(fs.removeDir, darkLuaPath)
-				if not success3 then
-					warn("Error removing DarkLua directory:", err3)
+				local success2, err2 = pcall(fs.removeDir, darkLuaPath)
+				if not success2 then
+					warn("Error removing DarkLua directory:", err2)
 				end
 			else
 				warn("Directory not found:", darkLuaPath)
@@ -293,4 +341,7 @@ end
 
 return {
 	start = start,
+	copyMetaFile = copyMetaFile,
+	copyAllMetaFiles = copyAllMetaFiles,
+	removeMetaFile = removeMetaFile,
 }
