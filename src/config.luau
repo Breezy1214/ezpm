@@ -9,6 +9,7 @@ export type EzpmConfig = {
 	DARKLUA_BUILD_PATH: string,
 	DOCS_ENABLED: boolean,
 	DISPLAY_FILE_CHANGES: boolean,
+	LOGS_ENABLED: boolean,
 	HELP_ARGS: { string },
 	IGNORE_LIST: { string },
 	REQUIRED_DIRS: { string },
@@ -64,6 +65,7 @@ local function getDefaultConfig(): EzpmConfig
 		DARKLUA_BUILD_PATH = "darklua_build",
 		DOCS_ENABLED = false,
 		DISPLAY_FILE_CHANGES = true,
+		LOGS_ENABLED = true,
 		HELP_ARGS = { "-h", "--help", "help" },
 		IGNORE_LIST = {},
 		REQUIRED_DIRS = {},
@@ -96,6 +98,10 @@ local function loadConfig(): EzpmConfig
 
 					if tomlConfig.display.docs_enabled ~= nil then
 						config.DOCS_ENABLED = tomlConfig.display.docs_enabled
+					end
+
+					if tomlConfig.display.logs_enabled ~= nil then
+						config.LOGS_ENABLED = tomlConfig.display.logs_enabled
 					end
 				end
 
@@ -142,6 +148,7 @@ local function generateTomlString(config: EzpmConfig): string
 		display = {
 			file_changes = config.DISPLAY_FILE_CHANGES,
 			docs_enabled = config.DOCS_ENABLED,
+			logs_enabled = config.LOGS_ENABLED,
 		},
 		
 		aliases = config.ALIASES,

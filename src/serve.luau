@@ -269,20 +269,20 @@ local function shutdownProcess(child: any)
 		task.wait(1.0)
 	else
 		warn("Failed to terminate Rojo process via Lune:", killErr)
-		print("Attempting direct system cleanup...")
+		utils.log("Attempting direct system cleanup...")
 	end
 
 	local pid = findProcessOnPort(ROJO_DEFAULT_PORT)
 	if not pid then
-		print("Rojo process terminated successfully")
+		utils.log("Rojo process terminated successfully")
 		return
 	end
 
-	print("Rojo still running on port " .. ROJO_DEFAULT_PORT .. " (PID: " .. pid .. ") - force killing...")
+	utils.log("Rojo still running on port " .. ROJO_DEFAULT_PORT .. " (PID: " .. pid .. ") - force killing...")
 	if forceKillPid(pid) then
 		task.wait(0.5)
 		if not findProcessOnPort(ROJO_DEFAULT_PORT) then
-			print("Rojo process terminated successfully")
+			utils.log("Rojo process terminated successfully")
 		else
 			warn("Failed to terminate Rojo process - may need manual intervention")
 		end
@@ -292,9 +292,9 @@ local function shutdownProcess(child: any)
 end
 
 local function start(cfg: EzpmConfig)
-	print("Setting up Rojo serve...")
+	utils.log("Setting up Rojo serve...")
 
-	print("Updating build.project.json...")
+	utils.log("Updating build.project.json...")
 	local buildOk, buildErr = generateBuildProject(cfg.SRC_PATH, cfg.DARKLUA_BUILD_PATH)
 	if not buildOk then
 		warn(buildErr)
@@ -303,7 +303,7 @@ local function start(cfg: EzpmConfig)
 
 	task.wait(0.5)
 
-	print("Removing old DarkLua build...")
+	utils.log("Removing old DarkLua build...")
 	local cleanOk, cleanErr = cleanupOldBuild(cfg.DARKLUA_BUILD_PATH)
 	if not cleanOk then
 		warn(cleanErr)
@@ -312,7 +312,7 @@ local function start(cfg: EzpmConfig)
 
 	task.wait(0.5)
 
-	print("Generating source map...")
+	utils.log("Generating source map...")
 	local sourceMapResult = toolchain.generateSourceMap()
 	if not sourceMapResult.ok then
 		warn("Failed to generate source map:", sourceMapResult.stderr)
@@ -320,7 +320,7 @@ local function start(cfg: EzpmConfig)
 	end
 	task.wait(0.5)
 
-	print("Fixing require paths...")
+	utils.log("Fixing require paths...")
 	local pathFixSuccess, pathFixErr =
 		pcall(requireFixer.fixRequirePaths, cfg.SRC_PATH, cfg.DISPLAY_FILE_CHANGES, cfg.IGNORE_LIST)
 	if not pathFixSuccess then
@@ -329,7 +329,7 @@ local function start(cfg: EzpmConfig)
 	end
 	task.wait(0.5)
 
-	print("Testing DarkLua build...")
+	utils.log("Testing DarkLua build...")
 	local darkLuaResult = darklua.process(cfg.SRC_PATH, cfg.DARKLUA_BUILD_PATH, true)
 	if not darkLuaResult.ok or darkLuaResult.stderr ~= "" then
 		warn("DarkLua build failed! Please fix the errors above and try again.")
@@ -337,7 +337,7 @@ local function start(cfg: EzpmConfig)
 	end
 
 	copyAllMetaFiles(cfg.SRC_PATH, cfg.DARKLUA_BUILD_PATH)
-	print("DarkLua build successful! Starting File-Watcher...")
+	utils.log("DarkLua build successful! Starting File-Watcher...")
 	task.wait(0.5)
 
 	local callbacks = createWatcherCallbacks(cfg)
@@ -352,12 +352,12 @@ local function start(cfg: EzpmConfig)
 		checkInterval = 1,
 	})
 
-	print("Serving Rojo and watching files...")
+	utils.log("Serving Rojo and watching files...")
 
 	local rojoChild = nil
 	local rojoSuccess, rojoErr = pcall(function()
 		rojoChild = process.create("rojo", { "serve", "build.project.json" }, { shell = true })
-		print("Rojo serve started successfully")
+		utils.log("Rojo serve started successfully")
 	end)
 
 	if not rojoSuccess then
@@ -370,9 +370,9 @@ local function start(cfg: EzpmConfig)
 	task.defer(function()
 		task.wait()
 		if cfg.DISPLAY_FILE_CHANGES then
-			print("")
-			print("| File-Watcher Active |")
-			print("Watching for changes in:", cfg.SRC_PATH)
+			utils.log("")
+			utils.log("| File-Watcher Active |")
+			utils.log("Watching for changes in:", cfg.SRC_PATH)
 		end
 	end)
 
@@ -385,7 +385,7 @@ local function start(cfg: EzpmConfig)
 		shutdownProcess(rojoChild)
 	end
 
-	print("Serve stopped.")
+	utils.log("Serve stopped.")
 end
 
 return {

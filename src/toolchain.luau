@@ -151,12 +151,12 @@ end
 
 local function setupWallyPackages(cfg: EzpmConfig?)
 	if not fs.isFile("wally.toml") then
-		print("No wally.toml found, skipping Wally setup.")
+		utils.log("No wally.toml found, skipping Wally setup.")
 		return
 	end
 
-	print("Setting up Wally packages...")
-	print("Clearing current systems...")
+	utils.log("Setting up Wally packages...")
+	utils.log("Clearing current systems...")
 	if fs.isFile("sourcemap.json") then
 		fs.removeFile("sourcemap.json")
 	end
@@ -177,93 +177,93 @@ local function setupWallyPackages(cfg: EzpmConfig?)
 		end
 	end
 
-	print("Installing Wally packages...")
+	utils.log("Installing Wally packages...")
 	local results = executeViaToolchainManager("wally", "install")
 	if not results.ok then
 		warn("Wally install failed:", results.stderr)
 		return
 	end
-	print("Wally packages installed successfully")
+	utils.log("Wally packages installed successfully")
 
-	print("Generating source map...")
+	utils.log("Generating source map...")
 	generateSourceMap()
 
 	for _, dir in packageDirs do
 		if fs.isDir(dir) then
-			print("Setting up types for " .. dir .. "...")
+			utils.log("Setting up types for " .. dir .. "...")
 			local typesResult = executeViaToolchainManager("wally-package-types", "--sourcemap", "sourcemap.json", dir)
 			if not typesResult.ok then
 				warn(dir .. " types generation failed:", typesResult.stderr)
 			else
-				print(dir .. " types generated successfully")
+				utils.log(dir .. " types generated successfully")
 			end
 		end
 	end
 
 	generateSourceMap()
-	print("Setup complete!")
+	utils.log("Setup complete!")
 end
 
 local function runLinting(srcPath: string)
-	print("Running code quality checks...")
+	utils.log("Running code quality checks...")
 
 	local hasSelene = isToolAvailable("selene")
 	local hasStylua = isToolAvailable("stylua")
 
 	if not hasSelene and not hasStylua then
 		warn("No linting tools installed.")
-		print("Install them with: rokit add " .. getToolSpec("selene"))
-		print("                    rokit add " .. getToolSpec("stylua"))
+		utils.log("Install them with: rokit add " .. getToolSpec("selene"))
+		utils.log("                    rokit add " .. getToolSpec("stylua"))
 		return false
 	end
 
 	if hasSelene then
-		print("Running Selene linter...")
+		utils.log("Running Selene linter...")
 		local seleneResult = executeViaToolchainManager("selene", srcPath)
 		if not seleneResult.ok then
 			warn("Selene linting found issues:")
-			print(seleneResult.stdout)
+			utils.log(seleneResult.stdout)
 			return false
 		else
-			print("✓ Selene linting passed")
+			utils.log("✓ Selene linting passed")
 		end
 	else
-		print("Skipping Selene (not installed — run `rokit add " .. getToolSpec("selene") .. "`)")
+		utils.log("Skipping Selene (not installed — run `rokit add " .. getToolSpec("selene") .. "`)")
 	end
 
 	if hasStylua then
-		print("Checking StyLua formatting...")
+		utils.log("Checking StyLua formatting...")
 		local styluaResult = executeViaToolchainManager("stylua", "--check", srcPath)
 		if not styluaResult.ok then
 			warn("StyLua formatting issues found:")
-			print(styluaResult.stdout)
-			print("Run 'stylua " .. srcPath .. "/' to fix formatting issues")
+			utils.log(styluaResult.stdout)
+			utils.log("Run 'stylua " .. srcPath .. "/' to fix formatting issues")
 			return false
 		else
-			print("✓ StyLua formatting is correct")
+			utils.log("✓ StyLua formatting is correct")
 		end
 	else
-		print("Skipping StyLua (not installed — run `rokit add " .. getToolSpec("stylua") .. "`)")
+		utils.log("Skipping StyLua (not installed — run `rokit add " .. getToolSpec("stylua") .. "`)")
 	end
 
-	print("✓ All code quality checks passed!")
+	utils.log("✓ All code quality checks passed!")
 	return true
 end
 
 local function formatCode(srcPath: string)
 	if not isToolAvailable("stylua") then
 		warn("StyLua is not installed.")
-		print("Install it with: rokit add " .. getToolSpec("stylua"))
+		utils.log("Install it with: rokit add " .. getToolSpec("stylua"))
 		return false
 	end
 
-	print("Formatting code with StyLua...")
+	utils.log("Formatting code with StyLua...")
 	local result = executeViaToolchainManager("stylua", srcPath)
 	if not result.ok then
 		warn("StyLua formatting failed:", result.stderr)
 		return false
 	end
-	print("✓ Code formatted successfully!")
+	utils.log("✓ Code formatted successfully!")
 	return true
 end
 
@@ -281,10 +281,10 @@ local function ensureRequiredTools()
 		end
 		local pattern = toolName .. "%s*="
 		if not tomlContents:match(pattern) then
-			print(`Adding {toolName} to rokit.toml...`)
+			utils.log(`Adding {toolName} to rokit.toml...`)
 			local result = utils.executeString(`rokit add {def.spec}`)
 			if result.ok then
-				print(`✓ Added {toolName}`)
+				utils.log(`✓ Added {toolName}`)
 				addedAny = true
 			else
 				warn(`Failed to add {toolName}:`, result.stderr)
@@ -298,24 +298,24 @@ local function ensureRequiredTools()
 end
 
 local function installTools(cfg: EzpmConfig?)
-	print("Installing development tools...")
+	utils.log("Installing development tools...")
 
 	ensureRequiredTools()
 
-	print("Installing Rokit tools...")
+	utils.log("Installing Rokit tools...")
 	local rokitResult = utils.executeString("rokit install")
 	if not rokitResult.ok then
 		warn("Rokit install failed:", rokitResult.stderr)
 		return false
 	end
-	print("✓ Rokit tools installed")
+	utils.log("✓ Rokit tools installed")
 
 	if fs.isFile("wally.toml") then
-		print("Installing Wally packages...")
+		utils.log("Installing Wally packages...")
 		setupWallyPackages(cfg)
 	end
 
-	print("✓ All tools installed successfully!")
+	utils.log("✓ All tools installed successfully!")
 	return true
 end
 
@@ -324,7 +324,7 @@ local function openDocumentation(docsEnabled: boolean)
 		warn("Documentation is not setup for this project.")
 		return
 	end
-	print("Opening Documentation... This may take a moment.")
+	utils.log("Opening Documentation... This may take a moment.")
 	utils.executeString("moonwave.cmd dev")
 end
 

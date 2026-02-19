@@ -9,6 +9,18 @@ export type ExecResult = {
 	stderr: string,
 }
 
+local logsEnabled = true
+
+local function setLogsEnabled(enabled: boolean)
+	logsEnabled = enabled
+end
+
+local function log(...)
+	if logsEnabled then
+		print(...)
+	end
+end
+
 local function getCurrentTime()
 	local currentTime = os.date("*t")
 	local hour = currentTime.hour
@@ -86,6 +98,9 @@ local function printHeader(title: string, subtitle: string?)
 end
 
 local function printSuccess(message: string)
+	if not logsEnabled then
+		return
+	end
 	stdio.write(stdio.style("bold"))
 	stdio.write(stdio.color("green"))
 	stdio.write("OK ")
@@ -102,6 +117,9 @@ local function printError(message: string)
 end
 
 local function printDim(message: string)
+	if not logsEnabled then
+		return
+	end
 	stdio.write(stdio.color("black"))
 	print(message)
 	resetStyle()
@@ -120,4 +138,6 @@ return {
 	printSuccess = printSuccess,
 	printError = printError,
 	printDim = printDim,
+	setLogsEnabled = setLogsEnabled,
+	log = log,
 }

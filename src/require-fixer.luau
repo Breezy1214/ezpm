@@ -1,6 +1,7 @@
 local fs = require("@lune/fs")
 
 local darklua = require("./darklua")
+local utils = require("./utils")
 
 local function findFileByName(expectedFileName, searchDir)
 	local items = fs.readDir(searchDir)
@@ -237,7 +238,7 @@ local function fixSingleFile(
 end
 
 local function fixRequirePaths(rootDir: string, displayFileChanges: boolean, ignoreList: { string }): boolean
-	print("Fixing require paths in:", rootDir)
+	utils.log("Fixing require paths in:", rootDir)
 
 	local success, isDir = pcall(fs.isDir, rootDir)
 	if not success or not isDir then
@@ -288,7 +289,7 @@ local function fixRequirePaths(rootDir: string, displayFileChanges: boolean, ign
 	end
 
 	if fixedCount > 0 then
-		print("✓ Fixed require paths in", fixedCount, "files.")
+		utils.log("✓ Fixed require paths in", fixedCount, "files.")
 	end
 	return true
 end

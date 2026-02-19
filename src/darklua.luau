@@ -161,11 +161,11 @@ local function process(
 	elseif results.stderr ~= "" then
 		warn("DarkLua Warning:", results.stderr)
 		if not dontRetry then
-			print("Build warning detected. Trying to rebuild DarkLua...")
+			utils.log("Build warning detected. Trying to rebuild DarkLua...")
 			return process(srcPath, buildPath, true, true)
 		end
 	elseif printResults and results.stdout ~= "" then
-		print("DarkLua Success:", results.stdout)
+		utils.log("DarkLua Success:", results.stdout)
 	end
 
 	return results

@@ -24,6 +24,7 @@ local version = require("@self/version")
 
 -- Load configuration
 local CONFIG = config.loadConfig()
+utils.setLogsEnabled(CONFIG.LOGS_ENABLED)
 
 -- Check for updates
 pcall(version.checkForUpdates)
@@ -164,6 +165,7 @@ end
 local function aliasSync()
 	-- Reload config from ezpm.toml to pick up manually edited aliases
 	CONFIG = config.loadConfig()
+	utils.setLogsEnabled(CONFIG.LOGS_ENABLED)
 
 	if next(CONFIG.ALIASES) == nil then
 		print("No aliases found in ezpm.toml.")
@@ -313,7 +315,7 @@ local function runInit()
 
 	-- Save ezpm.toml
 	config.saveConfig(initConfig)
-	print("")
+	utils.log("")
 	utils.printSuccess("Generated ezpm.toml")
 
 	-- Regenerate .darklua.json and .luaurc from aliases
@@ -376,10 +378,11 @@ local function runInit()
 
 	-- Reload config
 	CONFIG = config.loadConfig()
+	utils.setLogsEnabled(CONFIG.LOGS_ENABLED)
 
-	print("")
-	print("Select Serve from the menu to start developing,")
-	print("or run 'ezpm serve' directly.")
+	utils.log("")
+	utils.log("Select Serve from the menu to start developing,")
+	utils.log("or run 'ezpm serve' directly.")
 end
 
 ------------------------// Interactive Menu //--------------------------
