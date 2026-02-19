@@ -53,6 +53,12 @@ jobs:
         if: steps.check.outputs.changed == 'true' && steps.tag_check.outputs.exists == 'false'
         uses: CompeyDev/setup-rokit@v0.1.2
 
+      - name: Inject version into source
+        if: steps.check.outputs.changed == 'true' && steps.tag_check.outputs.exists == 'false'
+        run: |
+          VERSION="${{ steps.current.outputs.version }}"
+          sed -i "s/local EZPM_VERSION = \".*\"/local EZPM_VERSION = \"$VERSION\"/" src/version.luau
+
       - name: Bundle with DarkLua
         if: steps.check.outputs.changed == 'true' && steps.tag_check.outputs.exists == 'false'
         run: |

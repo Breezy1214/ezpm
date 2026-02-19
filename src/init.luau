@@ -20,14 +20,18 @@ local requireFixer = require("@self/require-fixer")
 local toolchain = require("@self/toolchain")
 local serve = require("@self/serve")
 local darklua = require("@self/darklua")
+local version = require("@self/version")
 
 -- Load configuration
 local CONFIG = config.loadConfig()
 
+-- Check for updates
+pcall(version.checkForUpdates)
+
 ------------------------// Help //--------------------------
 
-local HELP_TEXT = [[
-ezpm - EZ Project Manager
+local HELP_TEXT = `ezpm v{version.VERSION} - EZ Project Manager` .. [[
+
 
 Usage:
   ezpm         	Interactive menu (primary interface)
@@ -435,7 +439,7 @@ local function runInteractiveMenu()
 	end
 
 	while true do
-		utils.printHeader("ezpm", "Roblox Project Manager")
+		utils.printHeader("ezpm v" .. version.VERSION, "Roblox Project Manager")
 		local selected = stdio.prompt("select", "What would you like to do?", labels)
 		if selected == nil or selected == #options then
 			break
