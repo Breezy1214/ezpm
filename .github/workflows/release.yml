@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'ezpm.toml'
+      - 'src/version.luau'
 
 permissions:
   contents: write
@@ -20,13 +20,13 @@ jobs:
       - name: Extract current version
         id: current
         run: |
-          VERSION=$(grep -E '^version\s*=' ezpm.toml | head -1 | sed 's/.*=\s*"\(.*\)"/\1/')
+          VERSION=$(grep -oP 'EZPM_VERSION\s*=\s*"\K[^"]+' src/version.luau)
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Extract previous version
         id: previous
         run: |
-          PREV=$(git show HEAD~1:ezpm.toml 2>/dev/null | grep -E '^version\s*=' | head -1 | sed 's/.*=\s*"\(.*\)"/\1/' || echo "")
+          PREV=$(git show HEAD~1:src/version.luau 2>/dev/null | grep -oP 'EZPM_VERSION\s*=\s*"\K[^"]+' || echo "")
           echo "version=$PREV" >> "$GITHUB_OUTPUT"
 
       - name: Check version changed

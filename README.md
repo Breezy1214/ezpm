@@ -103,6 +103,7 @@ darklua_build = "darklua_build"
 [display]
 file_changes = true
 docs_enabled = false
+logs_enabled = true
 
 [aliases]
 Client = "src/client/"

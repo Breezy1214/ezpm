@@ -9,12 +9,12 @@ export type EzpmConfig = {
 	DARKLUA_BUILD_PATH: string,
 	DOCS_ENABLED: boolean,
 	DISPLAY_FILE_CHANGES: boolean,
+	LOGS_ENABLED: boolean,
 	HELP_ARGS: { string },
 	IGNORE_LIST: { string },
 	REQUIRED_DIRS: { string },
 	REQUIRED_FILES: { string },
 	PROJECT_NAME: string?,
-	VERSION: string?,
 	ALIASES: { [string]: string },
 }
 
@@ -65,6 +65,7 @@ local function getDefaultConfig(): EzpmConfig
 		DARKLUA_BUILD_PATH = "darklua_build",
 		DOCS_ENABLED = false,
 		DISPLAY_FILE_CHANGES = true,
+		LOGS_ENABLED = true,
 		HELP_ARGS = { "-h", "--help", "help" },
 		IGNORE_LIST = {},
 		REQUIRED_DIRS = {},
@@ -98,15 +99,15 @@ local function loadConfig(): EzpmConfig
 					if tomlConfig.display.docs_enabled ~= nil then
 						config.DOCS_ENABLED = tomlConfig.display.docs_enabled
 					end
+
+					if tomlConfig.display.logs_enabled ~= nil then
+						config.LOGS_ENABLED = tomlConfig.display.logs_enabled
+					end
 				end
 
 				if tomlConfig.project then
 					if tomlConfig.project.name then
 						config.PROJECT_NAME = tomlConfig.project.name
-					end
-					
-					if tomlConfig.project.version then
-						config.VERSION = tomlConfig.project.version
 					end
 				end
 
@@ -137,7 +138,6 @@ local function generateTomlString(config: EzpmConfig): string
 	local tomlData = {
 		project = {
 			name = config.PROJECT_NAME or "my-roblox-game",
-			version = config.VERSION,
 		},
 
 		paths = {
@@ -148,6 +148,7 @@ local function generateTomlString(config: EzpmConfig): string
 		display = {
 			file_changes = config.DISPLAY_FILE_CHANGES,
 			docs_enabled = config.DOCS_ENABLED,
+			logs_enabled = config.LOGS_ENABLED,
 		},
 		
 		aliases = config.ALIASES,

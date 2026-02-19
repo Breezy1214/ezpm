@@ -43,69 +43,47 @@ local function removeMetaFile(fullPath: string, srcPath: string, buildPath: stri
 	end
 end
 
-local function start(cfg: EzpmConfig)
-	print("Setting up Rojo serve...")
+local function generateBuildProject(
+	srcPath: string,
+	buildPath: string,
+	defaultProjectPath: string?,
+	buildProjectPath: string?
+): (boolean, string?)
+	local inputPath = defaultProjectPath or "default.project.json"
+	local outputPath = buildProjectPath or "build.project.json"
 
-	if not fs.isFile("default.project.json") then
-		warn("Missing default.project.json — run 'ezpm init' to generate it, or create one manually.")
-		return
+	if not fs.isFile(inputPath) then
+		return false, `Missing {inputPath} — run 'ezpm init' to generate it, or create one manually.`
 	end
 
-	print("Updating build.project.json...")
 	local success, err = pcall(function()
-		utils.modifyFileContents("default.project.json", function(contents)
-			return string.gsub(contents, cfg.SRC_PATH .. "/", cfg.DARKLUA_BUILD_PATH .. "/")
-		end, "build.project.json")
+		utils.modifyFileContents(inputPath, function(contents)
+			return string.gsub(contents, srcPath .. "/", buildPath .. "/")
+		end, outputPath)
 	end)
 
 	if not success then
-		warn("Failed to update build.project.json:", err)
-		return
+		return false, `Failed to update {outputPath}: {err}`
 	end
 
-	task.wait(0.5)
+	return true, nil
+end
 
-	if fs.isDir(cfg.DARKLUA_BUILD_PATH) then
-		print("Removing old DarkLua build...")
-		local removeSuccess, removeErr = pcall(fs.removeDir, cfg.DARKLUA_BUILD_PATH)
-		if not removeSuccess then
-			warn("Failed to remove old build:", removeErr)
-			return
-		end
-
-		task.wait(0.5)
+local function cleanupOldBuild(buildPath: string): (boolean, string?)
+	if not fs.isDir(buildPath) then
+		return true, nil
 	end
 
-	print("Generating source map...")
-	local sourceMapResult = toolchain.generateSourceMap()
-	if not sourceMapResult.ok then
-		warn("Failed to generate source map:", sourceMapResult.stderr)
-		return
-	end
-	task.wait(0.5)
-
-	print("Fixing require paths...")
-	local pathFixSuccess, pathFixErr =
-		pcall(requireFixer.fixRequirePaths, cfg.SRC_PATH, cfg.DISPLAY_FILE_CHANGES, cfg.IGNORE_LIST)
-	if not pathFixSuccess then
-		warn("Failed to fix require paths:", pathFixErr)
-		return
-	end
-	task.wait(0.5)
-
-	print("Testing DarkLua build...")
-	local darkLuaResult = darklua.process(cfg.SRC_PATH, cfg.DARKLUA_BUILD_PATH, true)
-	if not darkLuaResult.ok or darkLuaResult.stderr ~= "" then
-		warn("DarkLua build failed! Please fix the errors above and try again.")
-		return
+	local removeSuccess, removeErr = pcall(fs.removeDir, buildPath)
+	if not removeSuccess then
+		return false, `Failed to remove old build: {removeErr}`
 	end
 
-	copyAllMetaFiles(cfg.SRC_PATH, cfg.DARKLUA_BUILD_PATH)
-	print("DarkLua build successful! Starting File-Watcher...")
-	task.wait(0.5)
+	return true, nil
+end
 
-	local startWatcher, stopWatcher = watcher.watchDirectory({
-		path = cfg.SRC_PATH,
+local function createWatcherCallbacks(cfg: EzpmConfig)
+	return {
 		pattern = function(name: string): boolean
 			return name:match("%.luau?$") ~= nil or name == "init.meta.json"
 		end,
@@ -121,7 +99,6 @@ local function start(cfg: EzpmConfig)
 			end
 
 			utils.printChanges(cfg.DISPLAY_FILE_CHANGES, "File Changed:", fullPath)
-			-- Only fix requires in the changed file; sourcemap is unchanged
 			local success1, err1 =
 				pcall(requireFixer.fixSingleFile, fullPath, cfg.SRC_PATH, cfg.DISPLAY_FILE_CHANGES, cfg.IGNORE_LIST)
 			if not success1 then
@@ -146,7 +123,6 @@ local function start(cfg: EzpmConfig)
 			end
 
 			utils.printChanges(cfg.DISPLAY_FILE_CHANGES, "File Created:", fullPath)
-			-- Only fix requires in the new file
 			local success1, err1 =
 				pcall(requireFixer.fixSingleFile, fullPath, cfg.SRC_PATH, cfg.DISPLAY_FILE_CHANGES, cfg.IGNORE_LIST)
 			if not success1 then
@@ -217,7 +193,6 @@ local function start(cfg: EzpmConfig)
 
 		onDirectoryRemoved = function(fullPath: string)
 			utils.printChanges(cfg.DISPLAY_FILE_CHANGES, "Directory Removed:", fullPath)
-			-- No require fixing needed — files in the removed directory are gone
 			local success1, err1 = pcall(toolchain.generateSourceMap)
 			if not success1 then
 				warn("Error generating source map after directory removal:", err1)
@@ -233,15 +208,156 @@ local function start(cfg: EzpmConfig)
 				warn("Directory not found:", darkLuaPath)
 			end
 		end,
+	}
+end
+
+local ROJO_DEFAULT_PORT = "34872"
+
+local function parsePidFromLsof(output: string): string?
+	local lines = string.split(output, "\n")
+	for _, line in ipairs(lines) do
+		local pid = line:match("rojo%s+(%d+)")
+		if pid then
+			return pid
+		end
+	end
+	return nil
+end
+
+local function parsePidFromNetstat(output: string, port: string): string?
+	local lines = string.split(output, "\n")
+	for _, line in ipairs(lines) do
+		local pid = line:match(":" .. port .. "%s+[%d%.%:]+%s+LISTENING%s+(%d+)")
+		if pid then
+			return pid
+		end
+	end
+	return nil
+end
+
+local function findProcessOnPort(port: string): string?
+	if process.os == "windows" then
+		local ok, result = pcall(utils.executeWithOutput, "netstat", "-ano")
+		if ok and result.ok then
+			return parsePidFromNetstat(result.stdout, port)
+		end
+	else
+		local ok, result = pcall(utils.executeWithOutput, "lsof", "-i", ":" .. port)
+		if ok and result.ok and result.stdout:find("rojo") then
+			return parsePidFromLsof(result.stdout)
+		end
+	end
+	return nil
+end
+
+local function forceKillPid(pid: string): boolean
+	local ok, result
+	if process.os == "windows" then
+		ok, result = pcall(utils.executeWithOutput, "taskkill", "/F", "/PID", pid)
+	else
+		ok, result = pcall(utils.executeWithOutput, "kill", "-9", pid)
+	end
+	return ok and result.ok
+end
+
+local function shutdownProcess(child: any)
+	local killSuccess, killErr = pcall(function()
+		child:kill()
+	end)
+
+	if killSuccess then
+		task.wait(1.0)
+	else
+		warn("Failed to terminate Rojo process via Lune:", killErr)
+		utils.log("Attempting direct system cleanup...")
+	end
+
+	local pid = findProcessOnPort(ROJO_DEFAULT_PORT)
+	if not pid then
+		utils.log("Rojo process terminated successfully")
+		return
+	end
+
+	utils.log("Rojo still running on port " .. ROJO_DEFAULT_PORT .. " (PID: " .. pid .. ") - force killing...")
+	if forceKillPid(pid) then
+		task.wait(0.5)
+		if not findProcessOnPort(ROJO_DEFAULT_PORT) then
+			utils.log("Rojo process terminated successfully")
+		else
+			warn("Failed to terminate Rojo process - may need manual intervention")
+		end
+	else
+		warn("Failed to force kill Rojo PID " .. pid)
+	end
+end
+
+local function start(cfg: EzpmConfig)
+	utils.log("Setting up Rojo serve...")
+
+	utils.log("Updating build.project.json...")
+	local buildOk, buildErr = generateBuildProject(cfg.SRC_PATH, cfg.DARKLUA_BUILD_PATH)
+	if not buildOk then
+		warn(buildErr)
+		return
+	end
+
+	task.wait(0.5)
+
+	utils.log("Removing old DarkLua build...")
+	local cleanOk, cleanErr = cleanupOldBuild(cfg.DARKLUA_BUILD_PATH)
+	if not cleanOk then
+		warn(cleanErr)
+		return
+	end
+
+	task.wait(0.5)
+
+	utils.log("Generating source map...")
+	local sourceMapResult = toolchain.generateSourceMap()
+	if not sourceMapResult.ok then
+		warn("Failed to generate source map:", sourceMapResult.stderr)
+		return
+	end
+	task.wait(0.5)
+
+	utils.log("Fixing require paths...")
+	local pathFixSuccess, pathFixErr =
+		pcall(requireFixer.fixRequirePaths, cfg.SRC_PATH, cfg.DISPLAY_FILE_CHANGES, cfg.IGNORE_LIST)
+	if not pathFixSuccess then
+		warn("Failed to fix require paths:", pathFixErr)
+		return
+	end
+	task.wait(0.5)
+
+	utils.log("Testing DarkLua build...")
+	local darkLuaResult = darklua.process(cfg.SRC_PATH, cfg.DARKLUA_BUILD_PATH, true)
+	if not darkLuaResult.ok or darkLuaResult.stderr ~= "" then
+		warn("DarkLua build failed! Please fix the errors above and try again.")
+		return
+	end
+
+	copyAllMetaFiles(cfg.SRC_PATH, cfg.DARKLUA_BUILD_PATH)
+	utils.log("DarkLua build successful! Starting File-Watcher...")
+	task.wait(0.5)
+
+	local callbacks = createWatcherCallbacks(cfg)
+	local startWatcher, stopWatcher = watcher.watchDirectory({
+		path = cfg.SRC_PATH,
+		pattern = callbacks.pattern,
+		onFileChanged = callbacks.onFileChanged,
+		onFileCreated = callbacks.onFileCreated,
+		onFileRemoved = callbacks.onFileRemoved,
+		onDirectoryCreated = callbacks.onDirectoryCreated,
+		onDirectoryRemoved = callbacks.onDirectoryRemoved,
 		checkInterval = 1,
 	})
 
-	print("Serving Rojo and watching files...")
+	utils.log("Serving Rojo and watching files...")
 
 	local rojoChild = nil
 	local rojoSuccess, rojoErr = pcall(function()
 		rojoChild = process.create("rojo", { "serve", "build.project.json" }, { shell = true })
-		print("Rojo serve started successfully")
+		utils.log("Rojo serve started successfully")
 	end)
 
 	if not rojoSuccess then
@@ -254,89 +370,22 @@ local function start(cfg: EzpmConfig)
 	task.defer(function()
 		task.wait()
 		if cfg.DISPLAY_FILE_CHANGES then
-			print("")
-			print("| File-Watcher Active |")
-			print("Watching for changes in:", cfg.SRC_PATH)
+			utils.log("")
+			utils.log("| File-Watcher Active |")
+			utils.log("Watching for changes in:", cfg.SRC_PATH)
 		end
 	end)
 
-	local isMacOS = process.os == "macos"
 	print()
 	stdio.prompt("text", "Press Enter to stop serving and watching...")
 	stopWatcher()
 	task.cancel(watcherRoutine)
 
 	if rojoChild then
-		local killSuccess, killErr = pcall(function()
-			rojoChild:kill()
-		end)
-
-		if killSuccess then
-			task.wait(1.0)
-			if not isMacOS then
-				return
-			end
-
-			-- Check if rojo is still running on the port
-			local checkResult = utils.executeWithOutput("lsof", "-i", ":34872")
-			local isStillRunning = checkResult.ok and checkResult.stdout:find("rojo")
-
-			if not isStillRunning then
-				print("Rojo process terminated successfully")
-			else
-				-- Extract PID from lsof output and force kill it
-				local lines = string.split(checkResult.stdout, "\n")
-				for _, line in ipairs(lines) do
-					local pid = line:match("rojo%s+(%d+)")
-					if pid then
-						print("Force killing Rojo PID:", pid)
-						local forceKillResult = utils.executeWithOutput("kill", "-9", pid)
-						if forceKillResult.ok then
-							task.wait(0.5)
-							local verifyResult = utils.executeWithOutput("lsof", "-i", ":34872")
-							if not (verifyResult.ok and verifyResult.stdout:find("rojo")) then
-								print("Rojo process successfully terminated")
-							else
-								warn("Failed to terminate Rojo process - may need manual intervention")
-							end
-						else
-							warn("Failed to force kill Rojo process:", forceKillResult.stderr)
-						end
-						break
-					end
-				end
-			end
-		else
-			warn("Failed to terminate Rojo process via Lune:", killErr)
-			print("Attempting direct system cleanup...")
-
-			if not isMacOS then
-				return
-			end
-
-			-- Fallback: Find and kill rojo processes directly
-			local checkResult = utils.executeWithOutput("lsof", "-i", ":34872")
-			if checkResult.ok and checkResult.stdout:find("rojo") then
-				local lines = string.split(checkResult.stdout, "\n")
-				for _, line in ipairs(lines) do
-					local pid = line:match("rojo%s+(%d+)")
-					if pid then
-						print("Found Rojo PID:", pid, "- terminating...")
-						local killResult = utils.executeWithOutput("kill", "-9", pid)
-						if killResult.ok then
-							print("Rojo process terminated successfully")
-						else
-							warn("Failed to kill Rojo PID", pid .. ":", killResult.stderr)
-						end
-					end
-				end
-			else
-				print("No Rojo processes found on port 34872")
-			end
-		end
+		shutdownProcess(rojoChild)
 	end
 
-	print("Serve stopped.")
+	utils.log("Serve stopped.")
 end
 
 return {
@@ -344,4 +393,12 @@ return {
 	copyMetaFile = copyMetaFile,
 	copyAllMetaFiles = copyAllMetaFiles,
 	removeMetaFile = removeMetaFile,
+	generateBuildProject = generateBuildProject,
+	cleanupOldBuild = cleanupOldBuild,
+	createWatcherCallbacks = createWatcherCallbacks,
+	parsePidFromLsof = parsePidFromLsof,
+	parsePidFromNetstat = parsePidFromNetstat,
+	findProcessOnPort = findProcessOnPort,
+	forceKillPid = forceKillPid,
+	shutdownProcess = shutdownProcess,
 }

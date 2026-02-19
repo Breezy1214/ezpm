@@ -20,14 +20,19 @@ local requireFixer = require("@self/require-fixer")
 local toolchain = require("@self/toolchain")
 local serve = require("@self/serve")
 local darklua = require("@self/darklua")
+local version = require("@self/version")
 
 -- Load configuration
 local CONFIG = config.loadConfig()
+utils.setLogsEnabled(CONFIG.LOGS_ENABLED)
+
+-- Check for updates
+pcall(version.checkForUpdates)
 
 ------------------------// Help //--------------------------
 
-local HELP_TEXT = [[
-ezpm - EZ Project Manager
+local HELP_TEXT = `ezpm v{version.VERSION} - EZ Project Manager` .. [[
+
 
 Usage:
   ezpm         	Interactive menu (primary interface)
@@ -160,6 +165,7 @@ end
 local function aliasSync()
 	-- Reload config from ezpm.toml to pick up manually edited aliases
 	CONFIG = config.loadConfig()
+	utils.setLogsEnabled(CONFIG.LOGS_ENABLED)
 
 	if next(CONFIG.ALIASES) == nil then
 		print("No aliases found in ezpm.toml.")
@@ -309,7 +315,7 @@ local function runInit()
 
 	-- Save ezpm.toml
 	config.saveConfig(initConfig)
-	print("")
+	utils.log("")
 	utils.printSuccess("Generated ezpm.toml")
 
 	-- Regenerate .darklua.json and .luaurc from aliases
@@ -372,10 +378,11 @@ local function runInit()
 
 	-- Reload config
 	CONFIG = config.loadConfig()
+	utils.setLogsEnabled(CONFIG.LOGS_ENABLED)
 
-	print("")
-	print("Select Serve from the menu to start developing,")
-	print("or run 'ezpm serve' directly.")
+	utils.log("")
+	utils.log("Select Serve from the menu to start developing,")
+	utils.log("or run 'ezpm serve' directly.")
 end
 
 ------------------------// Interactive Menu //--------------------------
@@ -435,7 +442,7 @@ local function runInteractiveMenu()
 	end
 
 	while true do
-		utils.printHeader("ezpm", "Roblox Project Manager")
+		utils.printHeader("ezpm v" .. version.VERSION, "Roblox Project Manager")
 		local selected = stdio.prompt("select", "What would you like to do?", labels)
 		if selected == nil or selected == #options then
 			break
