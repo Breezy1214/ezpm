@@ -1,12 +1,10 @@
 local fs = require("@lune/fs")
-local process = require("@lune/process")
 
 local utils = require("./utils")
 local configModule = require("./config")
 
 type EzpmConfig = configModule.EzpmConfig
 
-local PACKAGE_PATH: string? = nil
 local TOOL_AVAILABILITY_CACHE: { [string]: boolean } = {}
 
 type ToolDef = { spec: string, required: boolean }
@@ -42,52 +40,18 @@ local function getToolSpec(toolName: string): string
 	return if def then def.spec else toolName
 end
 
-local function getPackagePath(): string
-	if PACKAGE_PATH then
-		return PACKAGE_PATH
-	end
-
-	local isUsingRokit = fs.isFile("rokit.toml")
-	local isUsingAftman = fs.isFile("aftman.toml")
-
-	if isUsingRokit then
-		local result = utils.executeString("which rokit")
-		local rokitPath = result.stdout
-		rokitPath = rokitPath:gsub("/c/", "C:/")
-		rokitPath = rokitPath:gsub("/rokit", "/"):gsub("\\rokit", "\\"):gsub(".exe", ""):gsub("\n", "")
-		PACKAGE_PATH = rokitPath
-	elseif isUsingAftman then
-		warn("Aftman is not supported yet.")
-		error("Aftman not supported")
-	else
-		error("No package manager found.")
-	end
-
-	return PACKAGE_PATH :: string
-end
-
 local function isToolAvailable(toolName: string): boolean
 	if TOOL_AVAILABILITY_CACHE[toolName] ~= nil then
 		return TOOL_AVAILABILITY_CACHE[toolName]
 	end
 
-	local packagePath = getPackagePath()
-	local toolPath = packagePath .. toolName
-	local available = fs.isFile(toolPath) or fs.isFile(toolPath .. ".exe")
-	TOOL_AVAILABILITY_CACHE[toolName] = available
-	return available
+	local result = utils.executeWithOutput(toolName, "--version")
+	TOOL_AVAILABILITY_CACHE[toolName] = result.ok
+	return result.ok
 end
 
 local function executeViaToolchainManager(...: string): utils.ExecResult
-	local packagePath = getPackagePath()
-	local commands = { ... }
-	local rokitTool = table.remove(commands, 1)
-	return process.exec(packagePath .. rokitTool, commands, {
-		stdio = {
-			stdout = "inherit",
-			stderr = "inherit",
-		},
-	})
+	return utils.execute(...)
 end
 
 local function generateSourceMap(): utils.ExecResult
@@ -363,7 +327,6 @@ local function generateRokitToml(): string
 end
 
 return {
-	getPackagePath = getPackagePath,
 	isToolAvailable = isToolAvailable,
 	executeViaToolchainManager = executeViaToolchainManager,
 	generateSourceMap = generateSourceMap,
