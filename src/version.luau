@@ -4,7 +4,7 @@ local serde = require("@lune/serde")
 
 local utils = require("@self/utils")
 
-local EZPM_VERSION = "0.1.4"
+local EZPM_VERSION = "0.1.5"
 
 type SemVer = {
 	major: number,
