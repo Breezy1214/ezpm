@@ -3,6 +3,7 @@ use regex::Regex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+use walkdir::WalkDir;
 
 // ─── Public types ────────────────────────────────────────────────────────────
 
@@ -35,7 +36,7 @@ pub struct RequireRewrite {
     pub new: String,
 }
 
-// ─── Public function stubs (RED phase — implementation pending) ───────────────
+// ─── Public functions ─────────────────────────────────────────────────────────
 
 /// Scan all .lua/.luau files under `root_dir` and rewrite require paths to
 /// `@alias` notation using the provided alias map.
@@ -46,38 +47,104 @@ pub struct RequireRewrite {
 /// `src_prefix` is the source directory prefix (e.g. `"src"`) used to
 /// distinguish internal aliases (rooted under src/) from external ones.
 pub fn fix_requires(
-    _root_dir: &Path,
-    _aliases: &HashMap<String, String>,
-    _src_prefix: &str,
+    root_dir: &Path,
+    aliases: &HashMap<String, String>,
+    src_prefix: &str,
 ) -> Result<FixResult> {
-    todo!("fix_requires not yet implemented")
+    // Build sorted alias list and skip list once — not per file (performance)
+    let sorted_aliases = build_sorted_src_aliases(aliases, src_prefix);
+    let skip_list = build_skip_list(aliases, src_prefix);
+
+    let mut result = FixResult::default();
+
+    for entry in WalkDir::new(root_dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file() && is_lua_file(e.path()))
+    {
+        result.total_files_scanned += 1;
+
+        let content = std::fs::read_to_string(entry.path())?;
+        let (new_content, rewrites) =
+            process_file_content(&content, &sorted_aliases, &skip_list, src_prefix);
+
+        if !rewrites.is_empty() {
+            // BUILD-04: only write when changes are actually made
+            std::fs::write(entry.path(), &new_content)?;
+            result.files_changed += 1;
+            result.changes.push(FileChange {
+                file: entry.path().to_path_buf(),
+                rewrites,
+            });
+        }
+    }
+
+    Ok(result)
 }
 
 /// Process a single file, rewriting its require paths in place.
 ///
 /// Returns `Some(FileChange)` if changes were made, `None` otherwise.
 /// Only writes the file to disk when changes are actually made (BUILD-04).
+/// Used by serve watch mode in Phase 4.
 pub fn fix_single_file(
-    _file_path: &Path,
-    _aliases: &HashMap<String, String>,
-    _src_prefix: &str,
+    file_path: &Path,
+    aliases: &HashMap<String, String>,
+    src_prefix: &str,
 ) -> Result<Option<FileChange>> {
-    todo!("fix_single_file not yet implemented")
+    let sorted_aliases = build_sorted_src_aliases(aliases, src_prefix);
+    let skip_list = build_skip_list(aliases, src_prefix);
+
+    let content = std::fs::read_to_string(file_path)?;
+    let (new_content, rewrites) =
+        process_file_content(&content, &sorted_aliases, &skip_list, src_prefix);
+
+    if rewrites.is_empty() {
+        return Ok(None);
+    }
+
+    // BUILD-04: only write when changes are actually made
+    std::fs::write(file_path, &new_content)?;
+    Ok(Some(FileChange {
+        file: file_path.to_path_buf(),
+        rewrites,
+    }))
 }
 
-// ─── Internal function stubs ──────────────────────────────────────────────────
+// ─── Internal helpers ─────────────────────────────────────────────────────────
 
 /// Build the list of src-rooted aliases sorted by real path length descending.
 ///
 /// Only includes aliases whose path starts with `{src_prefix}/`.
-/// Maps each to `("@{name}/", path)` tuples.
+/// Maps each to `("@{name}/", normalized_path)` tuples where the real path
+/// is guaranteed to have a trailing slash.
+///
 /// Ties (same path length) are broken alphabetically by alias name for
 /// deterministic behaviour — matching Luau `getSortedSrcShortcuts`.
 fn build_sorted_src_aliases(
-    _aliases: &HashMap<String, String>,
-    _src_prefix: &str,
+    aliases: &HashMap<String, String>,
+    src_prefix: &str,
 ) -> Vec<(String, String)> {
-    vec![] // stub — returns empty, causing tests to fail
+    let prefix = format!("{src_prefix}/");
+    let mut list: Vec<(String, String)> = aliases
+        .iter()
+        .filter(|(_, path)| path.starts_with(&prefix) || *path == src_prefix)
+        .map(|(name, path)| {
+            // Pitfall 3: normalise — ensure trailing slash on the real path for
+            // consistent prefix matching.
+            let real_path = if path.ends_with('/') {
+                path.clone()
+            } else {
+                format!("{path}/")
+            };
+            (format!("@{name}/"), real_path)
+        })
+        .collect();
+
+    // Sort by real path length descending; break ties by alias shortcut name
+    // ascending (alphabetical) for deterministic behaviour (Pitfall 6).
+    list.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(&b.0)));
+    list
 }
 
 /// Build the list of require path prefixes that should be left untouched.
@@ -85,16 +152,34 @@ fn build_sorted_src_aliases(
 /// Always includes @self and @game (with and without trailing slash).
 /// Also includes `@{name}/` for every alias whose path does NOT start with
 /// `{src_prefix}/` (i.e. external aliases like Packages/, ServerPackages/).
-fn build_skip_list(_aliases: &HashMap<String, String>, _src_prefix: &str) -> Vec<String> {
-    vec![] // stub — returns empty, causing tests to fail
+///
+/// Matches `deriveIgnoreList` in the Luau `src/config.luau`.
+fn build_skip_list(aliases: &HashMap<String, String>, src_prefix: &str) -> Vec<String> {
+    let prefix = format!("{src_prefix}/");
+    let mut skip = vec![
+        "@self/".to_string(),
+        "@self".to_string(),
+        "@game/".to_string(),
+        "@game".to_string(),
+    ];
+    for (name, path) in aliases {
+        if !path.starts_with(&prefix) && path != src_prefix {
+            skip.push(format!("@{name}/"));
+        }
+    }
+    skip
 }
 
 /// Check whether a file path is a Lua or Luau source file.
-pub fn is_lua_file(_path: &Path) -> bool {
-    false // stub — always returns false, causing tests to fail
+pub fn is_lua_file(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|s| s.to_str()),
+        Some("lua") | Some("luau")
+    )
 }
 
-/// Return the compiled require-path regex (compiled once, reused across calls).
+/// Return the compiled require-path regex (compiled once via OnceLock, reused
+/// across every call — Rust 1.70+ stdlib pattern, no extra crate required).
 ///
 /// Pattern: `require("...")` — double-quotes only, matching Luau `require%("(.-)"%)`.
 /// Single-quote requires are intentionally NOT matched (Pitfall 2 / Luau parity).
@@ -108,18 +193,117 @@ pub fn require_regex() -> &'static Regex {
 /// Pure transformation: scan `content` for `require("...")` calls and rewrite
 /// any that match src aliases.
 ///
+/// Algorithm (matches Luau `processSingleFile` behaviour):
+/// 1. Find all `require("...")` paths via compiled regex.
+/// 2. For each path, check the skip list first — if it starts with a skip
+///    entry, leave it untouched.
+/// 3. Check built-in Roblox aliases (@self, @game) case-insensitively.
+/// 4. Warn on `../` and `./` relative paths but leave them untouched (per
+///    CONTEXT.md decision).
+/// 5. If already starts with a known @alias/ shortcut, leave it untouched.
+/// 6. Try to match against sorted src aliases (longest match first) — replace
+///    matching prefix with the alias shortcut.
+/// 7. If no match for a src/ path, emit a warning but leave untouched.
+///
 /// Returns `(new_content, rewrites)`.  If no rewrites were needed, `rewrites`
 /// is empty and `new_content` equals `content` unchanged.
 ///
-/// This is a pure function with no filesystem I/O — safe to call from tests
-/// without a temporary directory.
+/// This is a pure function with no filesystem I/O — testable without tempdir.
 pub fn process_file_content(
     content: &str,
-    _sorted_aliases: &[(String, String)],
-    _skip_list: &[String],
-    _src_prefix: &str,
+    sorted_aliases: &[(String, String)],
+    skip_list: &[String],
+    src_prefix: &str,
 ) -> (String, Vec<RequireRewrite>) {
-    (content.to_string(), vec![]) // stub — no rewrites, causing tests to fail
+    let re = require_regex();
+    let mut rewrites: Vec<RequireRewrite> = Vec::new();
+    let mut new_content = content.to_string();
+
+    // Collect all require paths first to avoid borrowing issues when we mutate
+    // new_content via str::replace later.
+    let require_paths: Vec<String> = re
+        .captures_iter(content)
+        .filter_map(|cap| cap.get(1).map(|m| m.as_str().to_string()))
+        .collect();
+
+    for required_path in require_paths {
+        // ── 1. Skip list check ────────────────────────────────────────────────
+        // Matches Luau's `ignoreList` check in processSingleFile.
+        let should_skip = skip_list
+            .iter()
+            .any(|entry| required_path.starts_with(entry.as_str()));
+        if should_skip {
+            continue;
+        }
+
+        // ── 2. Built-in Roblox alias check (case-insensitive) ─────────────────
+        // Matches Luau `lowerPath:match("^@self/")` etc.
+        let lower = required_path.to_lowercase();
+        if lower.starts_with("@self/")
+            || lower == "@self"
+            || lower.starts_with("@game/")
+            || lower == "@game"
+        {
+            continue;
+        }
+
+        // ── 3. Relative path warning (warn but leave untouched) ───────────────
+        if required_path.starts_with("../") || required_path.starts_with("./") {
+            eprintln!(
+                "Warning: relative require path '{}' is not supported — leaving untouched",
+                required_path
+            );
+            continue;
+        }
+
+        // ── 4. Already correctly aliased check ────────────────────────────────
+        // If path already starts with a known @alias/ shortcut, it is correct —
+        // skip it to avoid double-rewriting.
+        let already_aliased = sorted_aliases
+            .iter()
+            .any(|(shortcut, _)| required_path.starts_with(shortcut.as_str()));
+        if already_aliased {
+            continue;
+        }
+
+        // ── 5. Longest-match alias resolution ────────────────────────────────
+        // sorted_aliases is pre-sorted by real path length descending, so the
+        // first match is always the most specific one (Pitfall 6).
+        let mut matched = false;
+        for (alias_shortcut, real_path) in sorted_aliases {
+            if required_path.starts_with(real_path.as_str()) {
+                // Build the new path: @Alias/remainder
+                let new_path =
+                    format!("{}{}", alias_shortcut, &required_path[real_path.len()..]);
+
+                // Replace the old require(...) call with the new one using
+                // plain string replacement (matches Luau's `content:gsub`).
+                let old_require = format!(r#"require("{required_path}")"#);
+                let new_require = format!(r#"require("{new_path}")"#);
+                new_content = new_content.replace(&old_require, &new_require);
+
+                rewrites.push(RequireRewrite {
+                    old: required_path.clone(),
+                    new: new_path,
+                });
+                matched = true;
+                break; // first (longest) match wins — stop looking
+            }
+        }
+
+        // ── 6. Unresolved src/ path warning ──────────────────────────────────
+        if !matched {
+            let src_slash = format!("{src_prefix}/");
+            if required_path.starts_with(&src_slash) || required_path == src_prefix {
+                eprintln!(
+                    "Warning: unresolved src require path '{}' — no alias matches, leaving untouched",
+                    required_path
+                );
+            }
+        }
+    }
+
+    (new_content, rewrites)
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -177,7 +361,7 @@ mod tests {
         let sorted = build_sorted_src_aliases(&aliases, "src");
 
         assert_eq!(sorted.len(), 2, "both aliases should appear");
-        // Equal length → alphabetical by alias name (@Alpha < @Beta)
+        // Equal length → alphabetical by alias shortcut name (@Alpha/ < @Beta/)
         assert_eq!(sorted[0].0, "@Alpha/", "Alpha should sort before Beta");
         assert_eq!(sorted[1].0, "@Beta/", "Beta should sort after Alpha");
     }
@@ -408,7 +592,7 @@ local b = require("src/server/api")
         let sorted = build_sorted_src_aliases(&aliases, "src");
         let skip = build_skip_list(&aliases, "src");
 
-        // Path already uses @Client/ notation
+        // Path already uses @Client/ notation — must not be rewritten
         let content = r#"local m = require("@Client/module")"#;
         let (new_content, rewrites) = process_file_content(content, &sorted, &skip, "src");
 
@@ -475,8 +659,8 @@ local b = require("src/server/api")
             .modified()
             .expect("mtime");
 
-        // Small sleep to ensure mtime difference would be observable
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        // Small sleep to ensure mtime difference would be observable if file were written
+        std::thread::sleep(std::time::Duration::from_millis(50));
 
         let aliases = standard_aliases();
         fix_requires(dir.path(), &aliases, "src").expect("fix_requires must succeed");
