@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::config;
+use crate::output;
 use crate::services::config_gen;
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -33,16 +34,16 @@ pub fn run_init() -> Result<()> {
     let has_project_json = Path::new("default.project.json").exists();
 
     if has_darklua {
-        println!("Detected .darklua.json");
+        output::info("Detected .darklua.json");
     }
     if has_rokit {
-        println!("Detected rokit.toml");
+        output::info("Detected rokit.toml");
     }
     if has_wally {
-        println!("Detected wally.toml");
+        output::info("Detected wally.toml");
     }
     if has_project_json {
-        println!("Detected default.project.json");
+        output::info("Detected default.project.json");
     }
 
     // ── Step 2: Handle existing ezpm.toml ────────────────────────────────────
@@ -51,7 +52,7 @@ pub fn run_init() -> Result<()> {
             .with_default(false)
             .prompt()?;
         if !overwrite {
-            println!("Aborted.");
+            output::info("Aborted.");
             return Ok(());
         }
     }
@@ -85,7 +86,7 @@ pub fn run_init() -> Result<()> {
             let rokit_content = generate_rokit_toml();
             std::fs::write("rokit.toml", rokit_content)
                 .context("Failed to write rokit.toml")?;
-            println!("Generated rokit.toml");
+            output::success("Generated rokit.toml");
         }
     } else {
         let create_rokit =
@@ -96,7 +97,7 @@ pub fn run_init() -> Result<()> {
             let rokit_content = generate_rokit_toml();
             std::fs::write("rokit.toml", rokit_content)
                 .context("Failed to write rokit.toml")?;
-            println!("Generated rokit.toml");
+            output::success("Generated rokit.toml");
         }
     }
 
@@ -172,7 +173,7 @@ pub fn run_init() -> Result<()> {
             if !path.exists() {
                 std::fs::create_dir_all(path)
                     .with_context(|| format!("Failed to create directory: {}", dir_path))?;
-                println!("Created directory: {}", dir_path);
+                output::success(&format!("Created directory: {}", dir_path));
             }
         }
     }
@@ -185,13 +186,13 @@ pub fn run_init() -> Result<()> {
         "darklua_build",
         &aliases,
     )?;
-    println!("Generated ezpm.toml");
+    output::success("Generated ezpm.toml");
 
     // ── Step 11: Regenerate .darklua.json and .luaurc ────────────────────────
     if !aliases.is_empty() {
         config_gen::write_config_files(Path::new("."), &aliases)?;
-        println!("Generated .darklua.json");
-        println!("Generated .luaurc");
+        output::success("Generated .darklua.json");
+        output::success("Generated .luaurc");
     }
 
     // ── Step 12: Generate default.project.json ───────────────────────────────
@@ -199,11 +200,12 @@ pub fn run_init() -> Result<()> {
         let project_json_str = generate_rojo_project(&project_name, &aliases, &src_dir);
         std::fs::write("default.project.json", project_json_str)
             .context("Failed to write default.project.json")?;
-        println!("Generated default.project.json");
+        output::success("Generated default.project.json");
     }
 
     // ── Step 13: Completion message ───────────────────────────────────────────
-    println!("Project initialized! Run `ezpm serve` to start developing.");
+    output::success("Project initialized!");
+    output::hint("Run `ezpm serve` to start developing.");
 
     Ok(())
 }

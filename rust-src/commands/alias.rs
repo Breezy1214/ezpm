@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::config;
+use crate::output;
 use crate::services::config_gen;
 
 /// Prompt for an alias name and path, add it to ezpm.toml, and auto-regenerate
@@ -14,13 +15,13 @@ use crate::services::config_gen;
 pub fn alias_add() -> Result<()> {
     let name = Text::new("Alias name (e.g., Client):").prompt()?;
     if name.trim().is_empty() {
-        println!("Aborted.");
+        output::info("Aborted.");
         return Ok(());
     }
 
     let raw_path = Text::new("Path (e.g., src/client/):").prompt()?;
     if raw_path.trim().is_empty() {
-        println!("Aborted.");
+        output::info("Aborted.");
         return Ok(());
     }
 
@@ -74,7 +75,7 @@ pub fn alias_add() -> Result<()> {
         }
     }
 
-    println!("Added alias @{} -> {}", name, path);
+    output::success(&format!("Added alias @{} -> {}", name, path));
     Ok(())
 }
 
@@ -88,7 +89,7 @@ pub fn alias_remove() -> Result<()> {
     let mut aliases: HashMap<String, String> = cfg.aliases.unwrap_or_default();
 
     if aliases.is_empty() {
-        println!("No aliases configured.");
+        output::info("No aliases configured.");
         return Ok(());
     }
 
@@ -104,7 +105,7 @@ pub fn alias_remove() -> Result<()> {
     let selected = MultiSelect::new("Select aliases to remove:", labels).prompt()?;
 
     if selected.is_empty() {
-        println!("No aliases selected.");
+        output::info("No aliases selected.");
         return Ok(());
     }
 
@@ -150,9 +151,9 @@ pub fn alias_remove() -> Result<()> {
     // Auto-regenerate .darklua.json and .luaurc (CONTEXT.md locked decision)
     config_gen::write_config_files(Path::new("."), &aliases)?;
 
-    println!("Removed {} alias(es).", names_to_remove.len());
+    output::success(&format!("Removed {} alias(es).", names_to_remove.len()));
     for name in &names_to_remove {
-        println!("  - @{}", name);
+        output::print_line(&format!("  - @{}", name));
     }
 
     Ok(())
@@ -165,7 +166,7 @@ pub fn alias_list(aliases: &Option<HashMap<String, String>>) -> Result<()> {
     let aliases = match aliases {
         Some(m) if !m.is_empty() => m,
         _ => {
-            println!("No aliases configured.");
+            output::info("No aliases configured.");
             return Ok(());
         }
     };
@@ -176,10 +177,10 @@ pub fn alias_list(aliases: &Option<HashMap<String, String>>) -> Result<()> {
     let max_len = sorted_names.iter().map(|n| n.len()).max().unwrap_or(0);
 
     for name in &sorted_names {
-        println!("@{:<width$} -> {}", name, aliases[*name], width = max_len);
+        output::print_line(&format!("@{:<width$} -> {}", name, aliases[*name], width = max_len));
     }
 
-    println!("\n{} alias(es) configured.", aliases.len());
+    output::print_line(&format!("\n{} alias(es) configured.", aliases.len()));
     Ok(())
 }
 
@@ -193,14 +194,14 @@ pub fn alias_sync() -> Result<()> {
     let aliases = match cfg.aliases {
         Some(ref m) if !m.is_empty() => m,
         _ => {
-            println!("No aliases found in ezpm.toml.");
+            output::info("No aliases found in ezpm.toml.");
             return Ok(());
         }
     };
 
     config_gen::write_config_files(Path::new("."), aliases)?;
 
-    println!("Synced {} aliases from ezpm.toml", aliases.len());
-    println!("Regenerated .darklua.json and .luaurc");
+    output::success(&format!("Synced {} aliases from ezpm.toml", aliases.len()));
+    output::info("Regenerated .darklua.json and .luaurc");
     Ok(())
 }

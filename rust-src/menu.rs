@@ -82,7 +82,7 @@ pub fn run_interactive_menu() {
                 }
 
                 // After command completes, pause briefly then loop back to menu
-                println!();
+                output::print_line("");
             }
             Err(_) => {
                 // User pressed Ctrl-C or Escape
@@ -155,7 +155,7 @@ fn run_command(cmd: &str) -> Result<()> {
                         output::print_line(&format!("  {} -> {}", rw.old, rw.new));
                     }
                 }
-                println!();
+                output::print_line("");
                 output::success(&format!(
                     "Fixed {} requires across {} files",
                     total_rewrites, result.files_changed

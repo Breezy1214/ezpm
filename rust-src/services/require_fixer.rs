@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use walkdir::WalkDir;
 
+use crate::output;
+
 // ─── Public types ────────────────────────────────────────────────────────────
 
 /// Overall result of running fix_requires over a directory tree.
@@ -249,10 +251,10 @@ pub fn process_file_content(
 
         // ── 3. Relative path warning (warn but leave untouched) ───────────────
         if required_path.starts_with("../") || required_path.starts_with("./") {
-            eprintln!(
-                "Warning: relative require path '{}' is not supported — leaving untouched",
+            output::warn(&format!(
+                "relative require path '{}' is not supported — leaving untouched",
                 required_path
-            );
+            ));
             continue;
         }
 
@@ -295,10 +297,10 @@ pub fn process_file_content(
         if !matched {
             let src_slash = format!("{src_prefix}/");
             if required_path.starts_with(&src_slash) || required_path == src_prefix {
-                eprintln!(
-                    "Warning: unresolved src require path '{}' — no alias matches, leaving untouched",
+                output::warn(&format!(
+                    "unresolved src require path '{}' — no alias matches, leaving untouched",
                     required_path
-                );
+                ));
             }
         }
     }
