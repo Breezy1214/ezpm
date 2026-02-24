@@ -10,9 +10,9 @@ See: .planning/PROJECT.md (updated 2026-02-24)
 ## Current Position
 
 Phase: 4 (Output Foundation)
-Plan: 1/2 complete
-Status: In progress — output module and global CLI flags complete; command handler migration pending
-Last activity: 2026-02-24 — Phase 4 Plan 1 complete (output module, global flags, main.rs migration)
+Plan: 2/2 complete
+Status: Complete — output module, global CLI flags, and all command handler migration complete
+Last activity: 2026-02-24 — Phase 4 Plan 2 complete (all command handlers migrated, spinners added, OUT-02 and OUT-03 satisfied)
 
 ```
 Progress: [###-------] 3/8 phases complete (v1.0 shipped, v1.1 starting)
@@ -32,7 +32,7 @@ Progress: [###-------] 3/8 phases complete (v1.0 shipped, v1.1 starting)
 | 01-foundation | 2 | 37 min | 18 min |
 | 02-core-services | 3 | 12 min | 4 min |
 | 03-simple-commands | 5 | 15 min | 3 min |
-| 04-output-foundation | 1 (of 2) | 2 min | 2 min |
+| 04-output-foundation | 2 (of 2) | 10 min | 5 min |
 
 ## Accumulated Context
 
@@ -53,6 +53,11 @@ Summary: 9 key decisions made during v1.0, all marked Good.
 - Version footer update notification uses output::info() (stdout ▸ prefix) not raw eprintln — gets branded cyan prefix and obeys --quiet
 - OnceLock global state is correct pattern for CLI binary — not a library; output module in lib.rs consumed exclusively by binary
 
+**Phase 4 Plan 2 decisions:**
+- Logo println! calls kept as direct println! with if_supports_color — output module lacks a raw-colored-line variant; plan explicitly specified this implementation pattern
+- Subprocess verbosity pattern established: is_verbose() -> .status() (pass-through) vs .output() (capture), applied uniformly across install.rs and quality.rs
+- pb.suspend(|| output::warn(...)) used for warnings during spinner spin to prevent terminal corruption
+
 ### Pending Todos
 
 None.
@@ -68,6 +73,6 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-24
-Stopped at: Completed 04-01-PLAN.md — output module + global flags + main.rs migration
+Stopped at: Completed 04-02-PLAN.md — all command handlers migrated to output module, spinners added
 Resume file: None
-Next action: Execute Phase 4 Plan 2 (command handler migration — menu.rs, commands/, services/)
+Next action: Phase 4 complete — begin Phase 5 (Serve Services): ProcessManager + FileWatcher
