@@ -1,4 +1,7 @@
 use anyhow::Result;
+use owo_colors::{OwoColorize, Stream};
+
+use crate::output;
 
 // ─── Menu items ───────────────────────────────────────────────────────────────
 
@@ -27,13 +30,13 @@ const MENU_ITEMS: &[(&str, &str)] = &[
 // ─── ASCII logo ───────────────────────────────────────────────────────────────
 fn print_logo(version: &str) {
     println!();
-    println!("  ███████╗███████╗██████╗ ███╗   ███╗");
-    println!("  ██╔════╝╚══███╔╝██╔══██╗████╗ ████║");
-    println!("  █████╗    ███╔╝ ██████╔╝██╔████╔██║");
-    println!("  ██╔══╝   ███╔╝  ██╔═══╝ ██║╚██╔╝██║");
-    println!("  ███████╗███████╗██║     ██║ ╚═╝ ██║");
-    println!("  ╚══════╝╚══════╝╚═╝     ╚═╝     ╚═╝");
-    println!("                              v{}", version);
+    println!("{}", "  ███████╗███████╗██████╗ ███╗   ███╗".if_supports_color(Stream::Stdout, |t| t.cyan()));
+    println!("{}", "  ██╔════╝╚══███╔╝██╔══██╗████╗ ████║".if_supports_color(Stream::Stdout, |t| t.cyan()));
+    println!("{}", "  █████╗    ███╔╝ ██████╔╝██╔████╔██║".if_supports_color(Stream::Stdout, |t| t.cyan()));
+    println!("{}", "  ██╔══╝   ███╔╝  ██╔═══╝ ██║╚██╔╝██║".if_supports_color(Stream::Stdout, |t| t.cyan()));
+    println!("{}", "  ███████╗███████╗██║     ██║ ╚═╝ ██║".if_supports_color(Stream::Stdout, |t| t.cyan()));
+    println!("{}", "  ╚══════╝╚══════╝╚═╝     ╚═╝     ╚═╝".if_supports_color(Stream::Stdout, |t| t.cyan()));
+    println!("{}", format!("                              v{}", version).if_supports_color(Stream::Stdout, |t| t.cyan()));
     println!();
 }
 
@@ -69,13 +72,13 @@ pub fn run_interactive_menu() {
                 }
 
                 if cmd == "exit" {
-                    println!("Goodbye!");
+                    output::info("Goodbye!");
                     std::process::exit(0);
                 }
 
                 // Execute the selected command and show any errors
                 if let Err(e) = run_command(cmd) {
-                    eprintln!("Error: {}", e);
+                    output::error(&format!("Error: {}", e));
                 }
 
                 // After command completes, pause briefly then loop back to menu
@@ -101,13 +104,13 @@ fn run_command(cmd: &str) -> Result<()> {
     let (cfg, warnings) = match loaded {
         Ok(pair) => pair,
         Err(e) => {
-            eprintln!("Warning: could not load ezpm.toml: {}", e);
+            output::warn(&format!("Warning: could not load ezpm.toml: {}", e));
             (crate::config::EzpmConfig::default(), vec![])
         }
     };
 
     for w in &warnings {
-        eprintln!("{}", w);
+        output::warn(w);
     }
 
     let src = cfg
@@ -140,35 +143,35 @@ fn run_command(cmd: &str) -> Result<()> {
             let result =
                 crate::services::require_fixer::fix_requires(&root_dir, &aliases, src)?;
             if result.files_changed == 0 {
-                println!(
+                output::success(&format!(
                     "All requires up to date. 0 changes across {} files.",
                     result.total_files_scanned
-                );
+                ));
             } else {
                 let total_rewrites: usize = result.changes.iter().map(|c| c.rewrites.len()).sum();
                 for file_change in &result.changes {
-                    println!("{}:", file_change.file.display());
+                    output::print_line(&format!("{}:", file_change.file.display()));
                     for rw in &file_change.rewrites {
-                        println!("  {} -> {}", rw.old, rw.new);
+                        output::print_line(&format!("  {} -> {}", rw.old, rw.new));
                     }
                 }
                 println!();
-                println!(
+                output::success(&format!(
                     "Fixed {} requires across {} files",
                     total_rewrites, result.files_changed
-                );
+                ));
             }
             Ok(())
         }
         "serve" => {
-            println!(
+            output::info(&format!(
                 "serve is coming in a future update. Current version: {}",
                 env!("CARGO_PKG_VERSION")
-            );
+            ));
             Ok(())
         }
         _ => {
-            eprintln!("Unknown command: {}", cmd);
+            output::warn(&format!("Unknown command: {}", cmd));
             Ok(())
         }
     }

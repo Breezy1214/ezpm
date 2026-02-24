@@ -141,6 +141,13 @@ pub fn verbose_line(msg: &str) {
     println!("{}", msg.if_supports_color(Stream::Stdout, |t| t.dimmed()));
 }
 
+/// Returns true if --verbose flag is active.
+/// Used by command handlers to decide whether to use .status() (pass-through)
+/// or .output() (capture) for subprocess calls.
+pub fn is_verbose() -> bool {
+    config().verbose
+}
+
 /// Print a neutral line to stdout. Plain println! replacement for rows that
 /// are neither success/error/info/warn (e.g., alias table rows, help text).
 /// Suppressed by --quiet.

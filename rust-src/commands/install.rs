@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use std::path::Path;
 use std::process::Command;
 
+use crate::output;
 use crate::services::sourcemap;
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
@@ -24,59 +25,107 @@ fn is_tool_available(tool: &str) -> bool {
 /// if a `wally.toml` exists in the current directory (INST-01, INST-02,
 /// INST-03).
 ///
-/// Uses `.status()` for all subprocess calls so output streams to the user's
-/// terminal in real-time (Pitfall 4 — don't use `.output()` for long-running
-/// tools).
+/// In default mode subprocess output is captured so the spinner can show
+/// cleanly. In --verbose mode subprocess output streams to the terminal.
 pub fn install_tools(_src_prefix: &str) -> Result<()> {
-    println!("Installing development tools...");
+    let pb = output::start_spinner("Installing development tools...");
 
     // ── 1. Rokit install ────────────────────────────────────────────────────
-    let rokit_status = Command::new("rokit")
-        .arg("install")
-        .status()
-        .context("Failed to run rokit. Is it installed?")?;
+    if output::is_verbose() {
+        pb.suspend(|| {});
+        let rokit_status = Command::new("rokit")
+            .arg("install")
+            .status()
+            .context("Failed to run rokit. Is it installed?")?;
 
-    if !rokit_status.success() {
-        anyhow::bail!(
-            "rokit install failed with exit code: {:?}",
-            rokit_status.code()
-        );
+        if !rokit_status.success() {
+            pb.finish_and_clear();
+            anyhow::bail!(
+                "rokit install failed with exit code: {:?}",
+                rokit_status.code()
+            );
+        }
+    } else {
+        let rokit_out = Command::new("rokit")
+            .arg("install")
+            .output()
+            .context("Failed to run rokit. Is it installed?")?;
+
+        if !rokit_out.status.success() {
+            pb.finish_and_clear();
+            anyhow::bail!(
+                "rokit install failed with exit code: {:?}",
+                rokit_out.status.code()
+            );
+        }
     }
 
     // ── 2. Wally (optional) ─────────────────────────────────────────────────
     if Path::new("wally.toml").exists() {
-        println!("Installing Wally packages...");
+        pb.set_message("Installing Wally packages...");
 
-        let wally_status = Command::new("wally")
-            .arg("install")
-            .status()
-            .context("Failed to run wally. Is it installed? (rokit install)")?;
+        if output::is_verbose() {
+            pb.suspend(|| {});
+            let wally_status = Command::new("wally")
+                .arg("install")
+                .status()
+                .context("Failed to run wally. Is it installed? (rokit install)")?;
 
-        if wally_status.success() {
-            // Run wally-package-types for Packages/
-            if Path::new("Packages").exists() {
-                Command::new("wally-package-types")
-                    .arg("--sourcemap")
-                    .arg("sourcemap.json")
-                    .arg("Packages")
-                    .status()
-                    .context("Failed to run wally-package-types")?;
+            if wally_status.success() {
+                // Run wally-package-types for Packages/
+                if Path::new("Packages").exists() {
+                    Command::new("wally-package-types")
+                        .arg("--sourcemap")
+                        .arg("sourcemap.json")
+                        .arg("Packages")
+                        .status()
+                        .context("Failed to run wally-package-types")?;
+                }
+
+                // Run wally-package-types for ServerPackages/ if it was created
+                // (INST-03)
+                if Path::new("ServerPackages").exists() {
+                    Command::new("wally-package-types")
+                        .arg("--sourcemap")
+                        .arg("sourcemap.json")
+                        .arg("ServerPackages")
+                        .status()
+                        .context("Failed to run wally-package-types for ServerPackages")?;
+                }
             }
+        } else {
+            let wally_out = Command::new("wally")
+                .arg("install")
+                .output()
+                .context("Failed to run wally. Is it installed? (rokit install)")?;
 
-            // Run wally-package-types for ServerPackages/ if it was created
-            // (INST-03)
-            if Path::new("ServerPackages").exists() {
-                Command::new("wally-package-types")
-                    .arg("--sourcemap")
-                    .arg("sourcemap.json")
-                    .arg("ServerPackages")
-                    .status()
-                    .context("Failed to run wally-package-types for ServerPackages")?;
+            if wally_out.status.success() {
+                // Run wally-package-types for Packages/
+                if Path::new("Packages").exists() {
+                    Command::new("wally-package-types")
+                        .arg("--sourcemap")
+                        .arg("sourcemap.json")
+                        .arg("Packages")
+                        .output()
+                        .context("Failed to run wally-package-types")?;
+                }
+
+                // Run wally-package-types for ServerPackages/ if it was created
+                // (INST-03)
+                if Path::new("ServerPackages").exists() {
+                    Command::new("wally-package-types")
+                        .arg("--sourcemap")
+                        .arg("sourcemap.json")
+                        .arg("ServerPackages")
+                        .output()
+                        .context("Failed to run wally-package-types for ServerPackages")?;
+                }
             }
         }
     }
 
-    println!("All tools installed successfully!");
+    pb.finish_and_clear();
+    output::success("All tools installed successfully!");
     Ok(())
 }
 
@@ -88,12 +137,12 @@ pub fn install_tools(_src_prefix: &str) -> Result<()> {
 pub fn setup_wally_packages(_src_prefix: &str) -> Result<()> {
     // ── Gate: wally.toml must exist ─────────────────────────────────────────
     if !Path::new("wally.toml").exists() {
-        println!("No wally.toml found, skipping.");
+        output::info("No wally.toml found, skipping.");
         return Ok(());
     }
 
-    println!("Setting up Wally packages...");
-    println!("Clearing current systems...");
+    let pb = output::start_spinner("Setting up Wally packages...");
+    pb.set_message("Clearing current systems...");
 
     // ── Remove stale artefacts ───────────────────────────────────────────────
     if Path::new("sourcemap.json").exists() {
@@ -114,22 +163,39 @@ pub fn setup_wally_packages(_src_prefix: &str) -> Result<()> {
     }
 
     // ── Wally install ────────────────────────────────────────────────────────
-    println!("Installing Wally packages...");
+    pb.set_message("Installing Wally packages...");
 
-    let wally_status = Command::new("wally")
-        .arg("install")
-        .status()
-        .context("Failed to run wally. Is it installed? (rokit install)")?;
+    if output::is_verbose() {
+        pb.suspend(|| {});
+        let wally_status = Command::new("wally")
+            .arg("install")
+            .status()
+            .context("Failed to run wally. Is it installed? (rokit install)")?;
 
-    if !wally_status.success() {
-        anyhow::bail!(
-            "wally install failed with exit code: {:?}",
-            wally_status.code()
-        );
+        if !wally_status.success() {
+            pb.finish_and_clear();
+            anyhow::bail!(
+                "wally install failed with exit code: {:?}",
+                wally_status.code()
+            );
+        }
+    } else {
+        let wally_out = Command::new("wally")
+            .arg("install")
+            .output()
+            .context("Failed to run wally. Is it installed? (rokit install)")?;
+
+        if !wally_out.status.success() {
+            pb.finish_and_clear();
+            anyhow::bail!(
+                "wally install failed with exit code: {:?}",
+                wally_out.status.code()
+            );
+        }
     }
 
     // ── First sourcemap pass ─────────────────────────────────────────────────
-    println!("Generating source map...");
+    pb.set_message("Generating source map...");
 
     let cwd =
         std::env::current_dir().context("Failed to determine current directory")?;
@@ -137,34 +203,46 @@ pub fn setup_wally_packages(_src_prefix: &str) -> Result<()> {
         .context("Failed to generate sourcemap")?;
 
     if !sm_result.success {
-        eprintln!("Warning: sourcemap generation failed: {}", sm_result.stderr);
+        pb.suspend(|| output::warn(&format!("Warning: sourcemap generation failed: {}", sm_result.stderr)));
     }
 
     // ── wally-package-types for each package directory ───────────────────────
     for pkg_dir in &["Packages", "ServerPackages"] {
         if Path::new(pkg_dir).exists() {
-            println!("Setting up types for {pkg_dir}...");
+            pb.set_message(format!("Setting up types for {pkg_dir}..."));
 
-            Command::new("wally-package-types")
-                .arg("--sourcemap")
-                .arg("sourcemap.json")
-                .arg(pkg_dir)
-                .status()
-                .context("Failed to run wally-package-types")?;
+            if output::is_verbose() {
+                pb.suspend(|| {});
+                Command::new("wally-package-types")
+                    .arg("--sourcemap")
+                    .arg("sourcemap.json")
+                    .arg(pkg_dir)
+                    .status()
+                    .context("Failed to run wally-package-types")?;
+            } else {
+                Command::new("wally-package-types")
+                    .arg("--sourcemap")
+                    .arg("sourcemap.json")
+                    .arg(pkg_dir)
+                    .output()
+                    .context("Failed to run wally-package-types")?;
+            }
         }
     }
 
     // ── Second sourcemap pass (matches Luau behaviour) ───────────────────────
+    pb.set_message("Finalizing...");
     let sm_result2 = sourcemap::generate_sourcemap(&cwd)
         .context("Failed to generate final sourcemap")?;
 
     if !sm_result2.success {
-        eprintln!(
+        pb.suspend(|| output::warn(&format!(
             "Warning: final sourcemap generation failed: {}",
             sm_result2.stderr
-        );
+        )));
     }
 
-    println!("Setup complete!");
+    pb.finish_and_clear();
+    output::success("Wally packages set up!");
     Ok(())
 }

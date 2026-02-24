@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
 use std::process::Command;
 
+use crate::output;
+
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
 /// Check whether a tool binary is available in PATH by invoking `--version`
@@ -27,15 +29,15 @@ pub fn lint(src_path: &str) -> Result<()> {
 
     // ── Announce availability ────────────────────────────────────────────────
     if !has_selene {
-        println!("Skipping Selene (not installed)");
+        output::info("Skipping Selene (not installed)");
     }
     if !has_stylua {
-        println!("Skipping StyLua (not installed)");
+        output::info("Skipping StyLua (not installed)");
     }
 
     // ── Graceful skip if no tools at all (QUAL-02) ───────────────────────────
     if !has_selene && !has_stylua {
-        println!("No linting tools installed.");
+        output::info("No linting tools installed.");
         return Ok(());
     }
 
@@ -43,34 +45,59 @@ pub fn lint(src_path: &str) -> Result<()> {
 
     // ── Selene ───────────────────────────────────────────────────────────────
     if has_selene {
-        let selene_status = Command::new("selene")
-            .arg(src_path)
-            .status()
-            .context("Failed to run selene")?;
+        if output::is_verbose() {
+            let selene_status = Command::new("selene")
+                .arg(src_path)
+                .status()
+                .context("Failed to run selene")?;
 
-        if !selene_status.success() {
-            println!("Selene linting found issues");
-            issues_found = true;
+            if !selene_status.success() {
+                output::warn("Selene linting found issues");
+                issues_found = true;
+            }
+        } else {
+            let selene_out = Command::new("selene")
+                .arg(src_path)
+                .output()
+                .context("Failed to run selene")?;
+
+            if !selene_out.status.success() {
+                output::warn("Selene linting found issues");
+                issues_found = true;
+            }
         }
     }
 
     // ── StyLua --check ───────────────────────────────────────────────────────
     if has_stylua {
-        let stylua_status = Command::new("stylua")
-            .arg("--check")
-            .arg(src_path)
-            .status()
-            .context("Failed to run stylua")?;
+        if output::is_verbose() {
+            let stylua_status = Command::new("stylua")
+                .arg("--check")
+                .arg(src_path)
+                .status()
+                .context("Failed to run stylua")?;
 
-        if !stylua_status.success() {
-            println!("StyLua formatting issues found. Run `ezpm format` to fix.");
-            issues_found = true;
+            if !stylua_status.success() {
+                output::warn("StyLua formatting issues found. Run `ezpm format` to fix.");
+                issues_found = true;
+            }
+        } else {
+            let stylua_out = Command::new("stylua")
+                .arg("--check")
+                .arg(src_path)
+                .output()
+                .context("Failed to run stylua")?;
+
+            if !stylua_out.status.success() {
+                output::warn("StyLua formatting issues found. Run `ezpm format` to fix.");
+                issues_found = true;
+            }
         }
     }
 
     // ── Summary ───────────────────────────────────────────────────────────────
     if !issues_found {
-        println!("All code quality checks passed!");
+        output::success("All code quality checks passed!");
     }
 
     Ok(())
@@ -81,25 +108,38 @@ pub fn lint(src_path: &str) -> Result<()> {
 /// Skips gracefully if StyLua is not installed, printing an installation hint.
 pub fn format_code(src_path: &str) -> Result<()> {
     if !is_tool_available("stylua") {
-        println!(
-            "StyLua is not installed. Install with: rokit add JohnnyMorganz/StyLua@2.3.1"
-        );
+        output::info("StyLua is not installed.");
+        output::hint("Install with: rokit add JohnnyMorganz/StyLua@2.3.1");
         return Ok(());
     }
 
-    let stylua_status = Command::new("stylua")
-        .arg(src_path)
-        .status()
-        .context("Failed to run stylua")?;
+    if output::is_verbose() {
+        let stylua_status = Command::new("stylua")
+            .arg(src_path)
+            .status()
+            .context("Failed to run stylua")?;
 
-    if !stylua_status.success() {
-        anyhow::bail!(
-            "stylua formatting failed with exit code: {:?}",
-            stylua_status.code()
-        );
+        if !stylua_status.success() {
+            anyhow::bail!(
+                "stylua formatting failed with exit code: {:?}",
+                stylua_status.code()
+            );
+        }
+    } else {
+        let stylua_out = Command::new("stylua")
+            .arg(src_path)
+            .output()
+            .context("Failed to run stylua")?;
+
+        if !stylua_out.status.success() {
+            anyhow::bail!(
+                "stylua formatting failed with exit code: {:?}",
+                stylua_out.status.code()
+            );
+        }
     }
 
-    println!("Code formatted successfully!");
+    output::success("Code formatted successfully!");
     Ok(())
 }
 
@@ -110,10 +150,8 @@ pub fn format_code(src_path: &str) -> Result<()> {
 /// user exits with Ctrl-C.
 pub fn docs(docs_enabled: bool) -> Result<()> {
     if !docs_enabled {
-        println!(
-            "Documentation is not set up for this project. \
-             Set `docs_enabled = true` in ezpm.toml [display] section."
-        );
+        output::info("Documentation is not set up for this project.");
+        output::hint("Set docs_enabled = true in ezpm.toml [display] section.");
         return Ok(());
     }
 
