@@ -9,6 +9,7 @@ use crate::services::sourcemap;
 /// Check whether a tool binary is available in PATH by invoking `--version`
 /// silently with `.output()` (Pitfall 4 from RESEARCH.md — captured, not
 /// passed-through).
+#[allow(dead_code)]
 fn is_tool_available(tool: &str) -> bool {
     Command::new(tool)
         .arg("--version")
