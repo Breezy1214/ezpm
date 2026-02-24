@@ -37,8 +37,6 @@ pub struct ServeConfig {
 }
 
 /// Parse an ezpm.toml string, returning the config and any warnings about unknown fields.
-/// Unknown fields produce warnings but do not cause errors.
-/// An empty string returns defaults with no warnings.
 pub fn load_config_from_str(input: &str) -> Result<(EzpmConfig, Vec<String>)> {
     if input.trim().is_empty() {
         return Ok((EzpmConfig::default(), vec![]));
@@ -62,12 +60,11 @@ pub fn load_config_from_str(input: &str) -> Result<(EzpmConfig, Vec<String>)> {
 
 /// Try to import aliases from .luaurc or .darklua.json in the current directory.
 /// .luaurc is preferred if it exists; falls back to .darklua.json.
-/// The `lune` alias is skipped (it's a typedef path, not a user alias).
 pub fn import_aliases_from_darklua() -> HashMap<String, String> {
     import_aliases_from_dir(Path::new("."))
 }
 
-/// Import aliases from a specific directory. Used for testing.
+/// Import aliases from a specific directory.
 pub fn import_aliases_from_dir(dir: &Path) -> HashMap<String, String> {
     // Try .luaurc first
     let luaurc_path = dir.join(".luaurc");

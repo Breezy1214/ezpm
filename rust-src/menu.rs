@@ -14,9 +14,6 @@ const MENU_OPTIONS: &[&str] = &[
     "Exit",
 ];
 
-/// Run the interactive arrow-key menu. When any command other than "Exit" is
-/// selected, prints a friendly coming-soon message. Handles Ctrl-C / Escape
-/// gracefully by exiting with code 0.
 pub fn run_interactive_menu() {
     let version = env!("CARGO_PKG_VERSION");
 
@@ -35,7 +32,6 @@ pub fn run_interactive_menu() {
                 }
             }
             Err(_) => {
-                // User pressed Ctrl-C or Escape — exit cleanly
                 process::exit(0);
             }
         }
