@@ -39,7 +39,7 @@ pub fn is_newer(current: &str, latest: &str) -> bool {
 /// Missing or unparseable components default to 0.
 fn parse_version(version: &str) -> [u64; 3] {
     // Strip optional leading 'v' or 'V' prefix
-    let trimmed = version.trim_start_matches(|c| c == 'v' || c == 'V');
+    let trimmed = version.trim_start_matches(['v', 'V']);
 
     let mut parts = [0u64; 3];
     for (i, component) in trimmed.splitn(3, '.').enumerate() {
