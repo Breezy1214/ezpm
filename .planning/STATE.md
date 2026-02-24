@@ -11,10 +11,10 @@ See: .planning/PROJECT.md (updated 2026-02-24)
 
 Phase: 3 of 5 (Simple Commands)
 Plan: 5 of 5 in current phase
-Status: In Progress
-Last activity: 2026-02-24 — Completed 03-04: Alias command handlers (alias_add, alias_remove, alias_list, alias_sync)
+Status: Complete
+Last activity: 2026-02-24 — Completed 03-05: CLI dispatch integration, menu upgrade, and background version check
 
-Progress: [████████░░] 75%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
@@ -41,6 +41,7 @@ Progress: [████████░░] 75%
 | Phase 03-simple-commands P02 | 2 | 2 tasks | 3 files |
 | Phase 03-simple-commands P03 | 5 | 2 tasks | 2 files |
 | Phase 03-simple-commands P04 | 3 | 2 tasks | 2 files |
+| Phase 03-simple-commands P05 | 4 | 3 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -85,6 +86,10 @@ Recent decisions affecting current work:
 - [03-04]: All four alias functions written atomically in one file — ensures consistent load-modify-save-regenerate pattern
 - [03-04]: alias_list takes &Option<HashMap> parameter for testability and caller flexibility
 - [03-04]: alias_sync explicitly calls load_config() to fulfill CFG-05 disk-reload requirement
+- [03-05]: ureq v3 read_to_string() takes no args and returns String directly (vs v2 which wrote into &mut String)
+- [03-05]: Version check footer goes to stderr exclusively so it never corrupts piped stdout output
+- [03-05]: menu run_command() loads config fresh each invocation so alias changes take effect without restart
+- [03-05]: Category header items use empty command_key; selecting one loops back silently (Pitfall 1 from RESEARCH.md)
 
 ### Pending Todos
 
@@ -98,5 +103,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-24
-Stopped at: Completed 03-04-PLAN.md — Alias command handlers (alias_add, alias_remove, alias_list, alias_sync)
+Stopped at: Completed 03-05-PLAN.md — CLI dispatch integration, menu upgrade, and background version check (Phase 3 complete)
 Resume file: None

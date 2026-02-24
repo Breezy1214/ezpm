@@ -9,15 +9,15 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### CLI Foundation
 
-- [ ] **CLI-01**: User sees interactive arrow-key menu when running `ezpm` with no arguments
-- [ ] **CLI-02**: User can run any command directly as a subcommand (e.g., `ezpm serve`, `ezpm init`)
+- [x] **CLI-01**: User sees interactive arrow-key menu when running `ezpm` with no arguments
+- [x] **CLI-02**: User can run any command directly as a subcommand (e.g., `ezpm serve`, `ezpm init`)
 - [ ] **CLI-03**: User sees colored terminal output with ANSI codes; NO_COLOR env var respected
 - [ ] **CLI-04**: CLI returns proper non-zero exit codes on failure for CI pipeline compatibility
-- [ ] **CLI-05**: User sees version check notification on startup when a newer version is available on GitHub
+- [x] **CLI-05**: User sees version check notification on startup when a newer version is available on GitHub
 - [ ] **CLI-06**: User sees structured error messages with context, source location, and suggested fixes
 - [ ] **CLI-07**: User sees progress spinners/bars during multi-step operations (init, install, serve startup)
 - [ ] **CLI-08**: User can pass `--verbose` or `--quiet` flags to control output verbosity
-- [ ] **CLI-09**: `ezpm help` and `-h`/`--help` flags display all available commands and usage
+- [x] **CLI-09**: `ezpm help` and `-h`/`--help` flags display all available commands and usage
 
 ### Configuration
 
@@ -128,15 +128,15 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| CLI-01 | Phase 3 | Pending |
-| CLI-02 | Phase 3 | Pending |
+| CLI-01 | Phase 3 | Complete |
+| CLI-02 | Phase 3 | Complete |
 | CLI-03 | Phase 5 | Pending |
 | CLI-04 | Phase 5 | Pending |
-| CLI-05 | Phase 3 | Pending |
+| CLI-05 | Phase 3 | Complete |
 | CLI-06 | Phase 5 | Pending |
 | CLI-07 | Phase 5 | Pending |
 | CLI-08 | Phase 5 | Pending |
-| CLI-09 | Phase 3 | Pending |
+| CLI-09 | Phase 3 | Complete |
 | CFG-01 | Phase 1 | Complete |
 | CFG-02 | Phase 3 | Complete |
 | CFG-03 | Phase 3 | Complete |
