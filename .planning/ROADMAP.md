@@ -13,7 +13,7 @@ A complete rewrite of EZPM from Luau/Lune to Rust. The journey: stand up the Rus
 Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Foundation** - Rust project scaffold, TOML config parsing, CI matrix, and integration test harness (completed 2026-02-24)
-- [ ] **Phase 2: Core Services** - ProcessManager, FileWatcher, config generators, and require fixer as independently testable modules
+- [x] **Phase 2: Core Services** - ProcessManager, FileWatcher, config generators, and require fixer as independently testable modules (completed 2026-02-24)
 - [ ] **Phase 3: Simple Commands** - All commands except serve: init, alias, install, fix-requires, lint, format, docs, interactive menu, version check
 - [ ] **Phase 4: Serve Pipeline** - Full ezpm serve: startup pipeline, OS-native file watching, incremental builds, graceful shutdown
 - [ ] **Phase 5: UX Polish and Distribution** - Progress indicators, colored output, structured errors, verbose/quiet flags, cross-platform binaries, CI/CD release
@@ -61,7 +61,13 @@ Plans:
   3. Running `ezpm alias add`, `ezpm alias remove`, `ezpm alias list`, and `ezpm alias sync` manage aliases and regenerate .darklua.json and .luaurc correctly
   4. Running `ezpm install` runs Rokit, Wally (if wally.toml exists), and wally-package-types in sequence
   5. Running `ezpm lint` invokes Selene and StyLua --check (skipping gracefully if not installed); `ezpm format` runs StyLua on source directory
-**Plans**: TBD
+**Plans**: 5 plans
+Plans:
+- [ ] 03-01-PLAN.md — Config infrastructure: ureq dependency, TOML serialization, check_updates field, commands module scaffold
+- [ ] 03-02-PLAN.md — Install + quality commands: rokit/wally/selene/stylua/moonwave subprocess wrappers
+- [ ] 03-03-PLAN.md — Init command: interactive wizard with file detection, alias import, scaffolding, and file generation
+- [ ] 03-04-PLAN.md — Alias commands: add, remove, list, sync with auto-regeneration of .darklua.json and .luaurc
+- [ ] 03-05-PLAN.md — CLI wiring + menu upgrade: all handlers in main.rs, background version check, category-grouped menu with ASCII logo
 
 ### Phase 4: Serve Pipeline
 **Goal**: Developers can run `ezpm serve` for their full Roblox dev loop — build, watch, instant change propagation, and clean shutdown
@@ -95,7 +101,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundation | 2/2 | Complete   | 2026-02-24 |
-| 2. Core Services | 2/3 | In Progress | - |
-| 3. Simple Commands | 0/TBD | Not started | - |
+| 2. Core Services | 3/3 | Complete   | 2026-02-24 |
+| 3. Simple Commands | 0/5 | Not started | - |
 | 4. Serve Pipeline | 0/TBD | Not started | - |
 | 5. UX Polish and Distribution | 0/TBD | Not started | - |
