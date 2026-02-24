@@ -93,7 +93,7 @@ Plans:
 | 1. Foundation | v1.0 | 2/2 | Complete | 2026-02-24 |
 | 2. Core Services | v1.0 | 3/3 | Complete | 2026-02-24 |
 | 3. Simple Commands | v1.0 | 5/5 | Complete | 2026-02-24 |
-| 4. Output Foundation | v1.1 | 0/2 | Planning complete | - |
+| 4. Output Foundation | 1/2 | In Progress|  | - |
 | 5. Serve Services | v1.1 | 0/TBD | Not started | - |
 | 6. Serve Command | v1.1 | 0/TBD | Not started | - |
 | 7. DX Polish | v1.1 | 0/TBD | Not started | - |
