@@ -6,32 +6,25 @@ use anyhow::Result;
 /// Category headers have an empty command_key — selecting one loops back to
 /// the menu without executing any command (Pitfall 1 from RESEARCH.md).
 const MENU_ITEMS: &[(&str, &str)] = &[
-    ("─── Project Setup ───", ""),
     ("init           Create a new EZPM project", "init"),
-    ("install        Install tools and packages", "install"),
-    ("─── Alias Management ───", ""),
-    ("alias add      Add a new path alias", "alias-add"),
-    ("alias remove   Remove path aliases", "alias-remove"),
-    ("alias list     List all aliases", "alias-list"),
-    ("alias sync     Sync aliases from ezpm.toml", "alias-sync"),
-    ("─── Code Quality ───", ""),
-    ("lint           Run Selene and StyLua checks", "lint"),
-    ("format         Format source with StyLua", "format"),
-    ("docs           Launch Moonwave docs server", "docs"),
-    ("─── Build Tools ───", ""),
+    ("serve          Start file watcher + DarkLua + Rojo", "serve"),
     ("fix-requires   Rewrite require paths to @alias notation", "fix-requires"),
+    ("install        Install tools and packages", "install"),
     (
         "setup-wally-packages   Clean + install + type Wally packages",
         "setup-wally-packages",
     ),
-    ("─── Development ───", ""),
-    ("serve          Start file watcher + DarkLua + Rojo", "serve"),
+    ("alias add      Add a new path alias", "alias-add"),
+    ("alias remove   Remove path aliases", "alias-remove"),
+    ("alias list     List all aliases", "alias-list"),
+    ("alias sync     Sync aliases from ezpm.toml", "alias-sync"),
+    ("lint           Run Selene and StyLua checks", "lint"),
+    ("format         Format source with StyLua", "format"),
+    ("docs           Launch Moonwave docs server", "docs"),
     ("exit", "exit"),
 ];
 
 // ─── ASCII logo ───────────────────────────────────────────────────────────────
-
-/// Print the ASCII art EZPM logo with the current version number.
 fn print_logo(version: &str) {
     println!();
     println!("  ███████╗███████╗██████╗ ███╗   ███╗");

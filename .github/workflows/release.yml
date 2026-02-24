@@ -62,9 +62,6 @@ jobs:
 
       - name: Build (Windows aarch64)
         if: matrix.os == 'windows' && matrix.arch == 'aarch64'
-        # Cross-compiling aarch64 from x86_64 Windows runner.
-        # Note: if this fails in the future due to linker issues, consider
-        # switching to actions-rust-cross for this target only.
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Package (Unix)
