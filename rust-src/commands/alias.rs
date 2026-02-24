@@ -1,0 +1,206 @@
+use anyhow::Result;
+use inquire::{Confirm, MultiSelect, Text};
+use std::collections::HashMap;
+use std::path::Path;
+
+use crate::config;
+use crate::services::config_gen;
+
+/// Prompt for an alias name and path, add it to ezpm.toml, and auto-regenerate
+/// .darklua.json and .luaurc.
+///
+/// Implements CFG-02: alias_add prompts for name and path, saves to ezpm.toml,
+/// and auto-regenerates .darklua.json + .luaurc.
+pub fn alias_add() -> Result<()> {
+    let name = Text::new("Alias name (e.g., Client):").prompt()?;
+    if name.trim().is_empty() {
+        println!("Aborted.");
+        return Ok(());
+    }
+
+    let raw_path = Text::new("Path (e.g., src/client/):").prompt()?;
+    if raw_path.trim().is_empty() {
+        println!("Aborted.");
+        return Ok(());
+    }
+
+    // Pitfall 5: normalize trailing slash
+    let path = if raw_path.ends_with('/') {
+        raw_path
+    } else {
+        format!("{}/", raw_path)
+    };
+
+    let (cfg, _warnings) = config::load_config()?;
+
+    let mut aliases: HashMap<String, String> = cfg
+        .aliases
+        .unwrap_or_default();
+
+    aliases.insert(name.clone(), path.clone());
+
+    let project_name = cfg
+        .project
+        .as_ref()
+        .and_then(|p| p.name.as_deref())
+        .unwrap_or("project")
+        .to_string();
+    let src_dir = cfg
+        .paths
+        .as_ref()
+        .and_then(|p| p.src.as_deref())
+        .unwrap_or("src")
+        .to_string();
+    let darklua_build = cfg
+        .paths
+        .as_ref()
+        .and_then(|p| p.darklua_build.as_deref())
+        .unwrap_or("darklua_build")
+        .to_string();
+
+    config::save_ezpm_toml(Path::new("."), &project_name, &src_dir, &darklua_build, &aliases)?;
+
+    // Auto-regenerate .darklua.json and .luaurc (CONTEXT.md locked decision)
+    config_gen::write_config_files(Path::new("."), &aliases)?;
+
+    // Optionally create the directory if it doesn't exist
+    let path_no_slash = path.trim_end_matches('/');
+    if !Path::new(path_no_slash).exists() {
+        let create = Confirm::new(&format!("Create directory '{}'?", path_no_slash))
+            .with_default(true)
+            .prompt()?;
+        if create {
+            std::fs::create_dir_all(path_no_slash)?;
+        }
+    }
+
+    println!("Added alias @{} -> {}", name, path);
+    Ok(())
+}
+
+/// Present a multi-select checklist of all aliases and remove selected ones.
+///
+/// Implements CFG-03: alias_remove shows MultiSelect checklist of all aliases
+/// and removes selected ones.
+pub fn alias_remove() -> Result<()> {
+    let (cfg, _warnings) = config::load_config()?;
+
+    let mut aliases: HashMap<String, String> = cfg.aliases.unwrap_or_default();
+
+    if aliases.is_empty() {
+        println!("No aliases configured.");
+        return Ok(());
+    }
+
+    // Build sorted label list for display
+    let mut sorted_names: Vec<String> = aliases.keys().cloned().collect();
+    sorted_names.sort();
+
+    let labels: Vec<String> = sorted_names
+        .iter()
+        .map(|name| format!("{} -> {}", name, aliases[name]))
+        .collect();
+
+    let selected = MultiSelect::new("Select aliases to remove:", labels).prompt()?;
+
+    if selected.is_empty() {
+        println!("No aliases selected.");
+        return Ok(());
+    }
+
+    let confirm = Confirm::new(&format!("Remove {} alias(es)?", selected.len()))
+        .with_default(false)
+        .prompt()?;
+
+    if !confirm {
+        return Ok(());
+    }
+
+    // Extract alias names from selected labels (split on " -> ", take first part)
+    let names_to_remove: Vec<String> = selected
+        .iter()
+        .map(|label| label.splitn(2, " -> ").next().unwrap_or("").to_string())
+        .collect();
+
+    for name in &names_to_remove {
+        aliases.remove(name);
+    }
+
+    let project_name = cfg
+        .project
+        .as_ref()
+        .and_then(|p| p.name.as_deref())
+        .unwrap_or("project")
+        .to_string();
+    let src_dir = cfg
+        .paths
+        .as_ref()
+        .and_then(|p| p.src.as_deref())
+        .unwrap_or("src")
+        .to_string();
+    let darklua_build = cfg
+        .paths
+        .as_ref()
+        .and_then(|p| p.darklua_build.as_deref())
+        .unwrap_or("darklua_build")
+        .to_string();
+
+    config::save_ezpm_toml(Path::new("."), &project_name, &src_dir, &darklua_build, &aliases)?;
+
+    // Auto-regenerate .darklua.json and .luaurc (CONTEXT.md locked decision)
+    config_gen::write_config_files(Path::new("."), &aliases)?;
+
+    println!("Removed {} alias(es).", names_to_remove.len());
+    for name in &names_to_remove {
+        println!("  - @{}", name);
+    }
+
+    Ok(())
+}
+
+/// Display all aliases in an aligned table, sorted alphabetically.
+///
+/// Implements CFG-04: alias_list displays all aliases sorted alphabetically.
+pub fn alias_list(aliases: &Option<HashMap<String, String>>) -> Result<()> {
+    let aliases = match aliases {
+        Some(m) if !m.is_empty() => m,
+        _ => {
+            println!("No aliases configured.");
+            return Ok(());
+        }
+    };
+
+    let mut sorted_names: Vec<&String> = aliases.keys().collect();
+    sorted_names.sort();
+
+    let max_len = sorted_names.iter().map(|n| n.len()).max().unwrap_or(0);
+
+    for name in &sorted_names {
+        println!("@{:<width$} -> {}", name, aliases[*name], width = max_len);
+    }
+
+    println!("\n{} alias(es) configured.", aliases.len());
+    Ok(())
+}
+
+/// Reload ezpm.toml from disk and regenerate .darklua.json and .luaurc.
+///
+/// Implements CFG-05: alias_sync reloads ezpm.toml and regenerates
+/// .darklua.json and .luaurc.
+pub fn alias_sync() -> Result<()> {
+    let (cfg, _warnings) = config::load_config()?;
+
+    let aliases = match cfg.aliases {
+        Some(ref m) if !m.is_empty() => m,
+        _ => {
+            println!("No aliases found in ezpm.toml.");
+            return Ok(());
+        }
+    };
+
+    config_gen::write_config_files(Path::new("."), aliases)?;
+
+    println!("Synced {} aliases from ezpm.toml", aliases.len());
+    println!("Regenerated .darklua.json and .luaurc");
+    Ok(())
+}
