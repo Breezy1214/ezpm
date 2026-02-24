@@ -6,3 +6,5 @@ dist/
 ezpm.exe
 test.luau
 exe.luau
+.planning
+/target
