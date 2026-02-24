@@ -1,9 +1,9 @@
 use anyhow::Result;
-use serde::Deserialize;
-use std::collections::{BTreeSet, HashMap};
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Serialize, Default)]
 pub struct EzpmConfig {
     pub project: Option<ProjectConfig>,
     pub paths: Option<PathsConfig>,
@@ -12,28 +12,91 @@ pub struct EzpmConfig {
     pub serve: Option<ServeConfig>,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Serialize, Default)]
 pub struct ProjectConfig {
     pub name: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Serialize, Default)]
 pub struct PathsConfig {
     pub src: Option<String>,
     pub darklua_build: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Serialize, Default)]
 pub struct DisplayConfig {
     pub file_changes: Option<bool>,
     pub docs_enabled: Option<bool>,
     pub logs_enabled: Option<bool>,
+    pub check_updates: Option<bool>,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Serialize, Default)]
 pub struct ServeConfig {
     /// Default port is 34872
     pub port: Option<u16>,
+}
+
+/// Serialization-only struct for writing ezpm.toml.
+/// Uses BTreeMap for deterministic alias ordering.
+/// Field order matters: aliases (a table section) MUST be last.
+#[derive(Serialize)]
+struct EzpmTomlOutput {
+    project: ProjectTomlOutput,
+    paths: PathsTomlOutput,
+    display: DisplayTomlOutput,
+    aliases: BTreeMap<String, String>,
+}
+
+#[derive(Serialize)]
+struct ProjectTomlOutput {
+    name: String,
+}
+
+#[derive(Serialize)]
+struct PathsTomlOutput {
+    src: String,
+    darklua_build: String,
+}
+
+#[derive(Serialize)]
+struct DisplayTomlOutput {
+    file_changes: bool,
+    docs_enabled: bool,
+    logs_enabled: bool,
+}
+
+/// Write an ezpm.toml file to `dir` with the given configuration values.
+///
+/// Uses `toml::to_string_pretty` with a dedicated serialization struct
+/// to ensure deterministic output (BTreeMap for aliases, Pitfall 3 ordering).
+pub fn save_ezpm_toml(
+    dir: &Path,
+    project_name: &str,
+    src_dir: &str,
+    darklua_build: &str,
+    aliases: &HashMap<String, String>,
+) -> Result<()> {
+    let output = EzpmTomlOutput {
+        project: ProjectTomlOutput {
+            name: project_name.to_string(),
+        },
+        paths: PathsTomlOutput {
+            src: src_dir.to_string(),
+            darklua_build: darklua_build.to_string(),
+        },
+        display: DisplayTomlOutput {
+            file_changes: true,
+            docs_enabled: false,
+            logs_enabled: true,
+        },
+        aliases: aliases.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+    };
+
+    let toml_str = toml::to_string_pretty(&output)
+        .map_err(|e| anyhow::anyhow!("Failed to serialize ezpm.toml: {}", e))?;
+    std::fs::write(dir.join("ezpm.toml"), toml_str)?;
+    Ok(())
 }
 
 /// Parse an ezpm.toml string, returning the config and any warnings about unknown fields.
@@ -149,4 +212,35 @@ pub fn load_config() -> Result<(EzpmConfig, Vec<String>)> {
     }
 
     Ok((config, warnings))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_save_ezpm_toml_roundtrip() {
+        let dir = TempDir::new().expect("temp dir");
+        let mut aliases = HashMap::new();
+        aliases.insert("Client".to_string(), "src/client/".to_string());
+        aliases.insert("Server".to_string(), "src/server/".to_string());
+
+        save_ezpm_toml(dir.path(), "test-project", "src", "darklua_build", &aliases)
+            .expect("save must succeed");
+
+        let contents = std::fs::read_to_string(dir.path().join("ezpm.toml"))
+            .expect("must read ezpm.toml");
+
+        // Verify it can be parsed back
+        let (config, warnings) = load_config_from_str(&contents).expect("must parse");
+        assert!(warnings.is_empty(), "no unknown fields expected");
+        assert_eq!(
+            config.project.as_ref().and_then(|p| p.name.as_deref()),
+            Some("test-project")
+        );
+        let loaded_aliases = config.aliases.unwrap_or_default();
+        assert_eq!(loaded_aliases.get("Client"), Some(&"src/client/".to_string()));
+        assert_eq!(loaded_aliases.get("Server"), Some(&"src/server/".to_string()));
+    }
 }
