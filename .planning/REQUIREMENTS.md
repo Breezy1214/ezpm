@@ -22,10 +22,10 @@ Requirements for initial release. Each maps to roadmap phases.
 ### Configuration
 
 - [x] **CFG-01**: Tool reads ezpm.toml in the same format as the Luau version (backward compatible)
-- [ ] **CFG-02**: User can add an alias via `ezpm alias add` with interactive prompts
-- [ ] **CFG-03**: User can remove an alias via `ezpm alias remove` with selection prompt
-- [ ] **CFG-04**: User can list all configured aliases via `ezpm alias list`
-- [ ] **CFG-05**: User can sync aliases from ezpm.toml via `ezpm alias sync`, regenerating .darklua.json and .luaurc
+- [x] **CFG-02**: User can add an alias via `ezpm alias add` with interactive prompts
+- [x] **CFG-03**: User can remove an alias via `ezpm alias remove` with selection prompt
+- [x] **CFG-04**: User can list all configured aliases via `ezpm alias list`
+- [x] **CFG-05**: User can sync aliases from ezpm.toml via `ezpm alias sync`, regenerating .darklua.json and .luaurc
 - [x] **CFG-06**: Tool auto-generates .darklua.json from configured aliases with correct path-require rules
 - [x] **CFG-07**: Tool auto-generates .luaurc from configured aliases for Luau LSP path resolution
 - [x] **CFG-08**: User can configure Rojo port in ezpm.toml under `[serve]` section (default 34872)
@@ -138,10 +138,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | CLI-08 | Phase 5 | Pending |
 | CLI-09 | Phase 3 | Pending |
 | CFG-01 | Phase 1 | Complete |
-| CFG-02 | Phase 3 | Pending |
-| CFG-03 | Phase 3 | Pending |
-| CFG-04 | Phase 3 | Pending |
-| CFG-05 | Phase 3 | Pending |
+| CFG-02 | Phase 3 | Complete |
+| CFG-03 | Phase 3 | Complete |
+| CFG-04 | Phase 3 | Complete |
+| CFG-05 | Phase 3 | Complete |
 | CFG-06 | Phase 3 | Complete |
 | CFG-07 | Phase 3 | Complete |
 | CFG-08 | Phase 3 | Complete |

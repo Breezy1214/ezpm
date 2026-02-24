@@ -10,11 +10,11 @@ See: .planning/PROJECT.md (updated 2026-02-24)
 ## Current Position
 
 Phase: 3 of 5 (Simple Commands)
-Plan: 4 of 5 in current phase
+Plan: 5 of 5 in current phase
 Status: In Progress
-Last activity: 2026-02-24 — Completed 03-03: Init command wizard (run_init, generate_rokit_toml, generate_rojo_project)
+Last activity: 2026-02-24 — Completed 03-04: Alias command handlers (alias_add, alias_remove, alias_list, alias_sync)
 
-Progress: [███████░░░] 65%
+Progress: [████████░░] 75%
 
 ## Performance Metrics
 
@@ -29,7 +29,7 @@ Progress: [███████░░░] 65%
 |-------|-------|-------|----------|
 | 01-foundation | 2 | 37 min | 18 min |
 | 02-core-services | 2 | 10 min | 5 min |
-| 03-simple-commands | 3 | 12 min | 4 min |
+| 03-simple-commands | 4 | 15 min | 4 min |
 
 **Recent Trend:**
 - Last 5 plans: 35 min, 2 min, 8 min, 2 min, 2 min
@@ -40,6 +40,7 @@ Progress: [███████░░░] 65%
 | Phase 03-simple-commands P01 | 2 | 2 tasks | 4 files |
 | Phase 03-simple-commands P02 | 2 | 2 tasks | 3 files |
 | Phase 03-simple-commands P03 | 5 | 2 tasks | 2 files |
+| Phase 03-simple-commands P04 | 3 | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -81,6 +82,9 @@ Recent decisions affecting current work:
 - [03-03]: Rojo project tree built as serde_json::Map with sorted alias iteration for deterministic output
 - [03-03]: Alias import from .darklua.json uses MultiSelect with all-selected-by-default (CONTEXT.md checklist pattern)
 - [03-03]: Non-src aliases detected by src_prefix_slash check — skipped in Rojo tree without separate blocklist
+- [03-04]: All four alias functions written atomically in one file — ensures consistent load-modify-save-regenerate pattern
+- [03-04]: alias_list takes &Option<HashMap> parameter for testability and caller flexibility
+- [03-04]: alias_sync explicitly calls load_config() to fulfill CFG-05 disk-reload requirement
 
 ### Pending Todos
 
@@ -94,5 +98,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-24
-Stopped at: Completed 03-02-PLAN.md — Install and quality command handlers (install_tools, setup_wally_packages, lint, format_code, docs)
+Stopped at: Completed 03-04-PLAN.md — Alias command handlers (alias_add, alias_remove, alias_list, alias_sync)
 Resume file: None
