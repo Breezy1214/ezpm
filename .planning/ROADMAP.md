@@ -102,6 +102,6 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 |-------|----------------|--------|-----------|
 | 1. Foundation | 2/2 | Complete   | 2026-02-24 |
 | 2. Core Services | 3/3 | Complete   | 2026-02-24 |
-| 3. Simple Commands | 0/5 | Not started | - |
+| 3. Simple Commands | 1/5 | In Progress|  |
 | 4. Serve Pipeline | 0/TBD | Not started | - |
 | 5. UX Polish and Distribution | 0/TBD | Not started | - |
