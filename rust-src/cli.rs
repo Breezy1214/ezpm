@@ -1,9 +1,33 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
+
+/// Color output control — maps to output::ColorChoice at startup.
+#[derive(Debug, Clone, Copy, ValueEnum, Default)]
+pub enum ColorArg {
+    /// Auto-detect based on TTY, NO_COLOR, FORCE_COLOR, and CI env vars (default).
+    #[default]
+    Auto,
+    /// Force ANSI color output even when piped.
+    Always,
+    /// Force plain output even in a TTY.
+    Never,
+}
 
 /// Roblox project manager
 #[derive(Debug, Parser)]
 #[command(name = "ezpm", version, about = "Roblox project manager")]
 pub struct Cli {
+    /// Show detailed step-by-step output
+    #[arg(long, global = true)]
+    pub verbose: bool,
+
+    /// Suppress all non-error output
+    #[arg(long, global = true)]
+    pub quiet: bool,
+
+    /// Control color output
+    #[arg(long, value_enum, global = true, default_value_t = ColorArg::Auto)]
+    pub color: ColorArg,
+
     #[command(subcommand)]
     pub command: Option<Commands>,
 }

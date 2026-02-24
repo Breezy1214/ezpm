@@ -4,9 +4,10 @@ use std::thread;
 use std::time::Duration;
 
 use ezpm::{
-    cli::{AliasCommands, Cli, Commands},
+    cli::{AliasCommands, Cli, ColorArg, Commands},
     commands::{alias, init, install, quality},
     config,
+    output,
     services::{require_fixer, version},
 };
 
@@ -41,11 +42,11 @@ fn fetch_latest_version() -> Option<String> {
 fn print_version_footer(rx: &mpsc::Receiver<Option<String>>, current_ver: &str) {
     if let Ok(Some(latest)) = rx.recv_timeout(Duration::from_secs(2)) {
         if version::is_newer(current_ver, &latest) {
-            eprintln!();
-            eprintln!(
-                "Update available: v{} -> {} — run rokit update ezpm",
+            output::print_stderr("");
+            output::info(&format!(
+                "Update available: v{} -> {} \u{2014} run rokit update ezpm",
                 current_ver, latest
-            );
+            ));
         }
     }
 }
@@ -55,16 +56,28 @@ fn print_version_footer(rx: &mpsc::Receiver<Option<String>>, current_ver: &str) 
 fn main() {
     let cli = Cli::parse();
 
+    // Initialize output module immediately after parsing — must happen before
+    // any output function is called, including config-load warnings (Pitfall 1).
+    output::init(
+        cli.verbose,
+        cli.quiet,
+        match cli.color {
+            ColorArg::Auto => output::ColorChoice::Auto,
+            ColorArg::Always => output::ColorChoice::Always,
+            ColorArg::Never => output::ColorChoice::Never,
+        },
+    );
+
     // Load config at startup; print any warnings to stderr
     let loaded_config = match config::load_config() {
         Ok((cfg, warnings)) => {
             for w in &warnings {
-                eprintln!("{}", w);
+                output::warn(w);
             }
             Some(cfg)
         }
         Err(e) => {
-            eprintln!("Warning: could not load ezpm.toml: {}", e);
+            output::warn(&format!("Could not load ezpm.toml: {}", e));
             None
         }
     };
@@ -127,31 +140,31 @@ fn main() {
             let root_dir = match std::env::current_dir() {
                 Ok(dir) => dir,
                 Err(e) => {
-                    eprintln!("Error: could not determine current directory: {}", e);
+                    output::error(&format!("could not determine current directory: {}", e));
                     std::process::exit(1);
                 }
             };
             match require_fixer::fix_requires(&root_dir, &aliases, src_prefix) {
                 Ok(result) => {
                     if result.files_changed == 0 {
-                        println!(
+                        output::success(&format!(
                             "All requires up to date. 0 changes across {} files.",
                             result.total_files_scanned
-                        );
+                        ));
                     } else {
                         let total_rewrites: usize =
                             result.changes.iter().map(|c| c.rewrites.len()).sum();
                         for file_change in &result.changes {
-                            println!("{}:", file_change.file.display());
+                            output::print_line(&format!("{}:", file_change.file.display()));
                             for rewrite in &file_change.rewrites {
-                                println!("  {} -> {}", rewrite.old, rewrite.new);
+                                output::print_line(&format!("  {} -> {}", rewrite.old, rewrite.new));
                             }
                         }
-                        println!();
-                        println!(
+                        output::print_line("");
+                        output::success(&format!(
                             "Fixed {} requires across {} files",
                             total_rewrites, result.files_changed
-                        );
+                        ));
                     }
                     Ok(())
                 }
@@ -167,28 +180,28 @@ fn main() {
             }
             Some(AliasCommands::Sync) => alias::alias_sync(),
             None => {
-                println!("Usage: ezpm alias <add|remove|list|sync>");
-                println!();
-                println!("Commands:");
-                println!("  add     Add a new alias");
-                println!("  remove  Remove an existing alias");
-                println!("  list    List all aliases");
-                println!("  sync    Sync aliases from ezpm.toml");
+                output::print_line("Usage: ezpm alias <add|remove|list|sync>");
+                output::print_line("");
+                output::print_line("Commands:");
+                output::print_line("  add     Add a new alias");
+                output::print_line("  remove  Remove an existing alias");
+                output::print_line("  list    List all aliases");
+                output::print_line("  sync    Sync aliases from ezpm.toml");
                 Ok(())
             }
         },
         Some(Commands::Serve) => {
-            println!(
+            output::info(&format!(
                 "serve is coming in a future update. Current version: {}",
                 current_ver
-            );
+            ));
             Ok(())
         }
     };
 
     // ── Error handling ────────────────────────────────────────────────────────
     if let Err(e) = result {
-        eprintln!("Error: {}", e);
+        output::error(&format!("{}", e));
         // Print version check footer even on error
         if !check_disabled {
             print_version_footer(&rx, current_ver);
