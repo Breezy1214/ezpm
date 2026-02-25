@@ -165,7 +165,7 @@ pub fn run_init() -> Result<()> {
 
     // ── Step 9: Create scaffolding directories for src aliases ────────────────
     let src_prefix = format!("{}/", src_dir);
-    for (_alias_name, alias_path) in &aliases {
+    for alias_path in aliases.values() {
         if alias_path.starts_with(&src_prefix) {
             // Strip trailing slash for directory creation
             let dir_path = alias_path.trim_end_matches('/');

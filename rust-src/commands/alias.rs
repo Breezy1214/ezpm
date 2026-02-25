@@ -120,7 +120,7 @@ pub fn alias_remove() -> Result<()> {
     // Extract alias names from selected labels (split on " -> ", take first part)
     let names_to_remove: Vec<String> = selected
         .iter()
-        .map(|label| label.splitn(2, " -> ").next().unwrap_or("").to_string())
+        .map(|label| label.split(" -> ").next().unwrap_or("").to_string())
         .collect();
 
     for name in &names_to_remove {
