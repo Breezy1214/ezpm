@@ -10,9 +10,9 @@ See: .planning/PROJECT.md (updated 2026-02-24)
 ## Current Position
 
 Phase: 6 (Serve Command)
-Plan: 2/2 complete — Phase 6 COMPLETE
-Status: Phase 6 complete — `ezpm serve` fully functional: 8-step startup, tokio::select! watch loop with incremental rebuilds, Rojo auto-restart, batch detection, graceful shutdown
-Last activity: 2026-02-25 — Phase 6 Plan 2 complete (tokio::select! watch loop, SERVE-03/04 satisfied)
+Plan: 3/3 complete — Phase 6 COMPLETE
+Status: Phase 6 fully complete — all 10 UAT tests resolved: 8-step startup, watch loop, incremental rebuilds, meta file handling (init.meta.json Create events), delete-wins dedup, display_name for init.* files
+Last activity: 2026-02-25 — Phase 6 Plan 3 complete (UAT gap closure: SERVE-03/04 fully satisfied)
 
 ```
 Progress: [#####-----] 3/8 phases complete + Phase 6 in progress (v1.0 shipped, v1.1 in progress)
@@ -83,6 +83,10 @@ Summary: 9 key decisions made during v1.0, all marked Good.
 - Recovery detection via failed_files.remove() — returns bool; true triggers distinct 'fixed' message vs normal 'Rebuilt' on next success
 - Batch output threshold: changes.len() > 1 — single-file gets per-file timing, multi-file batch gets single summary line after all handlers
 
+**Phase 6 Plan 3 decisions:**
+- HashSet<PathBuf> (owned) not HashSet<&PathBuf> (refs) for delete-wins dedup — borrow checker E0502: cannot borrow result immutably for collect() while also borrowing mutably for retain(); cloning path values is the correct safe-Rust solution
+- display_name() as private free fn before handlers — centralizes init.* file display logic (parent/filename) vs regular files (filename only); no trait/impl needed in this context
+
 ### Pending Todos
 
 None.
@@ -98,6 +102,6 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-25
-Stopped at: Completed 06-02-PLAN.md — tokio::select! watch loop with full file change routing, Rojo auto-restart, and batch detection; SERVE-03/04 satisfied; Phase 6 complete
+Stopped at: Completed 06-03-PLAN.md — UAT gap closure: init.meta.json Create events route to MetaChange, delete-wins dedup in classify_events(), display_name() helper for init.* files; all Phase 6 UAT tests resolved
 Resume file: None
 Next action: Phase 7 (DX Polish) — error handling and exit codes, or Phase 8 (Integration Tests)
