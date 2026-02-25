@@ -108,6 +108,15 @@ Each task was committed atomically:
 - Ready for Phase 7 (DX Polish: error handling and exit codes) or Phase 8 (Integration Tests)
 - Pre-existing: `ezpm.toml` needs restoration to canonical form before `config_compat` integration tests will pass
 
+## Self-Check: PASSED
+
+- FOUND: rust-src/services/file_watcher.rs
+- FOUND: rust-src/commands/serve.rs
+- FOUND: .planning/phases/06-serve-command/06-03-SUMMARY.md
+- FOUND commit 8876413: fix(06-03) Task 1
+- FOUND commit e027e9d: feat(06-03) Task 2
+- FOUND commit 1d628ee: docs(06-03) metadata
+
 ---
 *Phase: 06-serve-command*
 *Completed: 2026-02-25*
