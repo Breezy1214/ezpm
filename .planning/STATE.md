@@ -10,9 +10,9 @@ See: .planning/PROJECT.md (updated 2026-02-24)
 ## Current Position
 
 Phase: 6 (Serve Command)
-Plan: 1/2 complete
-Status: Phase 6 Plan 1 complete — `ezpm serve` CLI wired end-to-end: tokio dispatch, --port flag, 8-step startup with spinners, port conflict detection, summary banner, Ctrl-C shutdown
-Last activity: 2026-02-24 — Phase 6 Plan 1 complete (serve command startup pipeline, SERVE-01/05/07 satisfied)
+Plan: 2/2 complete — Phase 6 COMPLETE
+Status: Phase 6 complete — `ezpm serve` fully functional: 8-step startup, tokio::select! watch loop with incremental rebuilds, Rojo auto-restart, batch detection, graceful shutdown
+Last activity: 2026-02-25 — Phase 6 Plan 2 complete (tokio::select! watch loop, SERVE-03/04 satisfied)
 
 ```
 Progress: [#####-----] 3/8 phases complete + Phase 6 in progress (v1.0 shipped, v1.1 in progress)
@@ -33,7 +33,7 @@ Progress: [#####-----] 3/8 phases complete + Phase 6 in progress (v1.0 shipped, 
 | 02-core-services | 3 | 12 min | 4 min |
 | 03-simple-commands | 5 | 15 min | 3 min |
 | 04-output-foundation | 2 (of 2) | 10 min | 5 min |
-| 06-serve-command | 1 (of 2) | 12 min | 12 min |
+| 06-serve-command | 2 (of 2) | 16 min | 8 min |
 
 ## Accumulated Context
 
@@ -77,6 +77,12 @@ Summary: 9 key decisions made during v1.0, all marked Good.
 - owo-colors banner uses fmt::Write to build an owned String — avoids temporary lifetime issues from chaining if_supports_color
 - Plan 01 uses simple ctrl_c().await for the wait loop — Plan 02 replaces with tokio::select! watch loop
 
+**Phase 6 Plan 2 decisions:**
+- &Path over &PathBuf in handler signatures — clippy::ptr_arg enforcement; to_path_buf() for HashSet inserts and spawn_blocking moves
+- Non-fatal rebuild errors — individual file rebuild failures print error inline and keep the watch loop alive; only WatchEvent::Error exits
+- Recovery detection via failed_files.remove() — returns bool; true triggers distinct 'fixed' message vs normal 'Rebuilt' on next success
+- Batch output threshold: changes.len() > 1 — single-file gets per-file timing, multi-file batch gets single summary line after all handlers
+
 ### Pending Todos
 
 None.
@@ -91,7 +97,7 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-02-24
-Stopped at: Completed 06-01-PLAN.md — `ezpm serve` wired end-to-end with 8-step startup, port handling (--port flag, toml config, default 34872), port conflict detection, spinners, summary banner, Ctrl-C shutdown; SERVE-01/05/07 satisfied
+Last session: 2026-02-25
+Stopped at: Completed 06-02-PLAN.md — tokio::select! watch loop with full file change routing, Rojo auto-restart, and batch detection; SERVE-03/04 satisfied; Phase 6 complete
 Resume file: None
-Next action: Phase 6 Plan 02 — tokio::select! watch loop (incremental rebuild on file changes + Rojo lifecycle events)
+Next action: Phase 7 (DX Polish) — error handling and exit codes, or Phase 8 (Integration Tests)
