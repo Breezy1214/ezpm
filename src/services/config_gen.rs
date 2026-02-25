@@ -6,7 +6,7 @@ use std::path::Path;
 // ─── Public functions ─────────────────────────────────────────────────────────
 
 /// Generate the `.darklua.json` configuration file content.
-pub fn generate_darklua_json(_aliases: &HashMap<String, String>) -> String {
+pub fn generate_darklua_json() -> String {
     let config = json!({
         "process": [
             {
@@ -76,7 +76,7 @@ pub fn generate_luaurc(aliases: &HashMap<String, String>) -> String {
 
 /// generate and write both `.darklua.json` and `.luaurc`
 pub fn write_config_files(dir: &Path, aliases: &HashMap<String, String>) -> Result<()> {
-    let darklua_json = generate_darklua_json(aliases);
+    let darklua_json = generate_darklua_json();
     let luaurc = generate_luaurc(aliases);
 
     std::fs::write(dir.join(".darklua.json"), darklua_json)?;
@@ -95,7 +95,7 @@ mod tests {
 
     #[test]
     fn test_darklua_json_has_convert_require_rule() {
-        let output = generate_darklua_json(&HashMap::new());
+        let output = generate_darklua_json();
         assert!(
             output.contains(r#""rule": "convert_require""#),
             "output must contain convert_require rule: {output}"
@@ -107,30 +107,17 @@ mod tests {
     }
 
     #[test]
-    fn test_darklua_json_has_no_aliases_when_empty() {
-        let output = generate_darklua_json(&HashMap::new());
+    fn test_darklua_json_has_no_aliases() {
+        let output = generate_darklua_json();
         assert!(
             !output.contains("\"aliases\""),
-            "output must NOT contain 'aliases' key when aliases are empty: {output}"
-        );
-    }
-
-    #[test]
-    fn test_darklua_json_never_includes_aliases() {
-        let mut aliases = HashMap::new();
-        aliases.insert("Client".to_string(), "src/client/".to_string());
-        aliases.insert("Server".to_string(), "src/server/".to_string());
-
-        let output = generate_darklua_json(&aliases);
-        assert!(
-            !output.contains("\"aliases\""),
-            "output must NOT contain 'aliases' key even when aliases are provided: {output}"
+            "output must NOT contain 'aliases' key — DarkLua reads them from .luaurc: {output}"
         );
     }
 
     #[test]
     fn test_darklua_json_has_optimization_rules() {
-        let output = generate_darklua_json(&HashMap::new());
+        let output = generate_darklua_json();
         let expected_rules = [
             "compute_expression",
             "remove_unused_if_branch",
@@ -149,7 +136,7 @@ mod tests {
 
     #[test]
     fn test_darklua_json_has_rojo_sourcemap() {
-        let output = generate_darklua_json(&HashMap::new());
+        let output = generate_darklua_json();
         assert!(
             output.contains(r#""rojo_sourcemap": "sourcemap.json""#),
             "output must contain rojo_sourcemap: {output}"
@@ -225,7 +212,7 @@ mod tests {
 
     #[test]
     fn test_darklua_json_is_valid_json() {
-        let output = generate_darklua_json(&HashMap::new());
+        let output = generate_darklua_json();
         let result = serde_json::from_str::<serde_json::Value>(&output);
         assert!(
             result.is_ok(),
