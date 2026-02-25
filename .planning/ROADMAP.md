@@ -54,7 +54,7 @@ Plans:
 **Plans**: 2 plans
 Plans:
 - [x] 05-01-PLAN.md — Async dependencies and ProcessManager service (spawn, kill_all, lifecycle channel)
-- [ ] 05-02-PLAN.md — FileWatcher service (OS-native events, 300ms debounce, categorized event delivery)
+- [x] 05-02-PLAN.md — FileWatcher service (OS-native events, 300ms debounce, categorized event delivery)
 
 ### Phase 6: Serve Command
 **Goal**: Developers can run `ezpm serve` and get their full Roblox build loop — instant startup, file-change rebuilds, and clean shutdown
@@ -65,7 +65,10 @@ Plans:
   2. Saving a `.lua` or `.luau` file triggers per-file require fixing and DarkLua within 100ms; the change appears in Roblox Studio without manual action
   3. Creating or deleting a file triggers sourcemap regeneration; changing an `init.meta.json` triggers its copy to the build directory
   4. Pressing Ctrl-C kills Rojo and all DarkLua subprocesses, releases the port, and exits with code 0 — verified by checking no process holds the port afterward
-**Plans**: TBD
+**Plans**: 2 plans
+Plans:
+- [ ] 06-01-PLAN.md — CLI --port flag, tokio dispatch, 8-step startup sequence with spinners and summary banner
+- [ ] 06-02-PLAN.md — tokio::select! watch loop with incremental rebuild handlers, batch detection, and Rojo auto-restart
 
 ### Phase 7: DX Polish
 **Goal**: Every command failure is informative and machine-readable — structured errors with suggested fixes, correct exit codes throughout
@@ -98,6 +101,6 @@ Plans:
 | 3. Simple Commands | v1.0 | 5/5 | Complete | 2026-02-24 |
 | 4. Output Foundation | v1.1 | Complete    | 2026-02-24 | 2026-02-24 |
 | 5. Serve Services | 2/2 | Complete   | 2026-02-25 | - |
-| 6. Serve Command | v1.1 | 0/TBD | Not started | - |
+| 6. Serve Command | v1.1 | 0/2 | Not started | - |
 | 7. DX Polish | v1.1 | 0/TBD | Not started | - |
 | 8. Integration Tests and CI | v1.1 | 0/TBD | Not started | - |

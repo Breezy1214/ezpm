@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use ezpm::{
     cli::{AliasCommands, Cli, ColorArg, Commands},
-    commands::{alias, init, install, quality},
+    commands::{alias, init, install, quality, serve},
     config,
     output,
     services::{require_fixer, version},
@@ -190,12 +190,12 @@ fn main() {
                 Ok(())
             }
         },
-        Some(Commands::Serve) => {
-            output::info(&format!(
-                "serve is coming in a future update. Current version: {}",
-                current_ver
-            ));
-            Ok(())
+        Some(Commands::Serve { port }) => {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("failed to build tokio runtime");
+            rt.block_on(serve::run(loaded_config, port))
         }
     };
 

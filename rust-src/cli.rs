@@ -35,7 +35,11 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Commands {
     /// Start the development server
-    Serve,
+    Serve {
+        /// Override the Rojo serve port for this session
+        #[arg(long, short = 'p')]
+        port: Option<u16>,
+    },
 
     /// Initialize a new project
     Init,
