@@ -6,12 +6,6 @@ use std::path::Path;
 // ─── Public functions ─────────────────────────────────────────────────────────
 
 /// Generate the `.darklua.json` configuration file content.
-///
-/// Matches the Luau `generateDarkluaJson` output format exactly.
-///
-/// IMPORTANT (Pitfall 1): This config uses bare `convert_require` with
-/// `current: { name: "luau" }` — there is NO `sources` map. Sources were a
-/// legacy path mode; the current Luau require mode does not use them.
 pub fn generate_darklua_json() -> String {
     let config = json!({
         "process": [
@@ -40,16 +34,38 @@ pub fn generate_darklua_json() -> String {
     output
 }
 
+/// Read the lune version from `rokit.toml` if present.
+pub fn get_lune_version() -> Option<String> {
+    let contents = std::fs::read_to_string("rokit.toml").ok()?;
+    let parsed: toml::Value = toml::from_str(&contents).ok()?;
+    let lune_spec = parsed
+        .get("tools")?
+        .get("lune")?
+        .as_str()?;
+    let version = lune_spec.rsplit('@').next()?;
+    if version.is_empty() {
+        None
+    } else {
+        Some(version.to_string())
+    }
+}
+
 /// Generate the `.luaurc` configuration file content from an alias map.
-///
-/// The `aliases` map should contain `name -> path` pairs (no `@` prefix on keys).
-/// The lune typedef alias is intentionally NOT added here — that is the
-/// responsibility of the `init` command in Phase 3.
 pub fn generate_luaurc(aliases: &HashMap<String, String>) -> String {
-    let aliases_obj: serde_json::Map<String, serde_json::Value> = aliases
-        .iter()
-        .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
-        .collect();
+    let mut aliases_obj: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+
+    // Add lune typedef alias if version is available
+    if let Some(version) = get_lune_version() {
+        aliases_obj.insert(
+            "lune".to_string(),
+            serde_json::Value::String(format!("~/.lune/.typedefs/{}", version)),
+        );
+    }
+
+    // Add user aliases
+    for (k, v) in aliases {
+        aliases_obj.insert(k.clone(), serde_json::Value::String(v.clone()));
+    }
 
     let luaurc = json!({
         "aliases": aliases_obj
@@ -60,10 +76,7 @@ pub fn generate_luaurc(aliases: &HashMap<String, String>) -> String {
     output
 }
 
-/// Convenience function: generate and write both `.darklua.json` and `.luaurc`
-/// to the given directory.
-///
-/// Used by alias sync in Phase 3.
+/// generate and write both `.darklua.json` and `.luaurc`
 pub fn write_config_files(dir: &Path, aliases: &HashMap<String, String>) -> Result<()> {
     let darklua_json = generate_darklua_json();
     let luaurc = generate_luaurc(aliases);
@@ -95,8 +108,6 @@ mod tests {
         );
     }
 
-    /// CRITICAL: Pitfall 1 — the new-style .darklua.json must NOT have a
-    /// `sources` map. Sources were a legacy path mode.
     #[test]
     fn test_darklua_json_has_no_sources() {
         let output = generate_darklua_json();
@@ -160,16 +171,28 @@ mod tests {
     }
 
     #[test]
-    fn test_luaurc_no_lune_alias() {
+    fn test_luaurc_lune_alias_depends_on_rokit() {
         let mut aliases = HashMap::new();
         aliases.insert("Client".to_string(), "src/client/".to_string());
 
         let output = generate_luaurc(&aliases);
 
-        assert!(
-            !output.contains("\"lune\""),
-            "output must NOT contain lune alias (added by init command, not config_gen): {output}"
-        );
+        let has_lune_in_rokit = get_lune_version().is_some();
+        if has_lune_in_rokit {
+            assert!(
+                output.contains("\"lune\""),
+                "output must contain lune alias when rokit.toml has lune: {output}"
+            );
+            assert!(
+                output.contains(".typedefs/"),
+                "lune alias must point to typedefs path: {output}"
+            );
+        } else {
+            assert!(
+                !output.contains("\"lune\""),
+                "output must NOT contain lune alias when rokit.toml has no lune: {output}"
+            );
+        }
     }
 
     #[test]

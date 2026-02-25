@@ -17,10 +17,7 @@ const MENU_ITEMS: &[(&str, &str)] = &[
         "setup-wally-packages   Clean + install + type Wally packages",
         "setup-wally-packages",
     ),
-    ("alias add      Add a new path alias", "alias-add"),
-    ("alias remove   Remove path aliases", "alias-remove"),
-    ("alias list     List all aliases", "alias-list"),
-    ("alias sync     Sync aliases from ezpm.toml", "alias-sync"),
+    ("alias          Manage path aliases (add/remove/list/sync)", "alias-menu"),
     ("lint           Run Selene and StyLua checks", "lint"),
     ("format         Format source with StyLua", "format"),
     ("docs           Launch Moonwave docs server", "docs"),
@@ -122,11 +119,8 @@ fn run_command(cmd: &str) -> Result<()> {
     match cmd {
         "init" => crate::commands::init::run_init(),
         "install" => crate::commands::install::install_tools(src),
-        "setup-wally-packages" => crate::commands::install::setup_wally_packages(src),
-        "alias-add" => crate::commands::alias::alias_add(),
-        "alias-remove" => crate::commands::alias::alias_remove(),
-        "alias-list" => crate::commands::alias::alias_list(&cfg.aliases),
-        "alias-sync" => crate::commands::alias::alias_sync(),
+        "setup-wally-packages" => crate::commands::install::setup_wally_packages(src, cfg.aliases.as_ref()),
+        "alias-menu" => crate::commands::alias::alias_menu(),
         "lint" => crate::commands::quality::lint(src),
         "format" => crate::commands::quality::format_code(src, false),
         "docs" => {
@@ -139,9 +133,8 @@ fn run_command(cmd: &str) -> Result<()> {
         }
         "fix-requires" => {
             let aliases = cfg.aliases.unwrap_or_default();
-            let root_dir = std::env::current_dir()?;
             let result =
-                crate::services::require_fixer::fix_requires(&root_dir, &aliases, src)?;
+                crate::services::require_fixer::fix_requires(std::path::Path::new(src), &aliases, src)?;
             if result.files_changed == 0 {
                 output::success(&format!(
                     "All requires up to date. 0 changes across {} files.",

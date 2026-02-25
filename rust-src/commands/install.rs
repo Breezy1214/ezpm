@@ -1,15 +1,90 @@
 use anyhow::{Context, Result};
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 use std::process::Command;
 
 use crate::output;
 use crate::services::sourcemap;
 
+const REQUIRED_TOOLS: &[(&str, &str)] = &[
+    ("lune", "lune-org/lune@0.10.4"),
+    ("rojo", "rojo-rbx/rojo@7.6.1"),
+    ("darklua", "seaofvoices/darklua@0.17.3"),
+    ("wally", "UpliftGames/wally@0.3.2"),
+    ("wally-package-types", "JohnnyMorganz/wally-package-types@1.6.2"),
+];
+
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
+/// Derive package directories from aliases by filtering out paths under src/
+pub fn get_package_dirs(aliases: Option<&HashMap<String, String>>, src_prefix: &str) -> Vec<String> {
+    let aliases = match aliases {
+        Some(a) if !a.is_empty() => a,
+        _ => return vec!["Packages".to_string(), "ServerPackages".to_string()],
+    };
+
+    let src_with_slash = format!("{}/", src_prefix.trim_end_matches('/'));
+    let mut dirs = BTreeSet::new();
+
+    for path in aliases.values() {
+        let trimmed = path.trim_end_matches('/');
+        // Skip aliases that are under src/ or equal to src
+        if trimmed.starts_with(&src_with_slash) || trimmed == src_prefix {
+            continue;
+        }
+        // Extract top-level directory
+        if let Some(top_dir) = trimmed.split('/').next() {
+            if !top_dir.is_empty() {
+                dirs.insert(top_dir.to_string());
+            }
+        }
+    }
+
+    if dirs.is_empty() {
+        vec!["Packages".to_string(), "ServerPackages".to_string()]
+    } else {
+        dirs.into_iter().collect()
+    }
+}
+
+/// Check `rokit.toml` for missing required tools and run `rokit add` for each.
+fn ensure_required_tools() -> Result<()> {
+    if !Path::new("rokit.toml").exists() {
+        return Ok(());
+    }
+
+    let contents = std::fs::read_to_string("rokit.toml")
+        .context("Failed to read rokit.toml")?;
+
+    for &(tool_name, spec) in REQUIRED_TOOLS {
+        // Check if the tool name appears as a key (e.g. "lune =")
+        let has_tool = contents.lines().any(|line| {
+            let trimmed = line.trim();
+            trimmed.starts_with(tool_name)
+                && trimmed[tool_name.len()..].trim_start().starts_with('=')
+        });
+
+        if !has_tool {
+            output::info(&format!("Adding {} to rokit.toml...", tool_name));
+            let result = Command::new("rokit")
+                .arg("add")
+                .arg(spec)
+                .output()
+                .with_context(|| format!("Failed to run rokit add {}", spec))?;
+
+            if result.status.success() {
+                output::success(&format!("Added {}", tool_name));
+            } else {
+                let stderr = String::from_utf8_lossy(&result.stderr);
+                output::warn(&format!("Failed to add {}: {}", tool_name, stderr.trim()));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Check whether a tool binary is available in PATH by invoking `--version`
-/// silently with `.output()` (Pitfall 4 from RESEARCH.md — captured, not
-/// passed-through).
 #[allow(dead_code)]
 fn is_tool_available(tool: &str) -> bool {
     Command::new(tool)
@@ -21,13 +96,10 @@ fn is_tool_available(tool: &str) -> bool {
 
 // ─── Public functions ─────────────────────────────────────────────────────────
 
-/// Run `rokit install`, then optionally `wally install` + `wally-package-types`
-/// if a `wally.toml` exists in the current directory (INST-01, INST-02,
-/// INST-03).
-///
-/// In default mode subprocess output is captured so the spinner can show
-/// cleanly. In --verbose mode subprocess output streams to the terminal.
-pub fn install_tools(_src_prefix: &str) -> Result<()> {
+/// Run `rokit install`, then delegate to `setup_wally_packages`
+pub fn install_tools(src_prefix: &str) -> Result<()> {
+    ensure_required_tools()?;
+
     let pb = output::start_spinner("Installing development tools...");
 
     // ── 1. Rokit install ────────────────────────────────────────────────────
@@ -60,110 +132,25 @@ pub fn install_tools(_src_prefix: &str) -> Result<()> {
         }
     }
 
-    // ── 2. Wally (optional) ─────────────────────────────────────────────────
+    pb.finish_and_clear();
+    output::success("Rokit tools installed.");
+
     if Path::new("wally.toml").exists() {
-        pb.set_message("Installing Wally packages...");
-
-        if output::is_verbose() {
-            pb.suspend(|| {});
-            let wally_status = Command::new("wally")
-                .arg("install")
-                .status()
-                .context("Failed to run wally. Is it installed? (rokit install)")?;
-
-            if wally_status.success() {
-                // Run wally-package-types for Packages/
-                if Path::new("Packages").exists() {
-                    let wpt_status = Command::new("wally-package-types")
-                        .arg("--sourcemap")
-                        .arg("sourcemap.json")
-                        .arg("Packages")
-                        .status()
-                        .context("Failed to run wally-package-types")?;
-
-                    if !wpt_status.success() {
-                        pb.suspend(|| output::warn(
-                            "wally-package-types failed for Packages (types may be incomplete)"
-                        ));
-                    }
-                }
-
-                // Run wally-package-types for ServerPackages/ if it was created
-                // (INST-03)
-                if Path::new("ServerPackages").exists() {
-                    let wpt_status = Command::new("wally-package-types")
-                        .arg("--sourcemap")
-                        .arg("sourcemap.json")
-                        .arg("ServerPackages")
-                        .status()
-                        .context("Failed to run wally-package-types for ServerPackages")?;
-
-                    if !wpt_status.success() {
-                        pb.suspend(|| output::warn(
-                            "wally-package-types failed for ServerPackages (types may be incomplete)"
-                        ));
-                    }
-                }
-            }
-        } else {
-            let wally_out = Command::new("wally")
-                .arg("install")
-                .output()
-                .context("Failed to run wally. Is it installed? (rokit install)")?;
-
-            if wally_out.status.success() {
-                // Run wally-package-types for Packages/
-                if Path::new("Packages").exists() {
-                    let wpt_out = Command::new("wally-package-types")
-                        .arg("--sourcemap")
-                        .arg("sourcemap.json")
-                        .arg("Packages")
-                        .output()
-                        .context("Failed to run wally-package-types")?;
-
-                    if !wpt_out.status.success() {
-                        pb.suspend(|| output::warn(
-                            "wally-package-types failed for Packages (types may be incomplete)"
-                        ));
-                    }
-                }
-
-                // Run wally-package-types for ServerPackages/ if it was created
-                // (INST-03)
-                if Path::new("ServerPackages").exists() {
-                    let wpt_out = Command::new("wally-package-types")
-                        .arg("--sourcemap")
-                        .arg("sourcemap.json")
-                        .arg("ServerPackages")
-                        .output()
-                        .context("Failed to run wally-package-types for ServerPackages")?;
-
-                    if !wpt_out.status.success() {
-                        pb.suspend(|| output::warn(
-                            "wally-package-types failed for ServerPackages (types may be incomplete)"
-                        ));
-                    }
-                }
-            }
-        }
+        setup_wally_packages(src_prefix, None)?;
     }
 
-    pb.finish_and_clear();
     output::success("All tools installed successfully!");
     Ok(())
 }
 
-/// Clean and re-install Wally packages from scratch (INST-04).
-///
-/// Sequence: remove lock + sourcemap + package dirs → `wally install` →
-/// `rojo sourcemap` → `wally-package-types` for each package dir →
-/// `rojo sourcemap` again (matches Luau `setupWallyPackages` behavior).
-pub fn setup_wally_packages(_src_prefix: &str) -> Result<()> {
-    // ── Gate: wally.toml must exist ─────────────────────────────────────────
+/// Clean and re-install Wally packages from scratch
+pub fn setup_wally_packages(src_prefix: &str, aliases: Option<&HashMap<String, String>>) -> Result<()> {
     if !Path::new("wally.toml").exists() {
         output::info("No wally.toml found, skipping.");
         return Ok(());
     }
+
+    let package_dirs = get_package_dirs(aliases, src_prefix);
 
     let pb = output::start_spinner("Setting up Wally packages...");
     pb.set_message("Clearing current systems...");
@@ -179,7 +166,7 @@ pub fn setup_wally_packages(_src_prefix: &str) -> Result<()> {
             .context("Failed to remove wally.lock")?;
     }
 
-    for pkg_dir in &["Packages", "ServerPackages"] {
+    for pkg_dir in &package_dirs {
         if Path::new(pkg_dir).exists() {
             std::fs::remove_dir_all(pkg_dir)
                 .with_context(|| format!("Failed to remove {pkg_dir}/"))?;
@@ -231,7 +218,7 @@ pub fn setup_wally_packages(_src_prefix: &str) -> Result<()> {
     }
 
     // ── wally-package-types for each package directory ───────────────────────
-    for pkg_dir in &["Packages", "ServerPackages"] {
+    for pkg_dir in &package_dirs {
         if Path::new(pkg_dir).exists() {
             pb.set_message(format!("Setting up types for {pkg_dir}..."));
 
@@ -240,7 +227,7 @@ pub fn setup_wally_packages(_src_prefix: &str) -> Result<()> {
                 let wpt_status = Command::new("wally-package-types")
                     .arg("--sourcemap")
                     .arg("sourcemap.json")
-                    .arg(pkg_dir)
+                    .arg(pkg_dir.as_str())
                     .status()
                     .context("Failed to run wally-package-types")?;
 
@@ -253,7 +240,7 @@ pub fn setup_wally_packages(_src_prefix: &str) -> Result<()> {
                 let wpt_out = Command::new("wally-package-types")
                     .arg("--sourcemap")
                     .arg("sourcemap.json")
-                    .arg(pkg_dir)
+                    .arg(pkg_dir.as_str())
                     .output()
                     .context("Failed to run wally-package-types")?;
 
@@ -266,7 +253,7 @@ pub fn setup_wally_packages(_src_prefix: &str) -> Result<()> {
         }
     }
 
-    // ── Second sourcemap pass (matches Luau behaviour) ───────────────────────
+
     pb.set_message("Finalizing...");
     let sm_result2 = sourcemap::generate_sourcemap(&cwd)
         .context("Failed to generate final sourcemap")?;

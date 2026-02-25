@@ -1,4 +1,5 @@
 use clap::Parser;
+use std::path::Path;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
@@ -118,7 +119,10 @@ fn main() {
         }
         Some(Commands::Init) => init::run_init(),
         Some(Commands::Install) => install::install_tools(&src),
-        Some(Commands::SetupWallyPackages) => install::setup_wally_packages(&src),
+        Some(Commands::SetupWallyPackages) => {
+            let aliases = loaded_config.as_ref().and_then(|c| c.aliases.as_ref());
+            install::setup_wally_packages(&src, aliases)
+        }
         Some(Commands::Lint) => quality::lint(&src),
         Some(Commands::Format { check }) => quality::format_code(&src, check),
         Some(Commands::Docs) => {
@@ -137,14 +141,7 @@ fn main() {
                 .as_ref()
                 .and_then(|p| p.src.as_deref())
                 .unwrap_or("src");
-            let root_dir = match std::env::current_dir() {
-                Ok(dir) => dir,
-                Err(e) => {
-                    output::error(&format!("could not determine current directory: {}", e));
-                    std::process::exit(1);
-                }
-            };
-            match require_fixer::fix_requires(&root_dir, &aliases, src_prefix) {
+            match require_fixer::fix_requires(Path::new(src_prefix), &aliases, src_prefix) {
                 Ok(result) => {
                     if result.files_changed == 0 {
                         output::success(&format!(
@@ -179,16 +176,7 @@ fn main() {
                 alias::alias_list(&aliases)
             }
             Some(AliasCommands::Sync) => alias::alias_sync(),
-            None => {
-                output::print_line("Usage: ezpm alias <add|remove|list|sync>");
-                output::print_line("");
-                output::print_line("Commands:");
-                output::print_line("  add     Add a new alias");
-                output::print_line("  remove  Remove an existing alias");
-                output::print_line("  list    List all aliases");
-                output::print_line("  sync    Sync aliases from ezpm.toml");
-                Ok(())
-            }
+            None => alias::alias_menu()
         },
         Some(Commands::Serve { port }) => {
             let rt = tokio::runtime::Builder::new_multi_thread()

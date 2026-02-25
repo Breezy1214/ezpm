@@ -1,5 +1,5 @@
 use anyhow::Result;
-use inquire::{Confirm, MultiSelect, Text};
+use inquire::{Confirm, MultiSelect, Select, Text};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -7,11 +7,56 @@ use crate::config;
 use crate::output;
 use crate::services::config_gen;
 
-/// Prompt for an alias name and path, add it to ezpm.toml, and auto-regenerate
-/// .darklua.json and .luaurc.
-///
-/// Implements CFG-02: alias_add prompts for name and path, saves to ezpm.toml,
-/// and auto-regenerates .darklua.json + .luaurc.
+/// Interactive alias management submenu.
+pub fn alias_menu() -> Result<()> {
+    let options = vec![
+        "Add Alias",
+        "Remove Alias",
+        "List Aliases",
+        "Sync from ezpm.toml",
+        "Back",
+    ];
+
+    loop {
+        let selection = match Select::new("Alias Management:", options.clone()).prompt() {
+            Ok(s) => s,
+            Err(_) => break, // Ctrl-C / Escape
+        };
+
+        match selection {
+            "Add Alias" => {
+                if let Err(e) = alias_add() {
+                    output::error(&format!("{}", e));
+                }
+            }
+            "Remove Alias" => {
+                if let Err(e) = alias_remove() {
+                    output::error(&format!("{}", e));
+                }
+            }
+            "List Aliases" => {
+                let aliases = config::load_config()
+                    .ok()
+                    .and_then(|(c, _)| c.aliases);
+                if let Err(e) = alias_list(&aliases) {
+                    output::error(&format!("{}", e));
+                }
+            }
+            "Sync from ezpm.toml" => {
+                if let Err(e) = alias_sync() {
+                    output::error(&format!("{}", e));
+                }
+            }
+            _ => break,
+        }
+
+        output::print_line("");
+    }
+
+    Ok(())
+}
+
+
 pub fn alias_add() -> Result<()> {
     let name = Text::new("Alias name (e.g., Client):").prompt()?;
     if name.trim().is_empty() {
@@ -25,7 +70,6 @@ pub fn alias_add() -> Result<()> {
         return Ok(());
     }
 
-    // Pitfall 5: normalize trailing slash
     let path = if raw_path.ends_with('/') {
         raw_path
     } else {
@@ -61,7 +105,7 @@ pub fn alias_add() -> Result<()> {
 
     config::save_ezpm_toml(Path::new("."), &project_name, &src_dir, &darklua_build, &aliases)?;
 
-    // Auto-regenerate .darklua.json and .luaurc (CONTEXT.md locked decision)
+    // Auto-regenerate .darklua.json and .luaurc
     config_gen::write_config_files(Path::new("."), &aliases)?;
 
     // Optionally create the directory if it doesn't exist
@@ -80,9 +124,6 @@ pub fn alias_add() -> Result<()> {
 }
 
 /// Present a multi-select checklist of all aliases and remove selected ones.
-///
-/// Implements CFG-03: alias_remove shows MultiSelect checklist of all aliases
-/// and removes selected ones.
 pub fn alias_remove() -> Result<()> {
     let (cfg, _warnings) = config::load_config()?;
 
@@ -148,7 +189,7 @@ pub fn alias_remove() -> Result<()> {
 
     config::save_ezpm_toml(Path::new("."), &project_name, &src_dir, &darklua_build, &aliases)?;
 
-    // Auto-regenerate .darklua.json and .luaurc (CONTEXT.md locked decision)
+    // Auto-regenerate .darklua.json and .luaurc
     config_gen::write_config_files(Path::new("."), &aliases)?;
 
     output::success(&format!("Removed {} alias(es).", names_to_remove.len()));
@@ -160,8 +201,6 @@ pub fn alias_remove() -> Result<()> {
 }
 
 /// Display all aliases in an aligned table, sorted alphabetically.
-///
-/// Implements CFG-04: alias_list displays all aliases sorted alphabetically.
 pub fn alias_list(aliases: &Option<HashMap<String, String>>) -> Result<()> {
     let aliases = match aliases {
         Some(m) if !m.is_empty() => m,
@@ -185,9 +224,6 @@ pub fn alias_list(aliases: &Option<HashMap<String, String>>) -> Result<()> {
 }
 
 /// Reload ezpm.toml from disk and regenerate .darklua.json and .luaurc.
-///
-/// Implements CFG-05: alias_sync reloads ezpm.toml and regenerates
-/// .darklua.json and .luaurc.
 pub fn alias_sync() -> Result<()> {
     let (cfg, _warnings) = config::load_config()?;
 

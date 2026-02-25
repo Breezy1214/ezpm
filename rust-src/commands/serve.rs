@@ -1,18 +1,4 @@
 //! Serve command — 8-step startup sequence, port handling, and full watch loop.
-//!
-//! Executes the full development server startup:
-//! 1. Generate build.project.json from default.project.json
-//! 2. Clean build directory
-//! 3. Generate sourcemap
-//! 4. Fix require paths
-//! 5. Run DarkLua
-//! 6. Copy meta files
-//! 7. Start FileWatcher
-//! 8. Start Rojo
-//!
-//! After all steps complete, prints a summary banner and enters the
-//! `tokio::select!` watch loop that routes file change events to rebuild
-//! handlers, handles Rojo lifecycle events, and exits cleanly on Ctrl-C.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -35,24 +21,11 @@ use crate::{
 
 /// Check if the given port is available for binding.
 ///
-/// Uses `TcpListener::bind` — if it succeeds the port is free. This is the
-/// stdlib standard pattern for port availability checking.
 fn port_is_available(port: u16) -> bool {
     std::net::TcpListener::bind(std::net::SocketAddr::from(([0, 0, 0, 0], port))).is_ok()
 }
 
 // ─── build.project.json generation ────────────────────────────────────────────
-
-/// Generate `build.project.json` from `default.project.json` by substituting
-/// the src path with the build path via simple string replacement.
-///
-/// No JSON parsing needed — this mirrors the Luau `generateBuildProject` which
-/// uses `string.gsub` on the raw file content.
-///
-/// # Errors
-///
-/// Returns an error if `default.project.json` is missing (user must run
-/// `ezpm init` first) or if the output file cannot be written.
 fn generate_build_project(src: &str, build: &str) -> anyhow::Result<()> {
     let content = std::fs::read_to_string("default.project.json")
         .context("Missing default.project.json — run 'ezpm init' to create it")?;
@@ -63,11 +36,6 @@ fn generate_build_project(src: &str, build: &str) -> anyhow::Result<()> {
 }
 
 // ─── Watch loop helpers ────────────────────────────────────────────────────────
-
-/// Handle a batch of file change events.
-///
-/// Dispatches each `FileChange` to the appropriate rebuild handler and prints
-/// either per-file feedback (single change) or a batch summary line (>1 changes).
 async fn handle_changes(
     changes: &[FileChange],
     src: &str,
@@ -106,13 +74,6 @@ async fn handle_changes(
 }
 
 /// Build a user-friendly display name for a file path.
-///
-/// For `init.*` files, includes the parent directory to disambiguate:
-///   `src/MyModule/init.luau` -> `MyModule/init.luau`
-///   `src/Services/init.meta.json` -> `Services/init.meta.json`
-///
-/// For all other files, returns just the filename:
-///   `src/MyModule/Foo.luau` -> `Foo.luau`
 fn display_name(path: &Path) -> String {
     let file_name = path
         .file_name()
@@ -130,11 +91,6 @@ fn display_name(path: &Path) -> String {
 }
 
 /// Handle a `FileChange::LuaChange` event — fix requires then run DarkLua.
-///
-/// `fix_single_file` is pure in-process string manipulation (no subprocess),
-/// so it can be called directly without `spawn_blocking`.
-/// `darklua_runner::process_file` uses `std::process::Command` (blocking),
-/// so it MUST be wrapped in `spawn_blocking`.
 async fn handle_lua_change(
     path: &Path,
     src: &str,
@@ -309,9 +265,6 @@ async fn handle_file_created(
 }
 
 /// Handle a `FileChange::FileDeleted` event.
-///
-/// Deletes the corresponding file from the build directory (if it exists) and
-/// regenerates the sourcemap.
 async fn handle_file_deleted(
     path: &Path,
     src: &str,
@@ -359,10 +312,6 @@ async fn handle_file_deleted(
 }
 
 /// Handle a `ProcessEvent` — Rojo auto-restart logic.
-///
-/// Rojo auto-restarts once if it crashes. A second crash logs the error
-/// without restarting. Other events (Started, Exited) are logged at verbose
-/// level since they are expected lifecycle events.
 async fn handle_process_event(
     event: ProcessEvent,
     pm: &mut ProcessManager,
@@ -401,15 +350,6 @@ async fn handle_process_event(
 // ─── Entry point ───────────────────────────────────────────────────────────────
 
 /// Run the serve command.
-///
-/// Executes the 8-step startup sequence with per-step spinners and timing,
-/// resolves the Rojo port (CLI flag > ezpm.toml > default 34872), checks port
-/// availability, then launches Rojo. Prints a summary banner on success.
-///
-/// After the banner, enters the full `tokio::select!` watch loop that:
-/// - Routes file change events to the appropriate rebuild handler
-/// - Handles Rojo process lifecycle events (auto-restart on crash)
-/// - Exits cleanly on Ctrl-C
 pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::Result<()> {
     let config = config.unwrap_or_default();
 
@@ -433,8 +373,7 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
         .or_else(|| config.serve.as_ref().and_then(|s| s.port))
         .unwrap_or(34872);
 
-    // Port availability check — must happen before any build steps so the user
-    // gets immediate feedback rather than waiting through the full startup.
+    // Port availability check 
     if !port_is_available(port) {
         output::error(&format!(
             "Port {} in use. Try: ezpm serve --port {}",
@@ -517,11 +456,10 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
     {
         let pb = output::start_spinner("Fixing require paths...");
         let t0 = Instant::now();
-        let project_dir_clone = project_dir.clone();
         let aliases_clone = aliases.clone();
         let src_clone = src.clone();
         let result = tokio::task::spawn_blocking(move || {
-            require_fixer::fix_requires(&project_dir_clone, &aliases_clone, &src_clone)
+            require_fixer::fix_requires(&PathBuf::from(&src_clone), &aliases_clone, &src_clone)
         })
         .await
         .context("require-fixer task panicked")?;
@@ -641,8 +579,6 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
     };
 
     // ── Summary banner ────────────────────────────────────────────────────────
-    // Use owo-colors with if_supports_color. Each colored segment must be
-    // formatted to an owned String before combining to avoid borrow conflicts.
     output::print_line("");
     {
         use std::fmt::Write as _;
@@ -665,15 +601,6 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
     output::print_line("");
 
     // ── Watch loop ────────────────────────────────────────────────────────────
-    // 3-arm tokio::select! loop:
-    //   1. watcher_rx — file change events from FileWatcher
-    //   2. process_rx — process lifecycle events from ProcessManager
-    //   3. ctrl_c    — user interrupt (clean shutdown)
-    //
-    // Design decisions:
-    // - Individual rebuild failures are non-fatal — error printed inline, loop continues.
-    // - WatchEvent::Error and ctrl_c are the only loop-exit conditions.
-    // - Rojo auto-restarts once on crash; second crash logs but does not restart.
     let mut failed_files: HashSet<PathBuf> = HashSet::new();
     let mut rojo_restart_count: u32 = 0;
 
@@ -726,10 +653,6 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
 
 // ─── Helpers (exposed for testing) ────────────────────────────────────────────
 
-/// Get the build-equivalent path for a source file.
-///
-/// Given a file path under `src_root`, returns the corresponding path under
-/// `build_root`. Used by the watch loop rebuild handlers.
 pub(crate) fn src_to_build_path(
     src_file: &Path,
     src_root: &Path,
