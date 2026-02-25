@@ -85,10 +85,6 @@ pub fn fix_requires(
 }
 
 /// Process a single file, rewriting its require paths in place.
-///
-/// Returns `Some(FileChange)` if changes were made, `None` otherwise.
-/// Only writes the file to disk when changes are actually made (BUILD-04).
-/// Used by serve watch mode in Phase 4.
 pub fn fix_single_file(
     file_path: &Path,
     aliases: &HashMap<String, String>,
@@ -114,15 +110,6 @@ pub fn fix_single_file(
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
-
-/// Build the list of src-rooted aliases sorted by real path length descending.
-///
-/// Only includes aliases whose path starts with `{src_prefix}/`.
-/// Maps each to `("@{name}/", normalized_path)` tuples where the real path
-/// is guaranteed to have a trailing slash.
-///
-/// Ties (same path length) are broken alphabetically by alias name for
-/// deterministic behaviour — matching Luau `getSortedSrcShortcuts`.
 fn build_sorted_src_aliases(
     aliases: &HashMap<String, String>,
     src_prefix: &str,
@@ -150,12 +137,6 @@ fn build_sorted_src_aliases(
 }
 
 /// Build the list of require path prefixes that should be left untouched.
-///
-/// Always includes @self and @game (with and without trailing slash).
-/// Also includes `@{name}/` for every alias whose path does NOT start with
-/// `{src_prefix}/` (i.e. external aliases like Packages/, ServerPackages/).
-///
-/// Matches `deriveIgnoreList` in the Luau `src/config.luau`.
 fn build_skip_list(aliases: &HashMap<String, String>, src_prefix: &str) -> Vec<String> {
     let prefix = format!("{src_prefix}/");
     let mut skip = vec![
@@ -180,11 +161,7 @@ pub fn is_lua_file(path: &Path) -> bool {
     )
 }
 
-/// Return the compiled require-path regex (compiled once via OnceLock, reused
-/// across every call — Rust 1.70+ stdlib pattern, no extra crate required).
-///
-/// Pattern: `require("...")` — double-quotes only, matching Luau `require%("(.-)"%)`.
-/// Single-quote requires are intentionally NOT matched (Pitfall 2 / Luau parity).
+/// Return the compiled require-path regex 
 pub fn require_regex() -> &'static Regex {
     static REQUIRE_RE: OnceLock<Regex> = OnceLock::new();
     REQUIRE_RE.get_or_init(|| {
@@ -192,25 +169,7 @@ pub fn require_regex() -> &'static Regex {
     })
 }
 
-/// Pure transformation: scan `content` for `require("...")` calls and rewrite
-/// any that match src aliases.
-///
-/// Algorithm (matches Luau `processSingleFile` behaviour):
-/// 1. Find all `require("...")` paths via compiled regex.
-/// 2. For each path, check the skip list first — if it starts with a skip
-///    entry, leave it untouched.
-/// 3. Check built-in Roblox aliases (@self, @game) case-insensitively.
-/// 4. Warn on `../` and `./` relative paths but leave them untouched (per
-///    CONTEXT.md decision).
-/// 5. If already starts with a known @alias/ shortcut, leave it untouched.
-/// 6. Try to match against sorted src aliases (longest match first) — replace
-///    matching prefix with the alias shortcut.
-/// 7. If no match for a src/ path, emit a warning but leave untouched.
-///
-/// Returns `(new_content, rewrites)`.  If no rewrites were needed, `rewrites`
-/// is empty and `new_content` equals `content` unchanged.
-///
-/// This is a pure function with no filesystem I/O — testable without tempdir.
+
 pub fn process_file_content(
     content: &str,
     sorted_aliases: &[(String, String)],

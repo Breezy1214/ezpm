@@ -18,12 +18,6 @@ pub struct DarkluaResult {
 }
 
 // ─── Public functions ─────────────────────────────────────────────────────────
-
-/// Run `darklua process <src> <build>` to transform an entire source tree.
-///
-/// This is the full-tree variant used by the `build` command in Phase 3.
-/// Uses synchronous `std::process::Command` (Phase 2 is intentionally
-/// synchronous — async subprocess orchestration is Phase 4).
 pub fn process_tree(src: &Path, build: &Path) -> Result<DarkluaResult> {
     let output = Command::new("darklua")
         .arg("process")

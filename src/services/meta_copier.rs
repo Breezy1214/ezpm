@@ -6,12 +6,6 @@ use walkdir::WalkDir;
 
 /// Copy all `init.meta.json` files from `src` to `build`, preserving the
 /// relative directory structure.
-///
-/// Rojo uses `init.meta.json` files to attach properties to instances. Since
-/// darklua only processes Lua/Luau source files, these JSON files must be
-/// copied separately to the build directory.
-///
-/// Returns the number of `init.meta.json` files copied.
 pub fn copy_meta_files(src: &Path, build: &Path) -> Result<usize> {
     let mut count = 0;
 

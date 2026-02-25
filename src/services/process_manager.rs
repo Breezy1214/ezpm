@@ -1,31 +1,4 @@
 //! ProcessManager — spawn, track, and gracefully terminate child processes.
-//!
-//! Each child is spawned in its own Unix process group (`process_group(0)`)
-//! so that grandchild processes (e.g. Rojo's internal workers) are also
-//! terminated on shutdown. `kill_all()` sends SIGTERM first, waits 2 seconds,
-//! then sends SIGKILL to any surviving groups.
-//!
-//! Lifecycle events (Started, Exited, Crashed) are delivered to the caller
-//! via a `tokio::sync::mpsc` channel returned by `ProcessManager::new()`.
-//!
-//! # Usage
-//!
-//! ```rust,ignore
-//! let (mut manager, mut events) = ProcessManager::new();
-//! manager.spawn("rojo", "rojo", &["serve"]).await?;
-//!
-//! // In your select! loop:
-//! // if let Some(event) = events.recv().await { ... }
-//!
-//! // On shutdown:
-//! manager.kill_all().await;
-//! ```
-//!
-//! # Important
-//!
-//! Call `kill_all().await` explicitly before dropping the manager. The `Drop`
-//! impl attempts a best-effort synchronous kill but cannot await `child.wait()`,
-//! which may leave zombie processes if `kill_all()` is skipped.
 
 use std::collections::HashMap;
 use std::process::Stdio;
@@ -86,17 +59,6 @@ impl ProcessManager {
     }
 
     /// Spawn a child process under the given `name`.
-    ///
-    /// The child is launched in its own process group (`process_group(0)`) so
-    /// that its PGID equals its PID. stdin/stdout/stderr are inherited from the
-    /// terminal — the manager tracks lifecycle only, not I/O.
-    ///
-    /// A `ProcessEvent::Started` event is sent to the channel on success.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the command cannot be found or the OS refuses to
-    /// spawn it.
     pub async fn spawn(&mut self, name: &str, cmd: &str, args: &[&str]) -> Result<()> {
         let mut command = tokio::process::Command::new(cmd);
         command
@@ -134,16 +96,6 @@ impl ProcessManager {
     }
 
     /// Gracefully terminate all managed processes.
-    ///
-    /// For each process:
-    /// 1. Send SIGTERM to the entire process group.
-    /// 2. Wait up to 2 seconds for the process to exit.
-    /// 3. If still running, send SIGKILL and reap the zombie.
-    ///
-    /// A `ProcessEvent::Exited` or `ProcessEvent::Crashed` event is sent for
-    /// each process after it terminates.
-    ///
-    /// After this call `self.processes` is empty.
     pub async fn kill_all(&mut self) {
         let names: Vec<String> = self.processes.keys().cloned().collect();
 
@@ -233,14 +185,7 @@ impl Default for ProcessManager {
 }
 
 impl Drop for ProcessManager {
-    /// Best-effort synchronous kill for any remaining processes.
-    ///
-    /// This cannot `await` and therefore cannot call `kill_all()`. If processes
-    /// remain at drop time, they receive `start_kill()` (SIGKILL, non-blocking)
-    /// but their zombie entries may persist briefly until the OS cleans them up.
-    ///
-    /// Always call `kill_all().await` before dropping to ensure clean shutdown
-    /// with SIGTERM grace period and proper zombie reaping.
+    /// kill for any remaining processes.
     fn drop(&mut self) {
         if !self.processes.is_empty() {
             output::verbose_line(

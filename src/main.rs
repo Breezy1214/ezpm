@@ -13,13 +13,6 @@ use ezpm::{
 };
 
 // ─── Version check ────────────────────────────────────────────────────────────
-
-/// Fetch the latest release tag from GitHub. Returns None on any network or
-/// parse error so the version check is always non-fatal (Pitfall 6 from
-/// RESEARCH.md — never block for long; uses background thread with 2s timeout).
-///
-/// ureq v3 changed `read_to_string` to take no arguments and return the string
-/// directly (vs. ureq v2 which wrote into a &mut String).
 fn fetch_latest_version() -> Option<String> {
     let body = ureq::get("https://api.github.com/repos/Breezy1214/ezpm/releases/latest")
         .header("Accept", "application/vnd.github.v3+json")
@@ -37,9 +30,6 @@ fn fetch_latest_version() -> Option<String> {
     json.get("tag_name")?.as_str().map(|s| s.to_string())
 }
 
-/// Print the version footer to stderr if a newer version is available.
-/// Uses `recv_timeout` so we never block longer than 2 seconds (CLI-05).
-/// stderr is intentional: the footer must not corrupt stdout piping.
 fn print_version_footer(rx: &mpsc::Receiver<Option<String>>, current_ver: &str) {
     if let Ok(Some(latest)) = rx.recv_timeout(Duration::from_secs(2)) {
         if version::is_newer(current_ver, &latest) {
@@ -57,8 +47,6 @@ fn print_version_footer(rx: &mpsc::Receiver<Option<String>>, current_ver: &str) 
 fn main() {
     let cli = Cli::parse();
 
-    // Initialize output module immediately after parsing — must happen before
-    // any output function is called, including config-load warnings (Pitfall 1).
     output::init(
         cli.verbose,
         cli.quiet,
@@ -85,8 +73,6 @@ fn main() {
 
     let current_ver = env!("CARGO_PKG_VERSION");
 
-    // ── Background version check (CLI-05) ────────────────────────────────────
-    // Disabled by EZPM_NO_UPDATE_CHECK=1 env var or check_updates=false in config.
     let check_disabled = std::env::var("EZPM_NO_UPDATE_CHECK").is_ok()
         || loaded_config
             .as_ref()

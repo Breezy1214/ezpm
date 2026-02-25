@@ -1,33 +1,4 @@
 //! FileWatcher — OS-native file watching with debouncing and categorized events.
-//!
-//! Wraps `notify-debouncer-full` 0.7.0 (backed by inotify on Linux, kqueue on
-//! macOS, and ReadDirectoryChangesW on Windows) with a 300ms debounce window,
-//! extension filtering (`.lua`, `.luau`, `init.meta.json` only), and
-//! categorized event delivery over a `tokio::sync::mpsc` channel.
-//!
-//! # Usage
-//!
-//! ```rust,ignore
-//! let src_dir = Path::new("src");
-//! let (watcher, mut rx) = FileWatcher::new(src_dir, &[])?;
-//!
-//! // In your select! loop:
-//! // if let Some(event) = rx.recv().await { ... }
-//!
-//! // Watcher stops when `watcher` is dropped.
-//! drop(watcher);
-//! ```
-//!
-//! # Design decisions
-//!
-//! - **300ms debounce:** Locked value — absorbs editor atomic-save bursts (Vim,
-//!   JetBrains, VS Code) without hand-rolling timing logic. Not configurable.
-//! - **Fail-fast on error:** If the watcher encounters a watch error (inotify
-//!   limit, directory deleted), it sends a `WatchEvent::Error` and stops.
-//!   No recovery attempts.
-//! - **Sync-to-async bridge:** `notify` callbacks run on an OS-managed thread,
-//!   not a tokio thread. `blocking_send` is the only safe way to send to a
-//!   tokio channel from that context. Do NOT call `blocking_send` from async code.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -42,11 +13,6 @@ use tokio::sync::mpsc;
 use crate::output;
 
 // ─── Public types ─────────────────────────────────────────────────────────────
-
-/// Categorized file change event.
-///
-/// Callers receive batches of these inside `WatchEvent::Changes`. Each variant
-/// carries the absolute path of the affected file.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum FileChange {
     /// A `.lua` or `.luau` file was modified.
@@ -74,34 +40,12 @@ pub enum WatchEvent {
 }
 
 // ─── FileWatcher ──────────────────────────────────────────────────────────────
-
-/// Manages OS-native file watching for a single directory.
-///
-/// Hold this value to keep the watcher alive. Dropping `FileWatcher` stops the
-/// underlying debouncer and OS watcher. The mpsc receiver will then return
-/// `None` on the next `recv()`.
 pub struct FileWatcher {
     /// Holds the debouncer alive. Dropping this stops the watcher.
     _debouncer: Debouncer<RecommendedWatcher, RecommendedCache>,
 }
 
 impl FileWatcher {
-    /// Create a new `FileWatcher` on `watch_dir`.
-    ///
-    /// Returns the watcher handle and the async receiver. Pass the receiver to
-    /// a `tokio::select!` loop and `recv().await` on each iteration.
-    ///
-    /// # Parameters
-    ///
-    /// - `watch_dir`: Directory to watch recursively (typically `src/`).
-    /// - `extra_ignores`: Additional directory names to ignore, from `ezpm.toml`
-    ///   (e.g. `["build", "dist"]`). Always-ignored: `.git`, `node_modules`,
-    ///   `Packages`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the OS watcher cannot be initialized or if
-    /// `watch_dir` does not exist.
     pub fn new(watch_dir: &Path, extra_ignores: &[String]) -> Result<(FileWatcher, mpsc::Receiver<WatchEvent>)> {
         let (tx, rx) = mpsc::channel::<WatchEvent>(64);
 
@@ -140,9 +84,6 @@ impl FileWatcher {
             }
         };
 
-        // 300ms debounce timeout — locked decision, not configurable.
-        // new_debouncer(timeout, tick_rate, handler) — 3-arg simple form.
-        // tick_rate: None = auto (timeout / 4).
         let mut debouncer = new_debouncer(Duration::from_millis(300), None, callback)?;
 
         // Watch the directory recursively via OS-native events.
@@ -158,16 +99,6 @@ impl FileWatcher {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-/// Classify a batch of debounced events into typed `FileChange` values.
-///
-/// Filters out:
-/// - Files with non-relevant extensions (not `.lua`, `.luau`, `init.meta.json`)
-/// - Files under ignored directory names (`.git`, `node_modules`, `Packages`, extras)
-/// - Access events and other non-modification kinds
-///
-/// Deduplicates entries by (path, category) within the batch — editor save
-/// bursts may produce duplicates even after debouncing.
 fn classify_events(events: &[DebouncedEvent], ignore_patterns: &[String]) -> Vec<FileChange> {
     let mut seen: HashSet<FileChange> = HashSet::new();
     let mut result: Vec<FileChange> = Vec::new();
@@ -214,9 +145,6 @@ fn classify_events(events: &[DebouncedEvent], ignore_patterns: &[String]) -> Vec
         }
     }
 
-    // Delete-wins: suppress non-delete events for paths that also have FileDeleted.
-    // macOS emits both Remove and Modify/Any for the same file within the debounce window.
-    // Collect owned PathBuf values so `result` is not borrowed during retain().
     let deleted_paths: HashSet<PathBuf> = result
         .iter()
         .filter_map(|c| match c {
@@ -250,9 +178,6 @@ fn classify_modify(path: &Path) -> Option<FileChange> {
 }
 
 /// Returns true if the file should be watched.
-///
-/// Only `.lua`, `.luau`, and exactly `init.meta.json` are relevant. All other
-/// files (including other `.json` files) are silently ignored.
 pub(crate) fn is_relevant(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|e| e.to_str()),
@@ -261,9 +186,6 @@ pub(crate) fn is_relevant(path: &Path) -> bool {
 }
 
 /// Returns true if any component of the path matches an ignored directory name.
-///
-/// Hardcoded ignores: `.git`, `node_modules`, `Packages`.
-/// Additional ignores from `extra_ignores` parameter.
 pub(crate) fn should_ignore(path: &Path, ignore_patterns: &[String]) -> bool {
     path.components().any(|component| {
         let s = component.as_os_str().to_string_lossy();

@@ -5,9 +5,6 @@ use crate::output;
 
 // ─── Menu items ───────────────────────────────────────────────────────────────
 
-/// Flat list of menu entries. Each entry is (display_label, command_key).
-/// Category headers have an empty command_key — selecting one loops back to
-/// the menu without executing any command (Pitfall 1 from RESEARCH.md).
 const MENU_ITEMS: &[(&str, &str)] = &[
     ("init           Create a new EZPM project", "init"),
     ("serve          Start file watcher + DarkLua + Rojo", "serve"),
@@ -38,12 +35,6 @@ fn print_logo(version: &str) {
 }
 
 // ─── Interactive menu ─────────────────────────────────────────────────────────
-
-/// Run the interactive arrow-key menu.
-///
-/// Displays the ASCII logo and a categorised list of commands. Selecting a
-/// category header loops back to the menu. Selecting a command executes it
-/// immediately and then returns to the menu. Ctrl-C / Escape exits cleanly.
 pub fn run_interactive_menu() {
     let version = env!("CARGO_PKG_VERSION");
 
@@ -90,11 +81,6 @@ pub fn run_interactive_menu() {
 }
 
 // ─── Command dispatch ─────────────────────────────────────────────────────────
-
-/// Dispatch a menu command key to the appropriate handler.
-///
-/// Config is loaded fresh on each invocation so alias changes made during the
-/// session are reflected without restarting.
 fn run_command(cmd: &str) -> Result<()> {
     // Load fresh config for each command so alias changes are picked up
     let loaded = crate::config::load_config();

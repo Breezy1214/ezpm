@@ -5,15 +5,6 @@ use std::process::Command;
 use crate::services::darklua_runner::DarkluaResult;
 
 // ─── Public functions ─────────────────────────────────────────────────────────
-
-/// Run `rojo sourcemap . -o sourcemap.json` in the given project directory.
-///
-/// Rojo's sourcemap library API is not extractable (it requires a running Rojo
-/// instance or session), so we invoke it as a subprocess per the Phase 2
-/// research decision.
-///
-/// Reuses `DarkluaResult` as the return type since both darklua and rojo are
-/// external tools with the same stdout/stderr/exit_code structure.
 pub fn generate_sourcemap(project_dir: &Path) -> Result<DarkluaResult> {
     let output = Command::new("rojo")
         .arg("sourcemap")
@@ -40,11 +31,7 @@ mod tests {
     use tempfile::TempDir;
 
     /// This test verifies that the generate_sourcemap function compiles
-    /// correctly and returns a Result<DarkluaResult>. It does not test actual
-    /// rojo execution since rojo may not be in PATH in CI.
-    ///
-    /// The actual rojo invocation is tested via integration tests that require
-    /// a full project setup with rojo installed.
+    /// correctly and returns a Result<DarkluaResult>. 
     #[test]
     #[ignore = "requires rojo in PATH"]
     fn test_generate_sourcemap_requires_rojo() {

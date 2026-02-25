@@ -1,17 +1,4 @@
 //! Centralized output module for ezpm.
-//!
-//! All terminal output routes through this module. Typed functions (success,
-//! error, info, warn, hint, verbose_line) apply the correct Unicode symbol,
-//! color, and stream (stdout vs stderr). The OutputConfig stored in a OnceLock
-//! is initialized once in main() after CLI parsing and before any command runs.
-//!
-//! Usage:
-//!   output::init(cli.verbose, cli.quiet, color_choice);
-//!   output::success("Installed 4 packages");
-//!   output::error("Config not found");
-//!   output::hint("run `ezpm init` to create one");
-//!   let pb = output::start_spinner("Installing tools...");
-//!   pb.finish_and_clear();
 
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -32,32 +19,22 @@ pub struct OutputConfig {
 /// Color output control, maps 1-to-1 from CLI --color flag.
 #[derive(Clone, Copy, PartialEq)]
 pub enum ColorChoice {
-    /// Let owo-colors detect automatically via if_supports_color (NO_COLOR, TTY, CI).
     Auto,
-    /// Force ANSI color output even when piped.
     Always,
-    /// Force plain output even in a TTY.
     Never,
 }
 
 static OUTPUT_CONFIG: OnceLock<OutputConfig> = OnceLock::new();
 
-/// Initialize the output module. Must be called in main() immediately after
-/// Cli::parse() and before any output function or command dispatch.
-///
-/// Per Pitfall 4 from RESEARCH.md: set_override is only called for Always/Never.
-/// For Auto, owo-colors auto-detects via if_supports_color — do NOT call set_override.
 pub fn init(verbose: bool, quiet: bool, color: ColorChoice) {
     match color {
         ColorChoice::Always => owo_colors::set_override(true),
         ColorChoice::Never => owo_colors::set_override(false),
         ColorChoice::Auto => {} // owo-colors handles NO_COLOR, TTY, CI automatically
     }
-    // ok() silently ignores double-init (e.g., in tests)
     let _ = OUTPUT_CONFIG.set(OutputConfig { verbose, quiet, color });
 }
 
-/// Internal accessor. Panics with a clear message if init() was not called.
 fn config() -> &'static OutputConfig {
     OUTPUT_CONFIG
         .get()
@@ -199,15 +176,6 @@ pub fn print_stderr(msg: &str) {
 
 // ─── Spinner API ───────────────────────────────────────────────────────────────
 
-/// Create and start a braille-dots spinner with a cyan color and 80ms tick rate.
-///
-/// Returns the ProgressBar handle. Callers:
-///   - Update message: `pb.set_message("Next step...")`
-///   - Safe print while spinning: `pb.suspend(|| output::info("sub-step done"))`
-///   - Finish: `pb.finish_and_clear();` then call `output::success("Done.")`
-///
-/// The spinner auto-hides on non-TTY (piped output) — indicatif built-in behavior.
-/// Spinner draws to stderr so it does not corrupt stdout pipes.
 pub fn start_spinner(msg: &str) -> ProgressBar {
     let pb = ProgressBar::new_spinner();
     pb.enable_steady_tick(Duration::from_millis(80));
