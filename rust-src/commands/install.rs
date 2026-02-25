@@ -74,23 +74,35 @@ pub fn install_tools(_src_prefix: &str) -> Result<()> {
             if wally_status.success() {
                 // Run wally-package-types for Packages/
                 if Path::new("Packages").exists() {
-                    Command::new("wally-package-types")
+                    let wpt_status = Command::new("wally-package-types")
                         .arg("--sourcemap")
                         .arg("sourcemap.json")
                         .arg("Packages")
                         .status()
                         .context("Failed to run wally-package-types")?;
+
+                    if !wpt_status.success() {
+                        pb.suspend(|| output::warn(
+                            "wally-package-types failed for Packages (types may be incomplete)"
+                        ));
+                    }
                 }
 
                 // Run wally-package-types for ServerPackages/ if it was created
                 // (INST-03)
                 if Path::new("ServerPackages").exists() {
-                    Command::new("wally-package-types")
+                    let wpt_status = Command::new("wally-package-types")
                         .arg("--sourcemap")
                         .arg("sourcemap.json")
                         .arg("ServerPackages")
                         .status()
                         .context("Failed to run wally-package-types for ServerPackages")?;
+
+                    if !wpt_status.success() {
+                        pb.suspend(|| output::warn(
+                            "wally-package-types failed for ServerPackages (types may be incomplete)"
+                        ));
+                    }
                 }
             }
         } else {
@@ -102,23 +114,35 @@ pub fn install_tools(_src_prefix: &str) -> Result<()> {
             if wally_out.status.success() {
                 // Run wally-package-types for Packages/
                 if Path::new("Packages").exists() {
-                    Command::new("wally-package-types")
+                    let wpt_out = Command::new("wally-package-types")
                         .arg("--sourcemap")
                         .arg("sourcemap.json")
                         .arg("Packages")
                         .output()
                         .context("Failed to run wally-package-types")?;
+
+                    if !wpt_out.status.success() {
+                        pb.suspend(|| output::warn(
+                            "wally-package-types failed for Packages (types may be incomplete)"
+                        ));
+                    }
                 }
 
                 // Run wally-package-types for ServerPackages/ if it was created
                 // (INST-03)
                 if Path::new("ServerPackages").exists() {
-                    Command::new("wally-package-types")
+                    let wpt_out = Command::new("wally-package-types")
                         .arg("--sourcemap")
                         .arg("sourcemap.json")
                         .arg("ServerPackages")
                         .output()
                         .context("Failed to run wally-package-types for ServerPackages")?;
+
+                    if !wpt_out.status.success() {
+                        pb.suspend(|| output::warn(
+                            "wally-package-types failed for ServerPackages (types may be incomplete)"
+                        ));
+                    }
                 }
             }
         }
@@ -213,19 +237,31 @@ pub fn setup_wally_packages(_src_prefix: &str) -> Result<()> {
 
             if output::is_verbose() {
                 pb.suspend(|| {});
-                Command::new("wally-package-types")
+                let wpt_status = Command::new("wally-package-types")
                     .arg("--sourcemap")
                     .arg("sourcemap.json")
                     .arg(pkg_dir)
                     .status()
                     .context("Failed to run wally-package-types")?;
+
+                if !wpt_status.success() {
+                    pb.suspend(|| output::warn(&format!(
+                        "wally-package-types failed for {pkg_dir} (types may be incomplete)"
+                    )));
+                }
             } else {
-                Command::new("wally-package-types")
+                let wpt_out = Command::new("wally-package-types")
                     .arg("--sourcemap")
                     .arg("sourcemap.json")
                     .arg(pkg_dir)
                     .output()
                     .context("Failed to run wally-package-types")?;
+
+                if !wpt_out.status.success() {
+                    pb.suspend(|| output::warn(&format!(
+                        "wally-package-types failed for {pkg_dir} (types may be incomplete)"
+                    )));
+                }
             }
         }
     }
