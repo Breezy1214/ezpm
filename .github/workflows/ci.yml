@@ -10,34 +10,24 @@ permissions:
   contents: read
 
 jobs:
-  build-and-test:
-    name: Build & Test (${{ matrix.os }})
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo build
-      - run: cargo test
-
-  clippy:
-    name: Clippy
+  test:
+    name: Test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
-      - run: cargo clippy -- -D warnings
-
-  fmt:
-    name: Format
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-      - run: cargo fmt --check
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Rokit toolchain
+        run: |
+          curl -sSf https://raw.githubusercontent.com/rojo-rbx/rokit/main/scripts/install.sh | bash
+          echo "$HOME/.rokit/bin" >> $GITHUB_PATH
+      - name: Install project tools
+        run: rokit install
+      - name: Run tests
+        run: cargo test
+      - name: Clippy
+        run: cargo clippy -- -D warnings
+      - name: Format check
+        run: cargo fmt --check
