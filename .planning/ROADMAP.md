@@ -97,7 +97,10 @@ Plans:
   2. Integration tests verify exit code contracts — commands that should fail return non-zero, commands that should succeed return 0
   3. A PR opened against main triggers the full test suite (unit + integration) in GitHub Actions; the suite must pass before merge is allowed
   4. CI pipeline completes in under 2 minutes due to Rust build cache (`Swatinem/rust-cache`)
-**Plans**: TBD
+**Plans**: 2 plans
+Plans:
+- [ ] 08-01-PLAN.md — Shared test helpers and integration tests for all non-serve commands
+- [ ] 08-02-PLAN.md — Serve start-wait-kill test and CI workflow update with rust-cache
 
 ## Progress
 
@@ -109,5 +112,5 @@ Plans:
 | 4. Output Foundation | v1.1 | Complete    | 2026-02-24 | 2026-02-24 |
 | 5. Serve Services | 2/2 | Complete   | 2026-02-25 | - |
 | 6. Serve Command | 3/3 | Complete   | 2026-02-25 | - |
-| 7. DX Polish | 2/2 | Complete   | 2026-02-25 | - |
-| 8. Integration Tests and CI | v1.1 | 0/TBD | Not started | - |
+| 7. DX Polish | 2/2 | Complete    | 2026-02-25 | - |
+| 8. Integration Tests and CI | v1.1 | 0/2 | Not started | - |
