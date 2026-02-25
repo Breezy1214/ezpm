@@ -750,23 +750,29 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
         }
     }
 
-    // ── Step 6: Run DarkLua ───────────────────────────────────────────────────
+    // ── Step 6: Run DarkLua (with retry on warnings) ─────────────────────────
     {
         let pb = output::start_spinner("Running DarkLua...");
         let t0 = Instant::now();
         let src_path_clone = src_path.clone();
         let build_path_clone = build_path.clone();
         let result = tokio::task::spawn_blocking(move || {
-            darklua_runner::process_tree(&src_path_clone, &build_path_clone)
+            darklua_runner::process_tree_with_retry(&src_path_clone, &build_path_clone)
         })
         .await
         .context("darklua task panicked")?;
         pb.finish_and_clear();
         match result {
-            Ok(r) if r.success => output::success(&format!(
+            Ok(r) if r.success && r.stderr.trim().is_empty() => output::success(&format!(
                 "DarkLua processed ({:.0}ms)",
                 t0.elapsed().as_millis()
             )),
+            Ok(r) if r.success => {
+                // Success but stderr still non-empty after retry — fail
+                let detail = r.stderr.trim().to_string();
+                output::error(&format!("DarkLua warnings persist after retry: {}", detail));
+                return Err(anyhow::anyhow!("darklua processing had persistent warnings"));
+            }
             Ok(r) => {
                 let detail = r.stderr.trim().to_string();
                 output::error(&format!("DarkLua failed: {}", detail));

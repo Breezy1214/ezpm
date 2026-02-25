@@ -53,6 +53,17 @@ pub fn process_file(src_file: &Path, build_file: &Path) -> Result<DarkluaResult>
     })
 }
 
+/// Run `darklua process` on a tree, retrying once if it succeeds but has
+pub fn process_tree_with_retry(src: &Path, build: &Path) -> Result<DarkluaResult> {
+    let result = process_tree(src, build)?;
+    if result.success && !result.stderr.trim().is_empty() {
+        // Retry once — DarkLua warnings sometimes clear on a second pass
+        let retry = process_tree(src, build)?;
+        return Ok(retry);
+    }
+    Ok(result)
+}
+
 /// Clean and recreate the build directory.
 ///
 /// Removes the directory recursively if it exists, then creates a fresh empty

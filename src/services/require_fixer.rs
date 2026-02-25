@@ -124,6 +124,12 @@ pub fn fix_single_file(
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
+
+/// Normalize path separators to forward slashes (Windows compat).
+/// Alias paths use `/` but PathBuf::to_string_lossy() produces `\` on Windows.
+fn normalize_separators(s: &str) -> String {
+    s.replace('\\', "/")
+}
 fn build_sorted_src_aliases(
     aliases: &HashMap<String, String>,
     src_prefix: &str,
@@ -133,8 +139,6 @@ fn build_sorted_src_aliases(
         .iter()
         .filter(|(_, path)| path.starts_with(&prefix) || *path == src_prefix)
         .map(|(name, path)| {
-            // Pitfall 3: normalise — ensure trailing slash on the real path for
-            // consistent prefix matching.
             let real_path = if path.ends_with('/') {
                 path.clone()
             } else {
@@ -235,7 +239,7 @@ pub fn build_inverted_aliases(aliases: &HashMap<String, String>) -> Vec<(String,
 /// Convert a found file path to alias notation using inverted aliases.
 /// Strips `/init.luau`, `/init.lua`, `.luau`, `.lua` suffixes (matching Luau behavior).
 fn convert_path_to_alias(file_path: &str, inverted_aliases: &[(String, String)]) -> String {
-    let mut converted = file_path.to_string();
+    let mut converted = normalize_separators(file_path);
     for (real_path, shortcut) in inverted_aliases {
         if converted.contains(real_path.as_str()) {
             converted = converted.replace(real_path.as_str(), shortcut.as_str());
@@ -308,17 +312,7 @@ pub fn process_file_content(
             continue;
         }
 
-        // ── 4. Already correctly aliased check ────────────────────────────────
-        // If path already starts with a known @alias/ shortcut, it is correct —
-        // skip it to avoid double-rewriting.
-        let already_aliased = sorted_aliases
-            .iter()
-            .any(|(shortcut, _)| required_path.starts_with(shortcut.as_str()));
-        if already_aliased {
-            continue;
-        }
-
-        // ── 5. Longest-match alias resolution ────────────────────────────────
+        // ── 4. Longest-match alias resolution ────────────────────────────────
         // sorted_aliases is pre-sorted by real path length descending, so the
         // first match is always the most specific one (Pitfall 6).
         let mut matched = false;
@@ -352,7 +346,7 @@ pub fn process_file_content(
                 if let Some(root) = root_dir {
                     if let Some(file_name) = required_path.rsplit('/').next() {
                         if let Some(found) = find_file_by_name(file_name, root) {
-                            let found_str = found.to_string_lossy().to_string();
+                            let found_str = normalize_separators(&found.to_string_lossy());
                             let converted =
                                 convert_path_to_alias(&found_str, inverted_aliases);
                             if converted != required_path {
@@ -382,13 +376,29 @@ pub fn process_file_content(
             }
         }
 
-        // ── 7. Dot notation conversion + file search ────────────────────────
-        // Matches Luau's step: convert Lua-style dot paths to file paths,
-        // check if the file exists, and if not search by name.
+        // ── 7. Shortcut resolution + dot notation conversion + file search ──
         if !matched {
+            // Resolve alias shortcuts to real paths
+            let mut resolved_path = required_path.clone();
+            for (shortcut, real_path) in sorted_aliases {
+                if required_path.starts_with(shortcut.as_str()) {
+                    resolved_path = format!("{}{}", real_path, &required_path[shortcut.len()..]);
+                    break;
+                }
+            }
+
+            // Relative path check on resolved path 
+            if resolved_path.contains("../") || resolved_path.contains("./") {
+                output::warn(&format!(
+                    "relative require path '{}' (resolved: '{}') is not supported — leaving untouched",
+                    required_path, resolved_path
+                ));
+                continue;
+            }
+
             if let Some(root) = root_dir {
                 // Convert dot notation to path separators (Lua module style)
-                let as_file_path = required_path.replace('.', "/");
+                let as_file_path = resolved_path.replace('.', "/");
                 // Strip .luau/.lua extension that got converted to /luau or /lua
                 let as_file_path = if as_file_path.ends_with("/luau") {
                     &as_file_path[..as_file_path.len() - "/luau".len()]
@@ -407,7 +417,7 @@ pub fn process_file_content(
                 {
                     if let Some(file_name) = as_file_path.rsplit('/').next() {
                         if let Some(found) = find_file_by_name(file_name, root) {
-                            let found_str = found.to_string_lossy().to_string();
+                            let found_str = normalize_separators(&found.to_string_lossy());
                             let converted =
                                 convert_path_to_alias(&found_str, inverted_aliases);
                             if converted != required_path {
@@ -716,18 +726,34 @@ local b = require("src/server/api")
     }
 
     #[test]
-    fn test_already_aliased_path_untouched() {
+    fn test_aliased_path_no_filesystem_untouched() {
         let mut aliases = HashMap::new();
         aliases.insert("Client".to_string(), "src/client/".to_string());
 
         let sorted = build_sorted_src_aliases(&aliases, "src");
         let skip = build_skip_list(&aliases, "src");
 
-        // Path already uses @Client/ notation — must not be rewritten
+        
         let content = r#"local m = require("@Client/module")"#;
         let (new_content, rewrites) = process_file_content(content, &sorted, &skip, "src", None, &[]);
 
-        assert!(rewrites.is_empty(), "already-aliased path must not be rewritten");
+        assert!(rewrites.is_empty(), "aliased path with no filesystem must not be rewritten");
+        assert_eq!(new_content, content, "content must be unchanged");
+    }
+
+    #[test]
+    fn test_aliased_path_resolves_through_shortcut() {
+        let mut aliases = HashMap::new();
+        aliases.insert("Client".to_string(), "src/client/".to_string());
+
+        let sorted = build_sorted_src_aliases(&aliases, "src");
+        let skip = build_skip_list(&aliases, "src");
+
+        let content = r#"local m = require("@Client/module")"#;
+        let (new_content, rewrites) = process_file_content(content, &sorted, &skip, "src", None, &[]);
+
+        // No filesystem to search — path stays the same
+        assert!(rewrites.is_empty(), "aliased path with no filesystem should not be rewritten");
         assert_eq!(new_content, content, "content must be unchanged");
     }
 
