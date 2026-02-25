@@ -1,4 +1,4 @@
-//! Serve command — 8-step startup sequence, port handling, and full watch loop.
+//! Serve command — 9-step startup sequence, port handling, and full watch loop.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -12,8 +12,8 @@ use crate::{
     config::EzpmConfig,
     output,
     services::{
-        darklua_runner, file_watcher::{FileChange, FileWatcher, WatchEvent}, meta_copier,
-        process_manager::{ProcessEvent, ProcessManager}, require_fixer, sourcemap,
+        config_gen, darklua_runner, file_watcher::{FileChange, FileWatcher, WatchEvent},
+        meta_copier, process_manager::{ProcessEvent, ProcessManager}, require_fixer, sourcemap,
     },
 };
 
@@ -425,7 +425,25 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
         }
     }
 
-    // ── Step 3: Generate sourcemap ────────────────────────────────────────────
+    // ── Step 3: Regenerate .darklua.json and .luaurc ────────────────────────
+    {
+        let pb = output::start_spinner("Syncing config files...");
+        let t0 = Instant::now();
+        let result = config_gen::write_config_files(&project_dir, &aliases);
+        pb.finish_and_clear();
+        match result {
+            Ok(()) => output::success(&format!(
+                "Config files synced ({:.0}ms)",
+                t0.elapsed().as_millis()
+            )),
+            Err(e) => {
+                output::error(&format!("Sync config files failed: {}", e));
+                return Err(e);
+            }
+        }
+    }
+
+    // ── Step 4: Generate sourcemap ────────────────────────────────────────────
     {
         let pb = output::start_spinner("Generating sourcemap...");
         let t0 = Instant::now();
@@ -452,7 +470,7 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
         }
     }
 
-    // ── Step 4: Fix require paths ─────────────────────────────────────────────
+    // ── Step 5: Fix require paths ─────────────────────────────────────────────
     {
         let pb = output::start_spinner("Fixing require paths...");
         let t0 = Instant::now();
@@ -477,7 +495,7 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
         }
     }
 
-    // ── Step 5: Run DarkLua ───────────────────────────────────────────────────
+    // ── Step 6: Run DarkLua ───────────────────────────────────────────────────
     {
         let pb = output::start_spinner("Running DarkLua...");
         let t0 = Instant::now();
@@ -506,7 +524,7 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
         }
     }
 
-    // ── Step 6: Copy meta files ───────────────────────────────────────────────
+    // ── Step 7: Copy meta files ───────────────────────────────────────────────
     {
         let pb = output::start_spinner("Copying meta files...");
         let t0 = Instant::now();
@@ -531,7 +549,7 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
         }
     }
 
-    // ── Step 7: Start FileWatcher ─────────────────────────────────────────────
+    // ── Step 8: Start FileWatcher ─────────────────────────────────────────────
     let (watcher, mut watcher_rx) = {
         let pb = output::start_spinner("Starting file watcher...");
         let t0 = Instant::now();
@@ -552,7 +570,7 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
         }
     };
 
-    // ── Step 8: Start Rojo ────────────────────────────────────────────────────
+    // ── Step 9: Start Rojo ────────────────────────────────────────────────────
     let (mut process_manager, mut process_rx) = {
         let pb = output::start_spinner("Starting Rojo...");
         let t0 = Instant::now();
