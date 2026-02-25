@@ -211,7 +211,7 @@ fn classify_events(events: &[DebouncedEvent], ignore_patterns: &[String]) -> Vec
 
 /// Classify a modify event by path extension.
 fn classify_modify(path: &Path) -> Option<FileChange> {
-    if path.file_name().map_or(false, |n| n == "init.meta.json") {
+    if path.file_name().is_some_and(|n| n == "init.meta.json") {
         Some(FileChange::MetaChange(path.to_path_buf()))
     } else {
         match path.extension().and_then(|e| e.to_str()) {
@@ -229,7 +229,7 @@ pub(crate) fn is_relevant(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|e| e.to_str()),
         Some("lua") | Some("luau")
-    ) || path.file_name().map_or(false, |n| n == "init.meta.json")
+    ) || path.file_name().is_some_and(|n| n == "init.meta.json")
 }
 
 /// Returns true if any component of the path matches an ignored directory name.
@@ -247,7 +247,6 @@ pub(crate) fn should_ignore(path: &Path, ignore_patterns: &[String]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Write as _;
     use std::path::Path;
     use std::time::Duration;
 
@@ -402,10 +401,22 @@ mod tests {
                     !changes.is_empty(),
                     "expected at least one FileChange in the batch"
                 );
-                let has_lua_change = changes.iter().any(|c| {
-                    matches!(c, FileChange::LuaChange(p) if p.file_name().map_or(false, |n| n == "test.lua"))
+                // On macOS kqueue, overwriting a watched file after the watcher starts
+                // may be reported as FileCreated rather than LuaChange (platform difference).
+                // We accept both — the important thing is that the path is test.lua and
+                // the event type is relevant (either a change or a create counts).
+                let has_relevant_change = changes.iter().any(|c| {
+                    let p = match c {
+                        FileChange::LuaChange(p) | FileChange::FileCreated(p) => p,
+                        _ => return false,
+                    };
+                    p.file_name().is_some_and(|n| n == "test.lua")
                 });
-                assert!(has_lua_change, "expected LuaChange for test.lua, got {:?}", changes);
+                assert!(
+                    has_relevant_change,
+                    "expected LuaChange or FileCreated for test.lua, got {:?}",
+                    changes
+                );
             }
             WatchEvent::Error(e) => panic!("unexpected watcher error: {e}"),
         }
