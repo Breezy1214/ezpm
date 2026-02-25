@@ -53,9 +53,10 @@ pub fn fix_requires(
     aliases: &HashMap<String, String>,
     src_prefix: &str,
 ) -> Result<FixResult> {
-    // Build sorted alias list and skip list once — not per file (performance)
+    // Build sorted alias list, skip list, and inverted aliases once (performance)
     let sorted_aliases = build_sorted_src_aliases(aliases, src_prefix);
     let skip_list = build_skip_list(aliases, src_prefix);
+    let inverted_aliases = build_inverted_aliases(aliases);
 
     let mut result = FixResult::default();
 
@@ -67,8 +68,14 @@ pub fn fix_requires(
         result.total_files_scanned += 1;
 
         let content = std::fs::read_to_string(entry.path())?;
-        let (new_content, rewrites) =
-            process_file_content(&content, &sorted_aliases, &skip_list, src_prefix);
+        let (new_content, rewrites) = process_file_content(
+            &content,
+            &sorted_aliases,
+            &skip_list,
+            src_prefix,
+            Some(root_dir),
+            &inverted_aliases,
+        );
 
         if !rewrites.is_empty() {
             // BUILD-04: only write when changes are actually made
@@ -92,10 +99,17 @@ pub fn fix_single_file(
 ) -> Result<Option<FileChange>> {
     let sorted_aliases = build_sorted_src_aliases(aliases, src_prefix);
     let skip_list = build_skip_list(aliases, src_prefix);
+    let inverted_aliases = build_inverted_aliases(aliases);
 
     let content = std::fs::read_to_string(file_path)?;
-    let (new_content, rewrites) =
-        process_file_content(&content, &sorted_aliases, &skip_list, src_prefix);
+    let (new_content, rewrites) = process_file_content(
+        &content,
+        &sorted_aliases,
+        &skip_list,
+        src_prefix,
+        Some(Path::new(src_prefix)),
+        &inverted_aliases,
+    );
 
     if rewrites.is_empty() {
         return Ok(None);
@@ -161,7 +175,7 @@ pub fn is_lua_file(path: &Path) -> bool {
     )
 }
 
-/// Return the compiled require-path regex 
+/// Return the compiled require-path regex
 pub fn require_regex() -> &'static Regex {
     static REQUIRE_RE: OnceLock<Regex> = OnceLock::new();
     REQUIRE_RE.get_or_init(|| {
@@ -169,12 +183,89 @@ pub fn require_regex() -> &'static Regex {
     })
 }
 
+/// Recursively search for a file by name under `search_dir`.
+/// Checks exact name, name.luau, and name.lua (matching Luau's findFileByName).
+fn find_file_by_name(expected_name: &str, search_dir: &Path) -> Option<PathBuf> {
+    let entries = std::fs::read_dir(search_dir).ok()?;
+    for entry in entries.filter_map(|e| e.ok()) {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        let path = entry.path();
+
+        if name_str == expected_name
+            || name_str == format!("{expected_name}.luau")
+            || name_str == format!("{expected_name}.lua")
+        {
+            if path.is_dir() {
+                return Some(path.join("init.luau"));
+            }
+            return Some(path);
+        }
+
+        if path.is_dir() {
+            if let Some(found) = find_file_by_name(expected_name, &path) {
+                return Some(found);
+            }
+        }
+    }
+
+    None
+}
+
+/// Build inverted aliases sorted by real path length descending.
+/// Maps `"src/client/" → "@Client/"` for converting found file paths back to alias notation.
+pub fn build_inverted_aliases(aliases: &HashMap<String, String>) -> Vec<(String, String)> {
+    let mut inverted: Vec<(String, String)> = aliases
+        .iter()
+        .map(|(name, path)| {
+            let real_path = if path.ends_with('/') {
+                path.clone()
+            } else {
+                format!("{path}/")
+            };
+            (real_path, format!("@{name}/"))
+        })
+        .collect();
+
+    // Sort by real path length descending (longest match first)
+    inverted.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+    inverted
+}
+
+/// Convert a found file path to alias notation using inverted aliases.
+/// Strips `/init.luau`, `/init.lua`, `.luau`, `.lua` suffixes (matching Luau behavior).
+fn convert_path_to_alias(file_path: &str, inverted_aliases: &[(String, String)]) -> String {
+    let mut converted = file_path.to_string();
+    for (real_path, shortcut) in inverted_aliases {
+        if converted.contains(real_path.as_str()) {
+            converted = converted.replace(real_path.as_str(), shortcut.as_str());
+            break;
+        }
+    }
+
+    // Strip init file patterns first, then plain extensions
+    if converted.ends_with("/init.luau") {
+        converted.truncate(converted.len() - "/init.luau".len());
+    } else if converted.ends_with("/init.lua") {
+        converted.truncate(converted.len() - "/init.lua".len());
+    } else if converted.ends_with("/init") {
+        converted.truncate(converted.len() - "/init".len());
+    } else if let Some(stripped) = converted.strip_suffix(".luau") {
+        converted = stripped.to_string();
+    } else if let Some(stripped) = converted.strip_suffix(".lua") {
+        converted = stripped.to_string();
+    }
+
+    converted
+}
 
 pub fn process_file_content(
     content: &str,
     sorted_aliases: &[(String, String)],
     skip_list: &[String],
     src_prefix: &str,
+    root_dir: Option<&Path>,
+    inverted_aliases: &[(String, String)],
 ) -> (String, Vec<RequireRewrite>) {
     let re = require_regex();
     let mut rewrites: Vec<RequireRewrite> = Vec::new();
@@ -252,14 +343,93 @@ pub fn process_file_content(
             }
         }
 
-        // ── 6. Unresolved src/ path warning ──────────────────────────────────
+        // ── 6. File search fallback for unresolved src/ paths ────────────────
+        // Matches Luau's step: if path starts with rootDir/ but no alias matched,
+        // extract the filename and search recursively under root_dir.
         if !matched {
             let src_slash = format!("{src_prefix}/");
             if required_path.starts_with(&src_slash) || required_path == src_prefix {
-                output::warn(&format!(
-                    "unresolved src require path '{}' — no alias matches, leaving untouched",
-                    required_path
-                ));
+                if let Some(root) = root_dir {
+                    if let Some(file_name) = required_path.rsplit('/').next() {
+                        if let Some(found) = find_file_by_name(file_name, root) {
+                            let found_str = found.to_string_lossy().to_string();
+                            let converted =
+                                convert_path_to_alias(&found_str, inverted_aliases);
+                            if converted != required_path {
+                                let old_require = format!(r#"require("{required_path}")"#);
+                                let new_require = format!(r#"require("{converted}")"#);
+                                new_content =
+                                    new_content.replace(&old_require, &new_require);
+                                rewrites.push(RequireRewrite {
+                                    old: required_path.clone(),
+                                    new: converted,
+                                });
+                            }
+                        } else {
+                            output::warn(&format!(
+                                "could not find file for source path '{}'",
+                                required_path
+                            ));
+                        }
+                    }
+                } else {
+                    output::warn(&format!(
+                        "unresolved src require path '{}' — no alias matches, leaving untouched",
+                        required_path
+                    ));
+                }
+                continue;
+            }
+        }
+
+        // ── 7. Dot notation conversion + file search ────────────────────────
+        // Matches Luau's step: convert Lua-style dot paths to file paths,
+        // check if the file exists, and if not search by name.
+        if !matched {
+            if let Some(root) = root_dir {
+                // Convert dot notation to path separators (Lua module style)
+                let as_file_path = required_path.replace('.', "/");
+                // Strip .luau/.lua extension that got converted to /luau or /lua
+                let as_file_path = if as_file_path.ends_with("/luau") {
+                    &as_file_path[..as_file_path.len() - "/luau".len()]
+                } else if as_file_path.ends_with("/lua") {
+                    &as_file_path[..as_file_path.len() - "/lua".len()]
+                } else {
+                    &as_file_path
+                };
+
+                let full_path = format!("{as_file_path}.luau");
+                let init_path = format!("{as_file_path}/init.luau");
+
+                // If file doesn't exist at the resolved path, search for it
+                if !Path::new(&full_path).is_file()
+                    && !Path::new(&init_path).is_file()
+                {
+                    if let Some(file_name) = as_file_path.rsplit('/').next() {
+                        if let Some(found) = find_file_by_name(file_name, root) {
+                            let found_str = found.to_string_lossy().to_string();
+                            let converted =
+                                convert_path_to_alias(&found_str, inverted_aliases);
+                            if converted != required_path {
+                                let old_require =
+                                    format!(r#"require("{required_path}")"#);
+                                let new_require =
+                                    format!(r#"require("{converted}")"#);
+                                new_content =
+                                    new_content.replace(&old_require, &new_require);
+                                rewrites.push(RequireRewrite {
+                                    old: required_path.clone(),
+                                    new: converted,
+                                });
+                            }
+                        } else {
+                            output::warn(&format!(
+                                "could not find file '{}' for require path '{}'",
+                                file_name, required_path
+                            ));
+                        }
+                    }
+                }
             }
         }
     }
@@ -445,7 +615,7 @@ local c = require("@Packages/rodux")
         let skip = build_skip_list(&aliases, "src");
 
         let content = r#"local m = require("src/client/module")"#;
-        let (new_content, rewrites) = process_file_content(content, &sorted, &skip, "src");
+        let (new_content, rewrites) = process_file_content(content, &sorted, &skip, "src", None, &[]);
 
         assert_eq!(rewrites.len(), 1, "one rewrite should occur");
         assert_eq!(rewrites[0].old, "src/client/module");
@@ -466,7 +636,7 @@ local c = require("@Packages/rodux")
         let skip = build_skip_list(&aliases, "src");
 
         let content = r#"local m = require("src/client/shared/util")"#;
-        let (_, rewrites) = process_file_content(content, &sorted, &skip, "src");
+        let (_, rewrites) = process_file_content(content, &sorted, &skip, "src", None, &[]);
 
         assert_eq!(rewrites.len(), 1);
         // SharedClient is the longer (more specific) match
@@ -480,7 +650,7 @@ local c = require("@Packages/rodux")
         let skip = build_skip_list(&aliases, "src");
 
         let content = r#"local r = require("@Packages/rodux")"#;
-        let (new_content, rewrites) = process_file_content(content, &sorted, &skip, "src");
+        let (new_content, rewrites) = process_file_content(content, &sorted, &skip, "src", None, &[]);
 
         assert!(rewrites.is_empty(), "external alias must not be rewritten");
         assert_eq!(new_content, content, "content must be unchanged");
@@ -492,7 +662,7 @@ local c = require("@Packages/rodux")
         let skip = build_skip_list(&HashMap::new(), "src");
 
         let content = r#"local m = require("@self/module")"#;
-        let (new_content, rewrites) = process_file_content(content, &sorted, &skip, "src");
+        let (new_content, rewrites) = process_file_content(content, &sorted, &skip, "src", None, &[]);
 
         assert!(rewrites.is_empty(), "@self require must not be rewritten");
         assert_eq!(new_content, content, "content must be unchanged");
@@ -504,7 +674,7 @@ local c = require("@Packages/rodux")
         let skip = build_skip_list(&HashMap::new(), "src");
 
         let content = r#"local m = require("@game/ReplicatedStorage")"#;
-        let (new_content, rewrites) = process_file_content(content, &sorted, &skip, "src");
+        let (new_content, rewrites) = process_file_content(content, &sorted, &skip, "src", None, &[]);
 
         assert!(rewrites.is_empty(), "@game require must not be rewritten");
         assert_eq!(new_content, content, "content must be unchanged");
@@ -518,7 +688,7 @@ local c = require("@Packages/rodux")
 
         // Content has no requires at all
         let content = "local x = 42\nreturn x\n";
-        let (new_content, rewrites) = process_file_content(content, &sorted, &skip, "src");
+        let (new_content, rewrites) = process_file_content(content, &sorted, &skip, "src", None, &[]);
 
         assert!(rewrites.is_empty(), "no rewrites for content with no requires");
         assert_eq!(new_content, content, "content must be unchanged");
@@ -537,7 +707,7 @@ local c = require("@Packages/rodux")
 local a = require("src/client/ui")
 local b = require("src/server/api")
 "#;
-        let (_, rewrites) = process_file_content(content, &sorted, &skip, "src");
+        let (_, rewrites) = process_file_content(content, &sorted, &skip, "src", None, &[]);
 
         assert_eq!(rewrites.len(), 2, "both requires must be rewritten");
         let new_paths: Vec<&str> = rewrites.iter().map(|r| r.new.as_str()).collect();
@@ -555,7 +725,7 @@ local b = require("src/server/api")
 
         // Path already uses @Client/ notation — must not be rewritten
         let content = r#"local m = require("@Client/module")"#;
-        let (new_content, rewrites) = process_file_content(content, &sorted, &skip, "src");
+        let (new_content, rewrites) = process_file_content(content, &sorted, &skip, "src", None, &[]);
 
         assert!(rewrites.is_empty(), "already-aliased path must not be rewritten");
         assert_eq!(new_content, content, "content must be unchanged");

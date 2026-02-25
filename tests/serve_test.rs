@@ -41,8 +41,6 @@ fn serve_starts_and_shuts_down() {
 
         match line {
             Ok(text) => {
-                // The serve command emits this line via output::info() after all
-                // 8 startup steps complete (see rust-src/commands/serve.rs ~line 661).
                 if text.contains("Watching") && text.contains("for changes") {
                     ready = true;
                     break;
