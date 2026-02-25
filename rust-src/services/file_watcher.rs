@@ -188,7 +188,15 @@ fn classify_events(events: &[DebouncedEvent], ignore_patterns: &[String]) -> Vec
             }
 
             let change = match kind {
-                EventKind::Create(_) => Some(FileChange::FileCreated(path.clone())),
+                EventKind::Create(_) => {
+                    // init.meta.json may arrive as Create on macOS (atomic save = delete + create).
+                    // Route through classify_modify so it becomes MetaChange, not FileCreated.
+                    if path.file_name().is_some_and(|n| n == "init.meta.json") {
+                        classify_modify(path)
+                    } else {
+                        Some(FileChange::FileCreated(path.clone()))
+                    }
+                }
                 EventKind::Remove(_) => Some(FileChange::FileDeleted(path.clone())),
                 EventKind::Modify(_) => classify_modify(path),
                 // Pitfall 3: kqueue on macOS emits EventKind::Any instead of
@@ -204,6 +212,26 @@ fn classify_events(events: &[DebouncedEvent], ignore_patterns: &[String]) -> Vec
                 }
             }
         }
+    }
+
+    // Delete-wins: suppress non-delete events for paths that also have FileDeleted.
+    // macOS emits both Remove and Modify/Any for the same file within the debounce window.
+    // Collect owned PathBuf values so `result` is not borrowed during retain().
+    let deleted_paths: HashSet<PathBuf> = result
+        .iter()
+        .filter_map(|c| match c {
+            FileChange::FileDeleted(p) => Some(p.clone()),
+            _ => None,
+        })
+        .collect();
+
+    if !deleted_paths.is_empty() {
+        result.retain(|c| match c {
+            FileChange::FileDeleted(_) => true,
+            FileChange::LuaChange(p)
+            | FileChange::MetaChange(p)
+            | FileChange::FileCreated(p) => !deleted_paths.contains(p),
+        });
     }
 
     result
@@ -423,6 +451,56 @@ mod tests {
 
         // Explicit drop to stop the watcher (documents intent).
         drop(watcher);
+    }
+
+    // ── Test 6b: classify_events — init.meta.json Create becomes MetaChange ──
+
+    #[test]
+    fn test_classify_events_meta_create_becomes_meta_change() {
+        init_output();
+
+        let events = vec![make_debounced_event(
+            EventKind::Create(notify_debouncer_full::notify::event::CreateKind::File),
+            vec![PathBuf::from("src/MyModule/init.meta.json")],
+        )];
+
+        let result = classify_events(&events, &[]);
+
+        assert_eq!(result.len(), 1);
+        assert!(
+            matches!(&result[0], FileChange::MetaChange(p) if p == Path::new("src/MyModule/init.meta.json")),
+            "Create event for init.meta.json must produce MetaChange, got {:?}",
+            result
+        );
+    }
+
+    // ── Test 8b: classify_events — delete-wins deduplication ─────────────
+
+    #[test]
+    fn test_classify_events_delete_wins_over_lua_change() {
+        init_output();
+
+        // Simulate macOS race: same file gets both Modify and Remove in one debounce batch.
+        let events = vec![
+            make_debounced_event(
+                EventKind::Modify(ModifyKind::Data(DataChange::Any)),
+                vec![PathBuf::from("src/foo.lua")],
+            ),
+            make_debounced_event(
+                EventKind::Remove(notify_debouncer_full::notify::event::RemoveKind::File),
+                vec![PathBuf::from("src/foo.lua")],
+            ),
+        ];
+
+        let result = classify_events(&events, &[]);
+
+        // Only FileDeleted should remain — LuaChange is suppressed.
+        assert_eq!(result.len(), 1, "expected 1 event after delete-wins dedup, got {:?}", result);
+        assert!(
+            matches!(&result[0], FileChange::FileDeleted(p) if p == Path::new("src/foo.lua")),
+            "expected FileDeleted for src/foo.lua, got {:?}",
+            result
+        );
     }
 
     // ── Test 7: integration — non-Lua files do not trigger events ─────────

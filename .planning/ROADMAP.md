@@ -65,10 +65,11 @@ Plans:
   2. Saving a `.lua` or `.luau` file triggers per-file require fixing and DarkLua within 100ms; the change appears in Roblox Studio without manual action
   3. Creating or deleting a file triggers sourcemap regeneration; changing an `init.meta.json` triggers its copy to the build directory
   4. Pressing Ctrl-C kills Rojo and all DarkLua subprocesses, releases the port, and exits with code 0 — verified by checking no process holds the port afterward
-**Plans**: 2 plans
+**Plans**: 3 plans
 Plans:
 - [x] 06-01-PLAN.md — CLI --port flag, tokio dispatch, 8-step startup sequence with spinners and summary banner
-- [ ] 06-02-PLAN.md — tokio::select! watch loop with incremental rebuild handlers, batch detection, and Rojo auto-restart
+- [x] 06-02-PLAN.md — tokio::select! watch loop with incremental rebuild handlers, batch detection, and Rojo auto-restart
+- [ ] 06-03-PLAN.md — Gap closure: meta Create event reclassification, delete-wins dedup, init.* display names
 
 ### Phase 7: DX Polish
 **Goal**: Every command failure is informative and machine-readable — structured errors with suggested fixes, correct exit codes throughout
@@ -101,6 +102,6 @@ Plans:
 | 3. Simple Commands | v1.0 | 5/5 | Complete | 2026-02-24 |
 | 4. Output Foundation | v1.1 | Complete    | 2026-02-24 | 2026-02-24 |
 | 5. Serve Services | 2/2 | Complete   | 2026-02-25 | - |
-| 6. Serve Command | v1.1 | 1/2 | In Progress | - |
+| 6. Serve Command | v1.1 | 2/3 | In Progress | - |
 | 7. DX Polish | v1.1 | 0/TBD | Not started | - |
 | 8. Integration Tests and CI | v1.1 | 0/TBD | Not started | - |
