@@ -1,4 +1,4 @@
-//! Serve command — 8-step startup sequence, port handling, and Rojo launch.
+//! Serve command — 8-step startup sequence, port handling, and full watch loop.
 //!
 //! Executes the full development server startup:
 //! 1. Generate build.project.json from default.project.json
@@ -10,10 +10,11 @@
 //! 7. Start FileWatcher
 //! 8. Start Rojo
 //!
-//! After all steps complete, prints a summary banner and waits for Ctrl-C.
-//! Plan 02 will replace the Ctrl-C wait with a tokio::select! watch loop.
+//! After all steps complete, prints a summary banner and enters the
+//! `tokio::select!` watch loop that routes file change events to rebuild
+//! handlers, handles Rojo lifecycle events, and exits cleanly on Ctrl-C.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -25,8 +26,8 @@ use crate::{
     config::EzpmConfig,
     output,
     services::{
-        darklua_runner, file_watcher::FileWatcher, meta_copier, process_manager::ProcessManager,
-        require_fixer, sourcemap,
+        darklua_runner, file_watcher::{FileChange, FileWatcher, WatchEvent}, meta_copier,
+        process_manager::{ProcessEvent, ProcessManager}, require_fixer, sourcemap,
     },
 };
 
@@ -61,6 +62,326 @@ fn generate_build_project(src: &str, build: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+// ─── Watch loop helpers ────────────────────────────────────────────────────────
+
+/// Handle a batch of file change events.
+///
+/// Dispatches each `FileChange` to the appropriate rebuild handler and prints
+/// either per-file feedback (single change) or a batch summary line (>1 changes).
+async fn handle_changes(
+    changes: &[FileChange],
+    src: &str,
+    build: &str,
+    aliases: &HashMap<String, String>,
+    project_dir: &Path,
+    failed_files: &mut HashSet<PathBuf>,
+) {
+    let t0 = Instant::now();
+    let is_batch = changes.len() > 1;
+
+    for change in changes {
+        match change {
+            FileChange::LuaChange(path) => {
+                handle_lua_change(path, src, build, aliases, project_dir, failed_files, is_batch).await;
+            }
+            FileChange::MetaChange(path) => {
+                handle_meta_change(path, src, build, is_batch).await;
+            }
+            FileChange::FileCreated(path) => {
+                handle_file_created(path, src, build, aliases, project_dir, failed_files, is_batch).await;
+            }
+            FileChange::FileDeleted(path) => {
+                handle_file_deleted(path, src, build, project_dir, is_batch).await;
+            }
+        }
+    }
+
+    if is_batch {
+        output::success(&format!(
+            "Rebuilt {} files ({}ms)",
+            changes.len(),
+            t0.elapsed().as_millis()
+        ));
+    }
+}
+
+/// Handle a `FileChange::LuaChange` event — fix requires then run DarkLua.
+///
+/// `fix_single_file` is pure in-process string manipulation (no subprocess),
+/// so it can be called directly without `spawn_blocking`.
+/// `darklua_runner::process_file` uses `std::process::Command` (blocking),
+/// so it MUST be wrapped in `spawn_blocking`.
+async fn handle_lua_change(
+    path: &Path,
+    src: &str,
+    build: &str,
+    aliases: &HashMap<String, String>,
+    project_dir: &Path,
+    failed_files: &mut HashSet<PathBuf>,
+    is_batch: bool,
+) {
+    let t0 = Instant::now();
+
+    // Step 1: Fix require paths — fast in-process, no spawn_blocking needed.
+    if let Err(e) = require_fixer::fix_single_file(path, aliases, src) {
+        output::error(&format!(
+            "{}: require fix failed: {}",
+            path.file_name().unwrap_or_default().to_string_lossy(),
+            e
+        ));
+        failed_files.insert(path.to_path_buf());
+        return;
+    }
+
+    // Step 2: Build the corresponding path in build dir.
+    let src_root = project_dir.join(src);
+    let build_root = project_dir.join(build);
+    let build_file = match src_to_build_path(path, &src_root, &build_root) {
+        Some(p) => p,
+        None => {
+            output::error(&format!(
+                "{}: could not compute build path",
+                path.file_name().unwrap_or_default().to_string_lossy()
+            ));
+            failed_files.insert(path.to_path_buf());
+            return;
+        }
+    };
+
+    // Step 3: Run DarkLua via spawn_blocking (std::process::Command is blocking).
+    let src_file = path.to_path_buf();
+    let result = tokio::task::spawn_blocking(move || {
+        darklua_runner::process_file(&src_file, &build_file)
+    })
+    .await;
+
+    let filename = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+
+    match result {
+        Ok(Ok(r)) if r.success => {
+            // Step 4: Recovery detection — was this file previously failed?
+            let was_failed = failed_files.remove(path);
+            if !is_batch {
+                if was_failed {
+                    output::success(&format!("{} fixed ({}ms)", filename, t0.elapsed().as_millis()));
+                } else {
+                    output::success(&format!("Rebuilt {} ({}ms)", filename, t0.elapsed().as_millis()));
+                }
+            }
+        }
+        Ok(Ok(r)) => {
+            // DarkLua exited with non-zero — non-fatal, keep watching.
+            failed_files.insert(path.to_path_buf());
+            let detail = r.stderr.trim().to_string();
+            output::error(&format!("{}: {}", filename, detail));
+        }
+        Ok(Err(e)) => {
+            // spawn_blocking closure returned an error.
+            failed_files.insert(path.to_path_buf());
+            output::error(&format!("{}: {}", filename, e));
+        }
+        Err(e) => {
+            // spawn_blocking task panicked.
+            failed_files.insert(path.to_path_buf());
+            output::error(&format!("{}: task panicked: {}", filename, e));
+        }
+    }
+}
+
+/// Handle a `FileChange::MetaChange` event — copy the single meta file to build.
+async fn handle_meta_change(path: &Path, src: &str, build: &str, is_batch: bool) {
+    let project_dir = match std::env::current_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            output::error(&format!("could not determine current directory: {}", e));
+            return;
+        }
+    };
+
+    let src_root = project_dir.join(src);
+    let build_root = project_dir.join(build);
+
+    let build_dest = match src_to_build_path(path, &src_root, &build_root) {
+        Some(p) => p,
+        None => {
+            output::error(&format!(
+                "{}: could not compute build path for meta file",
+                path.file_name().unwrap_or_default().to_string_lossy()
+            ));
+            return;
+        }
+    };
+
+    // Ensure parent directories exist.
+    if let Some(parent) = build_dest.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            output::error(&format!("failed to create build dir for meta file: {}", e));
+            return;
+        }
+    }
+
+    let filename = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+
+    match std::fs::copy(path, &build_dest) {
+        Ok(_) => {
+            if !is_batch {
+                output::success(&format!("Copied {}", filename));
+            }
+        }
+        Err(e) => {
+            output::error(&format!("{}: copy failed: {}", filename, e));
+        }
+    }
+}
+
+/// Handle a `FileChange::FileCreated` event.
+///
+/// Regenerates the sourcemap and, if the created file is Lua/Luau, also runs
+/// the full Lua rebuild pipeline (fix requires + DarkLua).
+async fn handle_file_created(
+    path: &Path,
+    src: &str,
+    build: &str,
+    aliases: &HashMap<String, String>,
+    project_dir: &Path,
+    failed_files: &mut HashSet<PathBuf>,
+    is_batch: bool,
+) {
+    let t0 = Instant::now();
+    let project_dir_clone = project_dir.to_path_buf();
+
+    // Regenerate sourcemap — can take 100-500ms, must use spawn_blocking.
+    let result = tokio::task::spawn_blocking(move || {
+        sourcemap::generate_sourcemap(&project_dir_clone)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(r)) if r.success => {
+            if !is_batch {
+                output::success(&format!("Sourcemap updated ({}ms)", t0.elapsed().as_millis()));
+            }
+        }
+        Ok(Ok(r)) => {
+            let detail = r.stderr.trim().to_string();
+            output::error(&format!("Sourcemap update failed: {}", detail));
+        }
+        Ok(Err(e)) => {
+            output::error(&format!("Sourcemap update failed: {}", e));
+        }
+        Err(e) => {
+            output::error(&format!("Sourcemap task panicked: {}", e));
+        }
+    }
+
+    // If the created file is Lua/Luau, also run the full rebuild pipeline.
+    let is_lua = matches!(
+        path.extension().and_then(|e| e.to_str()),
+        Some("lua") | Some("luau")
+    );
+    if is_lua {
+        handle_lua_change(path, src, build, aliases, project_dir, failed_files, is_batch).await;
+    }
+}
+
+/// Handle a `FileChange::FileDeleted` event.
+///
+/// Deletes the corresponding file from the build directory (if it exists) and
+/// regenerates the sourcemap.
+async fn handle_file_deleted(
+    path: &Path,
+    src: &str,
+    build: &str,
+    project_dir: &Path,
+    is_batch: bool,
+) {
+    let t0 = Instant::now();
+
+    // Delete the corresponding build file if it exists.
+    let src_root = project_dir.join(src);
+    let build_root = project_dir.join(build);
+    if let Some(build_file) = src_to_build_path(path, &src_root, &build_root) {
+        if build_file.exists() {
+            if let Err(e) = std::fs::remove_file(&build_file) {
+                output::error(&format!("failed to delete build file: {}", e));
+            }
+        }
+    }
+
+    // Regenerate sourcemap — can take 100-500ms, must use spawn_blocking.
+    let project_dir_clone = project_dir.to_path_buf();
+    let result = tokio::task::spawn_blocking(move || {
+        sourcemap::generate_sourcemap(&project_dir_clone)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(r)) if r.success => {
+            if !is_batch {
+                output::success(&format!("Sourcemap updated ({}ms)", t0.elapsed().as_millis()));
+            }
+        }
+        Ok(Ok(r)) => {
+            let detail = r.stderr.trim().to_string();
+            output::error(&format!("Sourcemap update failed: {}", detail));
+        }
+        Ok(Err(e)) => {
+            output::error(&format!("Sourcemap update failed: {}", e));
+        }
+        Err(e) => {
+            output::error(&format!("Sourcemap task panicked: {}", e));
+        }
+    }
+}
+
+/// Handle a `ProcessEvent` — Rojo auto-restart logic.
+///
+/// Rojo auto-restarts once if it crashes. A second crash logs the error
+/// without restarting. Other events (Started, Exited) are logged at verbose
+/// level since they are expected lifecycle events.
+async fn handle_process_event(
+    event: ProcessEvent,
+    pm: &mut ProcessManager,
+    restart_count: &mut u32,
+    port: u16,
+) {
+    match event {
+        ProcessEvent::Crashed { ref name, .. } if name == "rojo" => {
+            if *restart_count < 1 {
+                output::warn("Rojo exited unexpectedly — restarting...");
+                let port_str = port.to_string();
+                if let Err(e) = pm
+                    .spawn(
+                        "rojo",
+                        "rojo",
+                        &["serve", "build.project.json", "--port", &port_str],
+                    )
+                    .await
+                {
+                    output::error(&format!("Failed to restart Rojo: {}", e));
+                }
+                *restart_count += 1;
+            } else {
+                output::error("Rojo crashed again — not restarting. File watching continues.");
+            }
+        }
+        ProcessEvent::Exited { name, code } => {
+            output::verbose_line(&format!("Process '{}' exited with code {:?}", name, code));
+        }
+        _ => {
+            // Started events are already logged by ProcessManager via verbose_line.
+        }
+    }
+}
+
 // ─── Entry point ───────────────────────────────────────────────────────────────
 
 /// Run the serve command.
@@ -69,8 +390,10 @@ fn generate_build_project(src: &str, build: &str) -> anyhow::Result<()> {
 /// resolves the Rojo port (CLI flag > ezpm.toml > default 34872), checks port
 /// availability, then launches Rojo. Prints a summary banner on success.
 ///
-/// After the banner, waits for Ctrl-C then gracefully shuts down.
-/// Plan 02 will replace this with a full `tokio::select!` watch loop.
+/// After the banner, enters the full `tokio::select!` watch loop that:
+/// - Routes file change events to the appropriate rebuild handler
+/// - Handles Rojo process lifecycle events (auto-restart on crash)
+/// - Exits cleanly on Ctrl-C
 pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::Result<()> {
     let config = config.unwrap_or_default();
 
@@ -255,7 +578,7 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
     }
 
     // ── Step 7: Start FileWatcher ─────────────────────────────────────────────
-    let (watcher, watcher_rx) = {
+    let (watcher, mut watcher_rx) = {
         let pb = output::start_spinner("Starting file watcher...");
         let t0 = Instant::now();
         let result = FileWatcher::new(&src_path, &[]);
@@ -276,7 +599,7 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
     };
 
     // ── Step 8: Start Rojo ────────────────────────────────────────────────────
-    let (mut process_manager, process_rx) = {
+    let (mut process_manager, mut process_rx) = {
         let pb = output::start_spinner("Starting Rojo...");
         let t0 = Instant::now();
         let port_str = port.to_string();
@@ -300,12 +623,6 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
             }
         }
     };
-
-    // Keep process_rx alive — Plan 02 uses it in the select! loop.
-    // Suppress unused variable warning until Plan 02 replaces this block.
-    let _ = process_rx;
-    // Keep watcher_rx alive — Plan 02 uses it in the select! loop.
-    let _ = watcher_rx;
 
     // ── Summary banner ────────────────────────────────────────────────────────
     // Use owo-colors with if_supports_color. Each colored segment must be
@@ -331,11 +648,60 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
     output::info("Press Ctrl-C to stop");
     output::print_line("");
 
-    // ── Temporary: wait for Ctrl-C, then clean up ─────────────────────────────
-    // Plan 02 replaces this with a tokio::select! watch loop that also handles
-    // file change events and Rojo lifecycle events.
-    tokio::signal::ctrl_c().await?;
-    output::info("Stopping...");
+    // ── Watch loop ────────────────────────────────────────────────────────────
+    // 3-arm tokio::select! loop:
+    //   1. watcher_rx — file change events from FileWatcher
+    //   2. process_rx — process lifecycle events from ProcessManager
+    //   3. ctrl_c    — user interrupt (clean shutdown)
+    //
+    // Design decisions:
+    // - Individual rebuild failures are non-fatal — error printed inline, loop continues.
+    // - WatchEvent::Error and ctrl_c are the only loop-exit conditions.
+    // - Rojo auto-restarts once on crash; second crash logs but does not restart.
+    let mut failed_files: HashSet<PathBuf> = HashSet::new();
+    let mut rojo_restart_count: u32 = 0;
+
+    loop {
+        tokio::select! {
+            event = watcher_rx.recv() => {
+                match event {
+                    Some(WatchEvent::Changes(changes)) => {
+                        handle_changes(
+                            &changes,
+                            &src,
+                            &build,
+                            &aliases,
+                            &project_dir,
+                            &mut failed_files,
+                        )
+                        .await;
+                    }
+                    Some(WatchEvent::Error(msg)) => {
+                        output::error(&format!("File watcher error: {}", msg));
+                        break;
+                    }
+                    None => break, // watcher dropped — channel closed
+                }
+            }
+            proc_event = process_rx.recv() => {
+                if let Some(evt) = proc_event {
+                    handle_process_event(
+                        evt,
+                        &mut process_manager,
+                        &mut rojo_restart_count,
+                        port,
+                    )
+                    .await;
+                }
+            }
+            _ = tokio::signal::ctrl_c() => {
+                output::info("Stopping...");
+                break;
+            }
+        }
+    }
+
+    // Cleanup after loop exit — kill all processes then release the watcher.
     process_manager.kill_all().await;
     drop(watcher);
 
@@ -347,8 +713,7 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
 /// Get the build-equivalent path for a source file.
 ///
 /// Given a file path under `src_root`, returns the corresponding path under
-/// `build_root`. Used by the watch loop in Plan 02.
-#[allow(dead_code)]
+/// `build_root`. Used by the watch loop rebuild handlers.
 pub(crate) fn src_to_build_path(
     src_file: &Path,
     src_root: &Path,
