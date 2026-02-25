@@ -105,6 +105,30 @@ async fn handle_changes(
     }
 }
 
+/// Build a user-friendly display name for a file path.
+///
+/// For `init.*` files, includes the parent directory to disambiguate:
+///   `src/MyModule/init.luau` -> `MyModule/init.luau`
+///   `src/Services/init.meta.json` -> `Services/init.meta.json`
+///
+/// For all other files, returns just the filename:
+///   `src/MyModule/Foo.luau` -> `Foo.luau`
+fn display_name(path: &Path) -> String {
+    let file_name = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy();
+
+    // Check if this is an init.* file that needs parent context.
+    if file_name.starts_with("init.") {
+        if let Some(parent) = path.parent().and_then(|p| p.file_name()) {
+            return format!("{}/{}", parent.to_string_lossy(), file_name);
+        }
+    }
+
+    file_name.into_owned()
+}
+
 /// Handle a `FileChange::LuaChange` event — fix requires then run DarkLua.
 ///
 /// `fix_single_file` is pure in-process string manipulation (no subprocess),
@@ -126,7 +150,7 @@ async fn handle_lua_change(
     if let Err(e) = require_fixer::fix_single_file(path, aliases, src) {
         output::error(&format!(
             "{}: require fix failed: {}",
-            path.file_name().unwrap_or_default().to_string_lossy(),
+            display_name(path),
             e
         ));
         failed_files.insert(path.to_path_buf());
@@ -141,7 +165,7 @@ async fn handle_lua_change(
         None => {
             output::error(&format!(
                 "{}: could not compute build path",
-                path.file_name().unwrap_or_default().to_string_lossy()
+                display_name(path)
             ));
             failed_files.insert(path.to_path_buf());
             return;
@@ -155,11 +179,7 @@ async fn handle_lua_change(
     })
     .await;
 
-    let filename = path
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .into_owned();
+    let filename = display_name(path);
 
     match result {
         Ok(Ok(r)) if r.success => {
@@ -210,7 +230,7 @@ async fn handle_meta_change(path: &Path, src: &str, build: &str, is_batch: bool)
         None => {
             output::error(&format!(
                 "{}: could not compute build path for meta file",
-                path.file_name().unwrap_or_default().to_string_lossy()
+                display_name(path)
             ));
             return;
         }
@@ -224,11 +244,7 @@ async fn handle_meta_change(path: &Path, src: &str, build: &str, is_batch: bool)
         }
     }
 
-    let filename = path
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .into_owned();
+    let filename = display_name(path);
 
     match std::fs::copy(path, &build_dest) {
         Ok(_) => {
