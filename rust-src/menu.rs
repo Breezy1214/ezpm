@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use owo_colors::{OwoColorize, Stream};
 
 use crate::output;
@@ -164,11 +164,11 @@ fn run_command(cmd: &str) -> Result<()> {
             Ok(())
         }
         "serve" => {
-            output::info(&format!(
-                "serve is coming in a future update. Current version: {}",
-                env!("CARGO_PKG_VERSION")
-            ));
-            Ok(())
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .context("failed to build tokio runtime")?;
+            rt.block_on(crate::commands::serve::run(Some(cfg), None))
         }
         _ => {
             output::warn(&format!("Unknown command: {}", cmd));
