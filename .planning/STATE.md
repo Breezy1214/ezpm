@@ -5,17 +5,17 @@
 See: .planning/PROJECT.md (updated 2026-02-24)
 
 **Core value:** Every current EZPM workflow must work identically (or better) in the Rust version — zero regression on the developer experience that Roblox users depend on.
-**Current focus:** Milestone v1.1 Dev Server & Polish — Phase 6: Serve Command
+**Current focus:** Milestone v1.1 Dev Server & Polish — Phase 7: DX Polish
 
 ## Current Position
 
-Phase: 6 (Serve Command)
-Plan: 3/3 complete — Phase 6 COMPLETE
-Status: Phase 6 fully complete — all 10 UAT tests resolved: 8-step startup, watch loop, incremental rebuilds, meta file handling (init.meta.json Create events), delete-wins dedup, display_name for init.* files
-Last activity: 2026-02-25 — Phase 6 Plan 3 complete (UAT gap closure: SERVE-03/04 fully satisfied)
+Phase: 7 (DX Polish)
+Plan: 1/2 complete
+Status: Phase 7 Plan 1 complete — error_block() output function, lint() bail-on-violation (exit code 1), ezpm format --check flag for CI
+Last activity: 2026-02-25 — Phase 7 Plan 1 complete (ERR-01: structured error messages, ERR-02: non-zero exit codes)
 
 ```
-Progress: [#####-----] 3/8 phases complete + Phase 6 in progress (v1.0 shipped, v1.1 in progress)
+Progress: [######----] 6/8 phases complete + Phase 7 in progress (v1.0 shipped, v1.1 in progress)
 ```
 
 ## Performance Metrics
@@ -34,6 +34,7 @@ Progress: [#####-----] 3/8 phases complete + Phase 6 in progress (v1.0 shipped, 
 | 03-simple-commands | 5 | 15 min | 3 min |
 | 04-output-foundation | 2 (of 2) | 10 min | 5 min |
 | 06-serve-command | 2 (of 2) | 16 min | 8 min |
+| 07-dx-polish | 1 (of 2) | 3 min | 3 min |
 
 ## Accumulated Context
 
@@ -87,6 +88,12 @@ Summary: 9 key decisions made during v1.0, all marked Good.
 - HashSet<PathBuf> (owned) not HashSet<&PathBuf> (refs) for delete-wins dedup — borrow checker E0502: cannot borrow result immutably for collect() while also borrowing mutably for retain(); cloning path values is the correct safe-Rust solution
 - display_name() as private free fn before handlers — centralizes init.* file display logic (parent/filename) vs regular files (filename only); no trait/impl needed in this context
 
+**Phase 7 Plan 1 decisions:**
+- error_block() uses write!(label, ...) to owned String (not chained .red().bold()) — owo-colors chaining creates temporaries in closures causing E0515; single-modifier approach compiles cleanly
+- error_block() labels use single color modifier (red/yellow/green) without bold — avoids owo-colors chaining lifetime issue while keeping visual distinction
+- format --check uses single Command::new() with conditional .arg("--check") — avoids duplicating verbose/capture branching across both check and non-check paths
+- menu.rs interactive format uses check=false — interactive menu triggers in-place formatting, not CI check mode
+
 ### Pending Todos
 
 None.
@@ -102,6 +109,6 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-25
-Stopped at: Completed 06-03-PLAN.md — UAT gap closure: init.meta.json Create events route to MetaChange, delete-wins dedup in classify_events(), display_name() helper for init.* files; all Phase 6 UAT tests resolved
+Stopped at: Completed 07-01-PLAN.md — error_block() output function, lint() bail-on-violation (exit code 1), ezpm format --check flag for CI
 Resume file: None
-Next action: Phase 7 (DX Polish) — error handling and exit codes, or Phase 8 (Integration Tests)
+Next action: Phase 7 Plan 2 — subprocess error propagation and interactive menu serve integration

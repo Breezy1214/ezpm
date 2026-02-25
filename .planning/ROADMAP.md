@@ -84,7 +84,7 @@ Plans:
   5. Interactive menu "serve" option dispatches to serve::run() via tokio runtime — no stub placeholder
 **Plans**: 2 plans
 Plans:
-- [ ] 07-01-PLAN.md — Error block helper, lint exit codes, format --check flag
+- [x] 07-01-PLAN.md — Error block helper, lint exit codes, format --check flag
 - [ ] 07-02-PLAN.md — Subprocess propagation audit, menu serve dispatch, menu format update
 
 ### Phase 8: Integration Tests and CI
