@@ -6,25 +6,12 @@ use std::path::Path;
 // ─── Public functions ─────────────────────────────────────────────────────────
 
 /// Generate the `.darklua.json` configuration file content.
-pub fn generate_darklua_json(aliases: &HashMap<String, String>) -> String {
-    let current = if aliases.is_empty() {
-        json!({ "name": "luau" })
-    } else {
-        let alias_map: serde_json::Map<String, serde_json::Value> = aliases
-            .iter()
-            .map(|(k, v)| (format!("@{k}"), serde_json::Value::String(v.clone())))
-            .collect();
-        json!({
-            "name": "luau",
-            "aliases": alias_map
-        })
-    };
-
+pub fn generate_darklua_json(_aliases: &HashMap<String, String>) -> String {
     let config = json!({
         "process": [
             {
                 "rule": "convert_require",
-                "current": current,
+                "current": { "name": "luau" },
                 "target": {
                     "name": "roblox",
                     "rojo_sourcemap": "sourcemap.json",
@@ -129,28 +116,15 @@ mod tests {
     }
 
     #[test]
-    fn test_darklua_json_has_aliases_for_aliases() {
+    fn test_darklua_json_never_includes_aliases() {
         let mut aliases = HashMap::new();
         aliases.insert("Client".to_string(), "src/client/".to_string());
         aliases.insert("Server".to_string(), "src/server/".to_string());
 
         let output = generate_darklua_json(&aliases);
-
-        let parsed: serde_json::Value =
-            serde_json::from_str(&output).expect("output must be valid JSON");
-        let alias_map = parsed["process"][0]["current"]["aliases"]
-            .as_object()
-            .expect("aliases must be an object when aliases are provided");
-
-        assert_eq!(
-            alias_map.get("@Client").and_then(|v| v.as_str()),
-            Some("src/client/"),
-            "@Client alias must map to src/client/"
-        );
-        assert_eq!(
-            alias_map.get("@Server").and_then(|v| v.as_str()),
-            Some("src/server/"),
-            "@Server alias must map to src/server/"
+        assert!(
+            !output.contains("\"aliases\""),
+            "output must NOT contain 'aliases' key even when aliases are provided: {output}"
         );
     }
 

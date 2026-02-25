@@ -186,20 +186,17 @@ pub fn import_aliases_from_dir(dir: &Path) -> HashMap<String, String> {
 }
 
 /// Load config from the ezpm.toml in the current directory.
-/// If the file does not exist, returns defaults with no warnings.
-/// If the file exists but has unknown fields, returns warnings.
 pub fn load_config() -> Result<(EzpmConfig, Vec<String>)> {
     let toml_path = Path::new("ezpm.toml");
-    if !toml_path.exists() {
-        return Ok((EzpmConfig::default(), vec![]));
-    }
+    let (mut config, warnings) = if toml_path.exists() {
+        let contents = std::fs::read_to_string(toml_path)
+            .map_err(|e| anyhow::anyhow!("Failed to read ezpm.toml: {}", e))?;
+        load_config_from_str(&contents)?
+    } else {
+        (EzpmConfig::default(), vec![])
+    };
 
-    let contents = std::fs::read_to_string(toml_path)
-        .map_err(|e| anyhow::anyhow!("Failed to read ezpm.toml: {}", e))?;
-
-    let (mut config, warnings) = load_config_from_str(&contents)?;
-
-    // Auto-import aliases from .darklua.json or .luaurc if no aliases in config
+    // Auto-import aliases from .luaurc or .darklua.json if no aliases in config
     let has_aliases = config
         .aliases
         .as_ref()
