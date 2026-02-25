@@ -64,6 +64,15 @@ Packages = "Packages/"
     )
     .expect("write default.project.json");
 
+    // rokit.toml — required so that rokit shims (stylua, selene) resolve to the
+    // correct installed binary when the ezpm subprocess runs in this TempDir.
+    // Versions must match what is actually installed in ~/.rokit/tool-storage/.
+    fs::write(
+        p.join("rokit.toml"),
+        "[tools]\nstylua = \"JohnnyMorganz/StyLua@2.3.1\"\n",
+    )
+    .expect("write rokit.toml");
+
     fs::create_dir_all(p.join("src/client")).expect("create src/client");
     fs::create_dir_all(p.join("src/server")).expect("create src/server");
     fs::create_dir_all(p.join("src/shared")).expect("create src/shared");
