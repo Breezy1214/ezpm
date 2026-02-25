@@ -113,4 +113,4 @@ Plans:
 | 5. Serve Services | 2/2 | Complete   | 2026-02-25 | - |
 | 6. Serve Command | 3/3 | Complete   | 2026-02-25 | - |
 | 7. DX Polish | 2/2 | Complete    | 2026-02-25 | - |
-| 8. Integration Tests and CI | v1.1 | 0/2 | Not started | - |
+| 8. Integration Tests and CI | 1/2 | In Progress|  | - |

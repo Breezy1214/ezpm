@@ -21,9 +21,15 @@ use std::fs;
 fn lint_exits_zero_on_clean_code() {
     let dir = common::create_project();
 
-    // Format first to ensure files are properly formatted for StyLua --check
-    let fmt_out = common::run_ezpm(dir.path(), &["format"]);
-    common::assert_success(&fmt_out);
+    // Overwrite init.luau with a file that is both stylua-formatted and
+    // selene-clean (no unused variables, no warnings). The default
+    // create_project() skeleton has `local util = require(...)` which selene
+    // flags as unused_variable when selene is installed via rokit.toml.
+    fs::write(
+        dir.path().join("src/client/init.luau"),
+        "return {}\n",
+    )
+    .expect("write clean init.luau");
 
     let out = common::run_ezpm(dir.path(), &["lint"]);
     common::assert_success(&out);
