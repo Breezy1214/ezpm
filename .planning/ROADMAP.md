@@ -51,7 +51,10 @@ Plans:
   1. A file change is detected within 100ms using OS-native events (inotify/kqueue/ReadDirectoryChangesW) — not polling
   2. Rapid saves (editor atomic save bursts of 3-8 events) collapse into a single rebuild trigger via 300ms debounce
   3. All spawned child processes terminate and release ports when the process manager is dropped or `kill_all()` is called — no orphans survive
-**Plans**: TBD
+**Plans**: 2 plans
+Plans:
+- [x] 05-01-PLAN.md — Async dependencies and ProcessManager service (spawn, kill_all, lifecycle channel)
+- [ ] 05-02-PLAN.md — FileWatcher service (OS-native events, 300ms debounce, categorized event delivery)
 
 ### Phase 6: Serve Command
 **Goal**: Developers can run `ezpm serve` and get their full Roblox build loop — instant startup, file-change rebuilds, and clean shutdown
@@ -93,8 +96,8 @@ Plans:
 | 1. Foundation | v1.0 | 2/2 | Complete | 2026-02-24 |
 | 2. Core Services | v1.0 | 3/3 | Complete | 2026-02-24 |
 | 3. Simple Commands | v1.0 | 5/5 | Complete | 2026-02-24 |
-| 4. Output Foundation | v1.1 | 2/2 | Complete | 2026-02-24 |
-| 5. Serve Services | v1.1 | 0/TBD | Not started | - |
+| 4. Output Foundation | v1.1 | Complete    | 2026-02-24 | 2026-02-24 |
+| 5. Serve Services | v1.1 | 1/2 | In Progress | - |
 | 6. Serve Command | v1.1 | 0/TBD | Not started | - |
 | 7. DX Polish | v1.1 | 0/TBD | Not started | - |
 | 8. Integration Tests and CI | v1.1 | 0/TBD | Not started | - |

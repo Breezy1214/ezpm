@@ -5,17 +5,17 @@
 See: .planning/PROJECT.md (updated 2026-02-24)
 
 **Core value:** Every current EZPM workflow must work identically (or better) in the Rust version — zero regression on the developer experience that Roblox users depend on.
-**Current focus:** Milestone v1.1 Dev Server & Polish — Phase 4: Output Foundation
+**Current focus:** Milestone v1.1 Dev Server & Polish — Phase 5: Serve Services
 
 ## Current Position
 
-Phase: 4 (Output Foundation)
-Plan: 2/2 complete
-Status: Complete — output module, global CLI flags, and all command handler migration complete
-Last activity: 2026-02-24 — Phase 4 Plan 2 complete (all command handlers migrated, spinners added, OUT-02 and OUT-03 satisfied)
+Phase: 5 (Serve Services)
+Plan: 1/2 complete
+Status: In Progress — ProcessManager implemented; FileWatcher (Plan 02) remaining
+Last activity: 2026-02-25 — Phase 5 Plan 1 complete (ProcessManager with SIGTERM/SIGKILL shutdown and lifecycle events, SERVE-06 satisfied)
 
 ```
-Progress: [###-------] 3/8 phases complete (v1.0 shipped, v1.1 starting)
+Progress: [####------] 3/8 phases complete (v1.0 shipped, v1.1 in progress)
 ```
 
 ## Performance Metrics
@@ -58,6 +58,12 @@ Summary: 9 key decisions made during v1.0, all marked Good.
 - Subprocess verbosity pattern established: is_verbose() -> .status() (pass-through) vs .output() (capture), applied uniformly across install.rs and quality.rs
 - pb.suspend(|| output::warn(...)) used for warnings during spinner spin to prevent terminal corruption
 
+**Phase 5 Plan 1 decisions:**
+- ProcessManager stores Child directly in HashMap — kill_all() takes &mut self (exclusive), no shared state/Arc<Mutex> needed in Phase 5
+- No background tokio::spawn wait tasks in spawn() — Phase 6 serve loop handles process death via select! on the event channel receiver
+- Child processes inherit terminal stdin/stdout/stderr — ProcessManager manages lifecycle only, not I/O
+- Windows fallback: child.kill().await on each direct child with #[cfg(windows)] gate (process groups are Unix-only)
+
 ### Pending Todos
 
 None.
@@ -72,7 +78,7 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-02-24
-Stopped at: Completed 04-02-PLAN.md — all command handlers migrated to output module, spinners added
+Last session: 2026-02-25
+Stopped at: Completed 05-01-PLAN.md — ProcessManager implemented with SIGTERM/SIGKILL shutdown, lifecycle events via mpsc channel, 4 unit tests passing
 Resume file: None
-Next action: Phase 4 complete — begin Phase 5 (Serve Services): ProcessManager + FileWatcher
+Next action: Phase 5 Plan 2 — FileWatcher service (notify-debouncer-full, OS-native events, 300ms debounce)
