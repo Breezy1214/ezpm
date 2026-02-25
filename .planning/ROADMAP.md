@@ -23,7 +23,7 @@ See: `.planning/milestones/v1.0-ROADMAP.md` for full details.
 - [x] **Phase 4: Output Foundation** - Cargo dependencies, centralized output module, NO_COLOR support, global --verbose/--quiet/--color flags
 - [x] **Phase 5: Serve Services** - Async ProcessManager and FileWatcher service modules (prerequisites for serve) (completed 2026-02-25)
 - [x] **Phase 6: Serve Command** - Full ezpm serve: startup pipeline, incremental rebuilds, Rojo live sync, graceful shutdown (completed 2026-02-25)
-- [ ] **Phase 7: DX Polish** - Structured error messages, non-zero exit codes, subprocess error propagation applied to all commands
+- [x] **Phase 7: DX Polish** - Structured error messages, non-zero exit codes, subprocess error propagation applied to all commands (completed 2026-02-25)
 - [ ] **Phase 8: Integration Tests and CI** - assert_cmd integration tests, CI test suite, Rust build cache
 
 ## Phase Details
@@ -109,5 +109,5 @@ Plans:
 | 4. Output Foundation | v1.1 | Complete    | 2026-02-24 | 2026-02-24 |
 | 5. Serve Services | 2/2 | Complete   | 2026-02-25 | - |
 | 6. Serve Command | 3/3 | Complete   | 2026-02-25 | - |
-| 7. DX Polish | v1.1 | 0/2 | Not started | - |
+| 7. DX Polish | 2/2 | Complete   | 2026-02-25 | - |
 | 8. Integration Tests and CI | v1.1 | 0/TBD | Not started | - |

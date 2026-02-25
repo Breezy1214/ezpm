@@ -10,12 +10,12 @@ See: .planning/PROJECT.md (updated 2026-02-24)
 ## Current Position
 
 Phase: 7 (DX Polish)
-Plan: 1/2 complete
-Status: Phase 7 Plan 1 complete — error_block() output function, lint() bail-on-violation (exit code 1), ezpm format --check flag for CI
-Last activity: 2026-02-25 — Phase 7 Plan 1 complete (ERR-01: structured error messages, ERR-02: non-zero exit codes)
+Plan: 2/2 complete
+Status: Phase 7 complete — error_block() output function, lint() bail-on-violation (exit code 1), ezpm format --check flag for CI, subprocess exit code propagation with output::warn, live menu serve dispatch
+Last activity: 2026-02-25 — Phase 7 Plan 2 complete (ERR-03: subprocess exit code propagation, menu serve live dispatch)
 
 ```
-Progress: [######----] 6/8 phases complete + Phase 7 in progress (v1.0 shipped, v1.1 in progress)
+Progress: [#######---] 7/8 phases complete (v1.0 shipped, v1.1 in progress — Phase 8 remaining)
 ```
 
 ## Performance Metrics
@@ -34,7 +34,7 @@ Progress: [######----] 6/8 phases complete + Phase 7 in progress (v1.0 shipped, 
 | 03-simple-commands | 5 | 15 min | 3 min |
 | 04-output-foundation | 2 (of 2) | 10 min | 5 min |
 | 06-serve-command | 2 (of 2) | 16 min | 8 min |
-| 07-dx-polish | 1 (of 2) | 3 min | 3 min |
+| 07-dx-polish | 2 (of 2) | 5 min | 2.5 min |
 
 ## Accumulated Context
 
@@ -94,6 +94,11 @@ Summary: 9 key decisions made during v1.0, all marked Good.
 - format --check uses single Command::new() with conditional .arg("--check") — avoids duplicating verbose/capture branching across both check and non-check paths
 - menu.rs interactive format uses check=false — interactive menu triggers in-place formatting, not CI check mode
 
+**Phase 7 Plan 2 decisions:**
+- wally-package-types failure is non-fatal (output::warn not bail!) — packages installed, only types missing; overall install/setup-wally-packages command still exits 0
+- Menu serve dispatch uses scoped tokio runtime (new_multi_thread) matching main.rs Serve arm pattern; port=None because interactive menu has no port flag
+- Menu format call was already format_code(src, false) from Plan 01 — confirmed correct, no change needed
+
 ### Pending Todos
 
 None.
@@ -109,6 +114,6 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-25
-Stopped at: Completed 07-01-PLAN.md — error_block() output function, lint() bail-on-violation (exit code 1), ezpm format --check flag for CI
+Stopped at: Completed 07-02-PLAN.md — subprocess exit code propagation, wally-package-types non-fatal warn, menu serve live dispatch
 Resume file: None
-Next action: Phase 7 Plan 2 — subprocess error propagation and interactive menu serve integration
+Next action: Phase 8 — Integration Tests

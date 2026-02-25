@@ -27,7 +27,7 @@ Requirements for v1.1 Dev Server & Polish. Each maps to roadmap phases.
 
 - [x] **ERR-01**: Structured error messages include context and suggested fixes for common failures
 - [x] **ERR-02**: Non-zero exit codes on lint/format failure for CI compatibility
-- [ ] **ERR-03**: All subprocess calls propagate exit codes through error handling
+- [x] **ERR-03**: All subprocess calls propagate exit codes through error handling
 
 ### CLI Flags
 
@@ -84,7 +84,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | OUT-03 | Phase 4 | Complete |
 | ERR-01 | Phase 7 | Complete |
 | ERR-02 | Phase 7 | Complete |
-| ERR-03 | Phase 7 | Pending |
+| ERR-03 | Phase 7 | Complete |
 | CLI-01 | Phase 4 | Complete |
 | CLI-02 | Phase 4 | Complete |
 | CLI-03 | Phase 4 | Complete |
