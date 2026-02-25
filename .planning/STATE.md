@@ -10,9 +10,9 @@ See: .planning/PROJECT.md (updated 2026-02-24)
 ## Current Position
 
 Phase: 5 (Serve Services)
-Plan: 1/2 complete
-Status: In Progress — ProcessManager implemented; FileWatcher (Plan 02) remaining
-Last activity: 2026-02-25 — Phase 5 Plan 1 complete (ProcessManager with SIGTERM/SIGKILL shutdown and lifecycle events, SERVE-06 satisfied)
+Plan: 2/2 complete
+Status: Phase 5 Complete — ProcessManager (Plan 01) and FileWatcher (Plan 02) both implemented and tested
+Last activity: 2026-02-25 — Phase 5 Plan 2 complete (FileWatcher with OS-native events, 300ms debounce, categorized events, 7 tests; SERVE-02 satisfied)
 
 ```
 Progress: [####------] 3/8 phases complete (v1.0 shipped, v1.1 in progress)
@@ -64,13 +64,18 @@ Summary: 9 key decisions made during v1.0, all marked Good.
 - Child processes inherit terminal stdin/stdout/stderr — ProcessManager manages lifecycle only, not I/O
 - Windows fallback: child.kill().await on each direct child with #[cfg(windows)] gate (process groups are Unix-only)
 
+**Phase 5 Plan 2 decisions:**
+- FileChange derives Hash+Eq to allow HashSet deduplication within a single debounce batch — editor save bursts can produce duplicate paths even after debouncing
+- Integration test accepts FileCreated alongside LuaChange — kqueue on macOS reports first write to a watched file as Create rather than Modify when file existed before watcher started
+- is_some_and() used instead of map_or(false, ...) — clippy::unnecessary-map-or enforced at -D warnings level
+
 ### Pending Todos
 
 None.
 
 ### Blockers/Concerns
 
-- [Phase 5 flag]: notify-debouncer-full 0.3 API — constructor signature changed between minor versions; verify against docs.rs before writing wrapper
+- [Phase 5 flag RESOLVED]: notify-debouncer-full 0.7.0 uses 3-arg new_debouncer(timeout, tick_rate, handler) — verified and implemented
 - [Phase 6 flag]: DarkLua invocation model — decide between (a) long-lived `darklua process --watch` subprocess vs. (b) EZPM-managed per-file invocations via `process_file()`. Decision must be made at start of Phase 6 planning.
 - [Phase 6 flag]: tokio::select! shutdown loop with CancellationToken propagation — validate exact implementation variant during Phase 6 planning
 - [Phase 6 flag]: Rojo port config field name — verify exact field in live EzpmConfig struct (`config.rojo_port` vs `config.serve.port`) before Phase 6
@@ -79,6 +84,6 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-25
-Stopped at: Completed 05-01-PLAN.md — ProcessManager implemented with SIGTERM/SIGKILL shutdown, lifecycle events via mpsc channel, 4 unit tests passing
+Stopped at: Completed 05-02-PLAN.md — FileWatcher implemented with notify-debouncer-full 0.7.0, 300ms debounce, categorized events (LuaChange/MetaChange/FileCreated/FileDeleted), 7 tests passing; Phase 5 complete
 Resume file: None
-Next action: Phase 5 Plan 2 — FileWatcher service (notify-debouncer-full, OS-native events, 300ms debounce)
+Next action: Phase 6 — Serve command assembly (compose FileWatcher + ProcessManager in tokio::select! loop)
