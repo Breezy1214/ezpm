@@ -5,25 +5,25 @@
 See: .planning/PROJECT.md (updated 2026-02-24)
 
 **Core value:** Every current EZPM workflow must work identically (or better) in the Rust version — zero regression on the developer experience that Roblox users depend on.
-**Current focus:** Milestone v1.1 Dev Server & Polish — Phase 5: Serve Services
+**Current focus:** Milestone v1.1 Dev Server & Polish — Phase 6: Serve Command
 
 ## Current Position
 
-Phase: 5 (Serve Services)
-Plan: 2/2 complete
-Status: Phase 5 Complete — ProcessManager (Plan 01) and FileWatcher (Plan 02) both implemented and tested
-Last activity: 2026-02-25 — Phase 5 Plan 2 complete (FileWatcher with OS-native events, 300ms debounce, categorized events, 7 tests; SERVE-02 satisfied)
+Phase: 6 (Serve Command)
+Plan: 1/2 complete
+Status: Phase 6 Plan 1 complete — `ezpm serve` CLI wired end-to-end: tokio dispatch, --port flag, 8-step startup with spinners, port conflict detection, summary banner, Ctrl-C shutdown
+Last activity: 2026-02-24 — Phase 6 Plan 1 complete (serve command startup pipeline, SERVE-01/05/07 satisfied)
 
 ```
-Progress: [####------] 3/8 phases complete (v1.0 shipped, v1.1 in progress)
+Progress: [#####-----] 3/8 phases complete + Phase 6 in progress (v1.0 shipped, v1.1 in progress)
 ```
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 10
+- Total plans completed: 11
 - Average duration: 6 min
-- Total execution time: ~1 hour
+- Total execution time: ~1 hour 12 min
 
 **By Phase:**
 
@@ -33,6 +33,7 @@ Progress: [####------] 3/8 phases complete (v1.0 shipped, v1.1 in progress)
 | 02-core-services | 3 | 12 min | 4 min |
 | 03-simple-commands | 5 | 15 min | 3 min |
 | 04-output-foundation | 2 (of 2) | 10 min | 5 min |
+| 06-serve-command | 1 (of 2) | 12 min | 12 min |
 
 ## Accumulated Context
 
@@ -69,6 +70,13 @@ Summary: 9 key decisions made during v1.0, all marked Good.
 - Integration test accepts FileCreated alongside LuaChange — kqueue on macOS reports first write to a watched file as Create rather than Modify when file existed before watcher started
 - is_some_and() used instead of map_or(false, ...) — clippy::unnecessary-map-or enforced at -D warnings level
 
+**Phase 6 Plan 1 decisions:**
+- tokio runtime scoped to Serve arm via block_on() — keeps fn main() synchronous, avoids paying for async runtime overhead in non-serve commands
+- spawn_blocking wraps all sync subprocess services (sourcemap, require_fixer, darklua_runner) inside async run() — avoids blocking tokio worker threads
+- port_is_available() checked before any build steps — user gets immediate feedback on port conflicts without waiting through the 8-step sequence
+- owo-colors banner uses fmt::Write to build an owned String — avoids temporary lifetime issues from chaining if_supports_color
+- Plan 01 uses simple ctrl_c().await for the wait loop — Plan 02 replaces with tokio::select! watch loop
+
 ### Pending Todos
 
 None.
@@ -76,14 +84,14 @@ None.
 ### Blockers/Concerns
 
 - [Phase 5 flag RESOLVED]: notify-debouncer-full 0.7.0 uses 3-arg new_debouncer(timeout, tick_rate, handler) — verified and implemented
-- [Phase 6 flag]: DarkLua invocation model — decide between (a) long-lived `darklua process --watch` subprocess vs. (b) EZPM-managed per-file invocations via `process_file()`. Decision must be made at start of Phase 6 planning.
-- [Phase 6 flag]: tokio::select! shutdown loop with CancellationToken propagation — validate exact implementation variant during Phase 6 planning
-- [Phase 6 flag]: Rojo port config field name — verify exact field in live EzpmConfig struct (`config.rojo_port` vs `config.serve.port`) before Phase 6
+- [Phase 6 flag RESOLVED]: DarkLua invocation model — using option (b): EZPM-managed per-file invocations via process_file(); long-lived watch mode is out of scope per REQUIREMENTS.md
+- [Phase 6 flag RESOLVED]: tokio::select! shutdown loop — CancellationToken NOT needed; simple select! with 3 arms (watcher_rx, process_rx, ctrl_c) is sufficient; Plan 02 implements this
+- [Phase 6 flag RESOLVED]: Rojo port config field — confirmed as config.serve.port (Option<u16>) in ServeConfig struct
 - [Phase 8 flag]: EZPM_NO_UPDATE_CHECK env var — CONFIRMED already implemented in main.rs (std::env::var check on line 83)
 
 ## Session Continuity
 
-Last session: 2026-02-25
-Stopped at: Completed 05-02-PLAN.md — FileWatcher implemented with notify-debouncer-full 0.7.0, 300ms debounce, categorized events (LuaChange/MetaChange/FileCreated/FileDeleted), 7 tests passing; Phase 5 complete
+Last session: 2026-02-24
+Stopped at: Completed 06-01-PLAN.md — `ezpm serve` wired end-to-end with 8-step startup, port handling (--port flag, toml config, default 34872), port conflict detection, spinners, summary banner, Ctrl-C shutdown; SERVE-01/05/07 satisfied
 Resume file: None
-Next action: Phase 6 — Serve command assembly (compose FileWatcher + ProcessManager in tokio::select! loop)
+Next action: Phase 6 Plan 02 — tokio::select! watch loop (incremental rebuild on file changes + Rojo lifecycle events)

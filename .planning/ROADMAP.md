@@ -67,7 +67,7 @@ Plans:
   4. Pressing Ctrl-C kills Rojo and all DarkLua subprocesses, releases the port, and exits with code 0 — verified by checking no process holds the port afterward
 **Plans**: 2 plans
 Plans:
-- [ ] 06-01-PLAN.md — CLI --port flag, tokio dispatch, 8-step startup sequence with spinners and summary banner
+- [x] 06-01-PLAN.md — CLI --port flag, tokio dispatch, 8-step startup sequence with spinners and summary banner
 - [ ] 06-02-PLAN.md — tokio::select! watch loop with incremental rebuild handlers, batch detection, and Rojo auto-restart
 
 ### Phase 7: DX Polish
@@ -101,6 +101,6 @@ Plans:
 | 3. Simple Commands | v1.0 | 5/5 | Complete | 2026-02-24 |
 | 4. Output Foundation | v1.1 | Complete    | 2026-02-24 | 2026-02-24 |
 | 5. Serve Services | 2/2 | Complete   | 2026-02-25 | - |
-| 6. Serve Command | v1.1 | 0/2 | Not started | - |
+| 6. Serve Command | v1.1 | 1/2 | In Progress | - |
 | 7. DX Polish | v1.1 | 0/TBD | Not started | - |
 | 8. Integration Tests and CI | v1.1 | 0/TBD | Not started | - |
