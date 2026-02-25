@@ -75,17 +75,20 @@ Plans:
 **Goal**: Every command failure is informative and machine-readable — structured errors with suggested fixes, correct exit codes throughout
 **Depends on**: Phase 4
 **Requirements**: ERR-01, ERR-02, ERR-03
+**Gap Closure:** Closes requirement gaps ERR-01/02/03 + integration gap (menu.rs serve stub)
 **Success Criteria** (what must be TRUE):
   1. Running `ezpm lint` when Selene finds violations exits with a non-zero code — `echo $?` returns non-zero; CI pipelines block on failure
   2. Running `ezpm format --check` when files are unformatted exits non-zero; CI pipelines block on failure
   3. A failed subprocess call (e.g., missing tool, wrong path) displays an error message with the failure context and a specific suggested fix — not a raw Rust panic or opaque error string
   4. All subprocess exit codes propagate through the error chain — no command silently swallows a tool failure and exits 0
+  5. Interactive menu "serve" option dispatches to serve::run() via tokio runtime — no stub placeholder
 **Plans**: TBD
 
 ### Phase 8: Integration Tests and CI
 **Goal**: The CLI contracts for all major commands are verified by automated tests that run on every PR in under 2 minutes
 **Depends on**: Phase 7
 **Requirements**: TEST-01, TEST-02, TEST-03, TEST-04
+**Gap Closure:** Closes requirement gaps TEST-01/02/03/04
 **Success Criteria** (what must be TRUE):
   1. `cargo test` runs integration tests for `ezpm init`, `ezpm fix-requires`, and `ezpm alias` subcommands against real filesystem fixtures with TempDir isolation
   2. Integration tests verify exit code contracts — commands that should fail return non-zero, commands that should succeed return 0
