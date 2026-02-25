@@ -158,16 +158,18 @@ pub fn import_aliases_from_dir(dir: &Path) -> HashMap<String, String> {
     if darklua_path.exists() {
         if let Ok(contents) = std::fs::read_to_string(&darklua_path) {
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&contents) {
-                // Navigate to process[0].current.sources
-                if let Some(sources) = json
+                // Navigate to process[0].current.aliases
+                let current = json
                     .get("process")
                     .and_then(|p| p.get(0))
-                    .and_then(|p| p.get("current"))
-                    .and_then(|c| c.get("sources"))
-                    .and_then(|s| s.as_object())
-                {
+                    .and_then(|p| p.get("current"));
+                let alias_obj = current
+                    .and_then(|c| c.get("aliases"))
+                    .or_else(|| current.and_then(|c| c.get("sources")))
+                    .and_then(|s| s.as_object());
+                if let Some(obj) = alias_obj {
                     let mut aliases = HashMap::new();
-                    for (key, value) in sources {
+                    for (key, value) in obj {
                         // Strip leading @ from alias name
                         let name = key.strip_prefix('@').unwrap_or(key);
                         if let Some(path) = value.as_str() {

@@ -61,6 +61,12 @@ async fn handle_changes(
             FileChange::FileDeleted(path) => {
                 handle_file_deleted(path, src, build, project_dir, is_batch).await;
             }
+            FileChange::DirectoryCreated(path) => {
+                handle_directory_created(path, src, build, aliases, project_dir, is_batch).await;
+            }
+            FileChange::DirectoryRemoved(path) => {
+                handle_directory_removed(path, src, build, project_dir, is_batch).await;
+            }
         }
     }
 
@@ -113,10 +119,22 @@ async fn handle_lua_change(
         return;
     }
 
-    // Step 2: Build the corresponding path in build dir.
+    // Step 2: Compute parent directory paths — match Luau's onFileChanged which
+    // runs `darklua process <parent_dir> <build_parent_dir>`.
     let src_root = project_dir.join(src);
     let build_root = project_dir.join(build);
-    let build_file = match src_to_build_path(path, &src_root, &build_root) {
+    let src_parent = match path.parent() {
+        Some(p) => p.to_path_buf(),
+        None => {
+            output::error(&format!(
+                "{}: could not determine parent directory",
+                display_name(path)
+            ));
+            failed_files.insert(path.to_path_buf());
+            return;
+        }
+    };
+    let build_parent = match src_to_build_path(&src_parent, &src_root, &build_root) {
         Some(p) => p,
         None => {
             output::error(&format!(
@@ -128,10 +146,20 @@ async fn handle_lua_change(
         }
     };
 
-    // Step 3: Run DarkLua via spawn_blocking (std::process::Command is blocking).
-    let src_file = path.to_path_buf();
+    // Ensure build parent directory exists.
+    if let Err(e) = std::fs::create_dir_all(&build_parent) {
+        output::error(&format!(
+            "{}: failed to create build directory: {}",
+            display_name(path),
+            e
+        ));
+        failed_files.insert(path.to_path_buf());
+        return;
+    }
+
+    // Step 3: Run DarkLua on parent directory via spawn_blocking.
     let result = tokio::task::spawn_blocking(move || {
-        darklua_runner::process_file(&src_file, &build_file)
+        darklua_runner::process_tree(&src_parent, &build_parent)
     })
     .await;
 
@@ -216,8 +244,7 @@ async fn handle_meta_change(path: &Path, src: &str, build: &str, is_batch: bool)
 
 /// Handle a `FileChange::FileCreated` event.
 ///
-/// Regenerates the sourcemap and, if the created file is Lua/Luau, also runs
-/// the full Lua rebuild pipeline (fix requires + DarkLua).
+/// Matches Luau order: fix requires → sourcemap → darklua (single file to build parent dir).
 async fn handle_file_created(
     path: &Path,
     src: &str,
@@ -228,9 +255,28 @@ async fn handle_file_created(
     is_batch: bool,
 ) {
     let t0 = Instant::now();
-    let project_dir_clone = project_dir.to_path_buf();
 
-    // Regenerate sourcemap — can take 100-500ms, must use spawn_blocking.
+    // If the created file is Lua/Luau, fix requires first (before sourcemap).
+    let is_lua = matches!(
+        path.extension().and_then(|e| e.to_str()),
+        Some("lua") | Some("luau")
+    );
+
+    if is_lua {
+        // Step 1: Fix require paths on the single file.
+        if let Err(e) = require_fixer::fix_single_file(path, aliases, src) {
+            output::error(&format!(
+                "{}: require fix failed: {}",
+                display_name(path),
+                e
+            ));
+            failed_files.insert(path.to_path_buf());
+            return;
+        }
+    }
+
+    // Step 2: Regenerate sourcemap.
+    let project_dir_clone = project_dir.to_path_buf();
     let result = tokio::task::spawn_blocking(move || {
         sourcemap::generate_sourcemap(&project_dir_clone)
     })
@@ -254,13 +300,218 @@ async fn handle_file_created(
         }
     }
 
-    // If the created file is Lua/Luau, also run the full rebuild pipeline.
-    let is_lua = matches!(
-        path.extension().and_then(|e| e.to_str()),
-        Some("lua") | Some("luau")
-    );
+    // Step 3: Run DarkLua — single file to build parent dir (matches Luau removeLast=true).
     if is_lua {
-        handle_lua_change(path, src, build, aliases, project_dir, failed_files, is_batch).await;
+        let src_root = project_dir.join(src);
+        let build_root = project_dir.join(build);
+
+        let build_parent = match path.parent().and_then(|p| src_to_build_path(p, &src_root, &build_root)) {
+            Some(p) => p,
+            None => {
+                output::error(&format!(
+                    "{}: could not compute build path",
+                    display_name(path)
+                ));
+                failed_files.insert(path.to_path_buf());
+                return;
+            }
+        };
+
+        // Ensure build parent directory exists.
+        if let Err(e) = std::fs::create_dir_all(&build_parent) {
+            output::error(&format!("failed to create build dir: {}", e));
+            failed_files.insert(path.to_path_buf());
+            return;
+        }
+
+        let src_file = path.to_path_buf();
+        let result = tokio::task::spawn_blocking(move || {
+            darklua_runner::process_file(&src_file, &build_parent)
+        })
+        .await;
+
+        let filename = display_name(path);
+        match result {
+            Ok(Ok(r)) if r.success => {
+                failed_files.remove(path);
+                if !is_batch {
+                    output::success(&format!("Rebuilt {} ({}ms)", filename, t0.elapsed().as_millis()));
+                }
+            }
+            Ok(Ok(r)) => {
+                failed_files.insert(path.to_path_buf());
+                let detail = r.stderr.trim().to_string();
+                output::error(&format!("{}: {}", filename, detail));
+            }
+            Ok(Err(e)) => {
+                failed_files.insert(path.to_path_buf());
+                output::error(&format!("{}: {}", filename, e));
+            }
+            Err(e) => {
+                failed_files.insert(path.to_path_buf());
+                output::error(&format!("{}: task panicked: {}", filename, e));
+            }
+        }
+    }
+}
+
+/// Handle a `FileChange::DirectoryCreated` event.
+///
+/// Matches Luau's onDirectoryCreated: fix all requires → sourcemap → darklua on new dir.
+async fn handle_directory_created(
+    path: &Path,
+    src: &str,
+    build: &str,
+    aliases: &HashMap<String, String>,
+    project_dir: &Path,
+    is_batch: bool,
+) {
+    let t0 = Instant::now();
+    let dirname = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+
+    // Step 1: Fix requires on the entire src tree (not just the new dir).
+    let src_clone = src.to_string();
+    let aliases_clone = aliases.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        require_fixer::fix_requires(&PathBuf::from(&src_clone), &aliases_clone, &src_clone)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => {
+            output::error(&format!("{}/: require fix failed: {}", dirname, e));
+            return;
+        }
+        Err(e) => {
+            output::error(&format!("{}/: require fix task panicked: {}", dirname, e));
+            return;
+        }
+    }
+
+    // Step 2: Regenerate sourcemap.
+    let project_dir_clone = project_dir.to_path_buf();
+    let result = tokio::task::spawn_blocking(move || {
+        sourcemap::generate_sourcemap(&project_dir_clone)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(r)) if r.success => {}
+        Ok(Ok(r)) => {
+            let detail = r.stderr.trim().to_string();
+            output::error(&format!("Sourcemap update failed: {}", detail));
+        }
+        Ok(Err(e)) => {
+            output::error(&format!("Sourcemap update failed: {}", e));
+        }
+        Err(e) => {
+            output::error(&format!("Sourcemap task panicked: {}", e));
+        }
+    }
+
+    // Step 3: Run DarkLua on the new directory → build equivalent.
+    let src_root = project_dir.join(src);
+    let build_root = project_dir.join(build);
+
+    let build_dir = match src_to_build_path(path, &src_root, &build_root) {
+        Some(p) => p,
+        None => {
+            output::error(&format!(
+                "{}/: could not compute build path",
+                dirname
+            ));
+            return;
+        }
+    };
+
+    // Ensure build directory exists.
+    if let Err(e) = std::fs::create_dir_all(&build_dir) {
+        output::error(&format!("failed to create build dir: {}", e));
+        return;
+    }
+
+    let src_dir = path.to_path_buf();
+    let result = tokio::task::spawn_blocking(move || {
+        darklua_runner::process_tree(&src_dir, &build_dir)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(r)) if r.success => {
+            if !is_batch {
+                output::success(&format!("Rebuilt {}/ ({}ms)", dirname, t0.elapsed().as_millis()));
+            }
+        }
+        Ok(Ok(r)) => {
+            let detail = r.stderr.trim().to_string();
+            output::error(&format!("{}/: darklua failed: {}", dirname, detail));
+        }
+        Ok(Err(e)) => {
+            output::error(&format!("{}/: darklua failed: {}", dirname, e));
+        }
+        Err(e) => {
+            output::error(&format!("{}/: darklua task panicked: {}", dirname, e));
+        }
+    }
+}
+
+/// Handle a `FileChange::DirectoryRemoved` event.
+///
+/// Matches Luau's onDirectoryRemoved: sourcemap → remove build directory.
+async fn handle_directory_removed(
+    path: &Path,
+    src: &str,
+    build: &str,
+    project_dir: &Path,
+    is_batch: bool,
+) {
+    let t0 = Instant::now();
+    let dirname = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+
+    // Step 1: Regenerate sourcemap.
+    let project_dir_clone = project_dir.to_path_buf();
+    let result = tokio::task::spawn_blocking(move || {
+        sourcemap::generate_sourcemap(&project_dir_clone)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(r)) if r.success => {
+            if !is_batch {
+                output::success(&format!("Sourcemap updated ({}ms)", t0.elapsed().as_millis()));
+            }
+        }
+        Ok(Ok(r)) => {
+            let detail = r.stderr.trim().to_string();
+            output::error(&format!("Sourcemap update failed: {}", detail));
+        }
+        Ok(Err(e)) => {
+            output::error(&format!("Sourcemap update failed: {}", e));
+        }
+        Err(e) => {
+            output::error(&format!("Sourcemap task panicked: {}", e));
+        }
+    }
+
+    // Step 2: Remove the corresponding build directory.
+    let src_root = project_dir.join(src);
+    let build_root = project_dir.join(build);
+
+    if let Some(build_dir) = src_to_build_path(path, &src_root, &build_root) {
+        if build_dir.is_dir() {
+            if let Err(e) = std::fs::remove_dir_all(&build_dir) {
+                output::error(&format!("failed to remove build dir {}/: {}", dirname, e));
+            }
+        }
     }
 }
 
@@ -274,13 +525,17 @@ async fn handle_file_deleted(
 ) {
     let t0 = Instant::now();
 
-    // Delete the corresponding build file if it exists.
+    // Delete the corresponding build entry — may be a file or directory.
     let src_root = project_dir.join(src);
     let build_root = project_dir.join(build);
-    if let Some(build_file) = src_to_build_path(path, &src_root, &build_root) {
-        if build_file.exists() {
-            if let Err(e) = std::fs::remove_file(&build_file) {
+    if let Some(build_path) = src_to_build_path(path, &src_root, &build_root) {
+        if build_path.is_file() {
+            if let Err(e) = std::fs::remove_file(&build_path) {
                 output::error(&format!("failed to delete build file: {}", e));
+            }
+        } else if build_path.is_dir() {
+            if let Err(e) = std::fs::remove_dir_all(&build_path) {
+                output::error(&format!("failed to delete build directory: {}", e));
             }
         }
     }

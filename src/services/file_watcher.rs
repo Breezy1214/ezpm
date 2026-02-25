@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::Result;
-use notify_debouncer_full::notify::event::EventKind;
+use notify_debouncer_full::notify::event::{CreateKind, EventKind, RemoveKind};
 use notify_debouncer_full::notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_full::{new_debouncer, DebounceEventResult, Debouncer, DebouncedEvent, RecommendedCache};
 use tokio::sync::mpsc;
@@ -23,6 +23,10 @@ pub enum FileChange {
     FileCreated(PathBuf),
     /// A file was deleted (any relevant type).
     FileDeleted(PathBuf),
+    /// A directory was created.
+    DirectoryCreated(PathBuf),
+    /// A directory was removed.
+    DirectoryRemoved(PathBuf),
 }
 
 /// Top-level event type delivered over the mpsc channel.
@@ -113,26 +117,72 @@ fn classify_events(events: &[DebouncedEvent], ignore_patterns: &[String]) -> Vec
                 continue;
             }
 
-            // Filter: non-relevant file extension.
-            if !is_relevant(path) {
-                continue;
-            }
-
+            // Note: is_relevant() is checked per-arm below so that directory
+            // events (which have no extension) are not filtered out.
             let change = match kind {
-                EventKind::Create(_) => {
-                    // init.meta.json may arrive as Create on macOS (atomic save = delete + create).
-                    // Route through classify_modify so it becomes MetaChange, not FileCreated.
-                    if path.file_name().is_some_and(|n| n == "init.meta.json") {
-                        classify_modify(path)
-                    } else {
-                        Some(FileChange::FileCreated(path.clone()))
+                EventKind::Create(create_kind) => {
+                    match create_kind {
+                        CreateKind::Folder => Some(FileChange::DirectoryCreated(path.clone())),
+                        CreateKind::Any => {
+                            // Ambiguous — use filesystem check to disambiguate.
+                            if path.is_dir() {
+                                Some(FileChange::DirectoryCreated(path.clone()))
+                            } else if is_relevant(path) {
+                                // init.meta.json may arrive as Create on macOS (atomic save = delete + create).
+                                if path.file_name().is_some_and(|n| n == "init.meta.json") {
+                                    classify_modify(path)
+                                } else {
+                                    Some(FileChange::FileCreated(path.clone()))
+                                }
+                            } else {
+                                None
+                            }
+                        }
+                        _ => {
+                            // CreateKind::File or other file-specific variants.
+                            if !is_relevant(path) {
+                                None
+                            } else if path.file_name().is_some_and(|n| n == "init.meta.json") {
+                                classify_modify(path)
+                            } else {
+                                Some(FileChange::FileCreated(path.clone()))
+                            }
+                        }
                     }
                 }
-                EventKind::Remove(_) => Some(FileChange::FileDeleted(path.clone())),
-                EventKind::Modify(_) => classify_modify(path),
+                EventKind::Remove(remove_kind) => {
+                    match remove_kind {
+                        RemoveKind::Folder => Some(FileChange::DirectoryRemoved(path.clone())),
+                        RemoveKind::Any => {
+                            // Ambiguous — the path is already gone so we can't stat it.
+                            // If it has a relevant extension treat as file, otherwise directory.
+                            if is_relevant(path) {
+                                Some(FileChange::FileDeleted(path.clone()))
+                            } else if path.extension().is_none() {
+                                // No extension → likely a directory.
+                                Some(FileChange::DirectoryRemoved(path.clone()))
+                            } else {
+                                None
+                            }
+                        }
+                        _ => {
+                            // RemoveKind::File or other file-specific variants.
+                            if is_relevant(path) {
+                                Some(FileChange::FileDeleted(path.clone()))
+                            } else {
+                                None
+                            }
+                        }
+                    }
+                }
+                EventKind::Modify(_) => {
+                    if is_relevant(path) { classify_modify(path) } else { None }
+                }
                 // Pitfall 3: kqueue on macOS emits EventKind::Any instead of
                 // specific Modify variants. Treat Any as a possible modify.
-                EventKind::Any => classify_modify(path),
+                EventKind::Any => {
+                    if is_relevant(path) { classify_modify(path) } else { None }
+                }
                 // Access and Other events are not actionable for our use case.
                 EventKind::Access(_) | EventKind::Other => None,
             };
@@ -148,17 +198,18 @@ fn classify_events(events: &[DebouncedEvent], ignore_patterns: &[String]) -> Vec
     let deleted_paths: HashSet<PathBuf> = result
         .iter()
         .filter_map(|c| match c {
-            FileChange::FileDeleted(p) => Some(p.clone()),
+            FileChange::FileDeleted(p) | FileChange::DirectoryRemoved(p) => Some(p.clone()),
             _ => None,
         })
         .collect();
 
     if !deleted_paths.is_empty() {
         result.retain(|c| match c {
-            FileChange::FileDeleted(_) => true,
+            FileChange::FileDeleted(_) | FileChange::DirectoryRemoved(_) => true,
             FileChange::LuaChange(p)
             | FileChange::MetaChange(p)
-            | FileChange::FileCreated(p) => !deleted_paths.contains(p),
+            | FileChange::FileCreated(p)
+            | FileChange::DirectoryCreated(p) => !deleted_paths.contains(p),
         });
     }
 
