@@ -8,3 +8,8 @@ test.luau
 exe.luau
 .planning
 /target
+sourcemap.json
+default.project.json
+rokit.toml
+ezpm.toml
+darklua_build
