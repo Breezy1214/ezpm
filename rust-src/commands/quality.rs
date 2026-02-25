@@ -20,9 +20,8 @@ fn is_tool_available(tool: &str) -> bool {
 
 /// Run Selene and StyLua --check on the source directory (QUAL-01, QUAL-02).
 ///
-/// Skips gracefully if either or both tools are not installed. Reports lint
-/// issues but never returns an `Err` — matching the Luau `runLinting` behaviour
-/// where issues are printed but execution continues (non-fatal lint run).
+/// Skips gracefully if either or both tools are not installed.
+/// Returns Err when any tool finds violations (exit code 1 for CI compatibility).
 pub fn lint(src_path: &str) -> Result<()> {
     let has_selene = is_tool_available("selene");
     let has_stylua = is_tool_available("stylua");
@@ -52,7 +51,11 @@ pub fn lint(src_path: &str) -> Result<()> {
                 .context("Failed to run selene")?;
 
             if !selene_status.success() {
-                output::warn("Selene linting found issues");
+                output::error_block(
+                    "Selene lint failed",
+                    &format!("Violations found in {}", src_path),
+                    Some("Fix violations listed above, or run `ezpm format` to auto-fix style issues"),
+                );
                 issues_found = true;
             }
         } else {
@@ -62,7 +65,19 @@ pub fn lint(src_path: &str) -> Result<()> {
                 .context("Failed to run selene")?;
 
             if !selene_out.status.success() {
-                output::warn("Selene linting found issues");
+                let stderr = String::from_utf8_lossy(&selene_out.stderr);
+                if !stderr.trim().is_empty() {
+                    eprint!("{}", stderr);
+                }
+                let stdout = String::from_utf8_lossy(&selene_out.stdout);
+                if !stdout.trim().is_empty() {
+                    print!("{}", stdout);
+                }
+                output::error_block(
+                    "Selene lint failed",
+                    &format!("Violations found in {}", src_path),
+                    Some("Fix violations listed above, or run `ezpm format` to auto-fix style issues"),
+                );
                 issues_found = true;
             }
         }
@@ -78,7 +93,11 @@ pub fn lint(src_path: &str) -> Result<()> {
                 .context("Failed to run stylua")?;
 
             if !stylua_status.success() {
-                output::warn("StyLua formatting issues found. Run `ezpm format` to fix.");
+                output::error_block(
+                    "StyLua formatting check failed",
+                    &format!("Formatting violations found in {}", src_path),
+                    Some("Run `ezpm format` to auto-fix"),
+                );
                 issues_found = true;
             }
         } else {
@@ -89,17 +108,29 @@ pub fn lint(src_path: &str) -> Result<()> {
                 .context("Failed to run stylua")?;
 
             if !stylua_out.status.success() {
-                output::warn("StyLua formatting issues found. Run `ezpm format` to fix.");
+                let stderr = String::from_utf8_lossy(&stylua_out.stderr);
+                if !stderr.trim().is_empty() {
+                    eprint!("{}", stderr);
+                }
+                let stdout = String::from_utf8_lossy(&stylua_out.stdout);
+                if !stdout.trim().is_empty() {
+                    print!("{}", stdout);
+                }
+                output::error_block(
+                    "StyLua formatting check failed",
+                    &format!("Formatting violations found in {}", src_path),
+                    Some("Run `ezpm format` to auto-fix"),
+                );
                 issues_found = true;
             }
         }
     }
 
     // ── Summary ───────────────────────────────────────────────────────────────
-    if !issues_found {
-        output::success("All code quality checks passed!");
+    if issues_found {
+        anyhow::bail!("lint found violations");
     }
-
+    output::success("All code quality checks passed!");
     Ok(())
 }
 

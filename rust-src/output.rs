@@ -91,6 +91,35 @@ pub fn error(msg: &str) {
     );
 }
 
+/// Print a structured Error/Context/Fix block to stderr for command failures.
+///
+/// Prints three labeled sections:
+///   - "Error:"   in red bold   — what went wrong
+///   - "Context:" in yellow bold — why / where
+///   - "Fix:"     in green bold  — how to resolve it (omitted if `fix` is None)
+///
+/// ALWAYS prints — not suppressed by --quiet. Same contract as error().
+/// Automatically respects NO_COLOR, --color never, and CI detection via
+/// if_supports_color(Stream::Stderr, ...).
+pub fn error_block(error: &str, context: &str, fix: Option<&str>) {
+    use std::fmt::Write as _;
+    let mut label = String::new();
+
+    label.clear();
+    let _ = write!(label, "{}", "Error:".if_supports_color(Stream::Stderr, |t| t.red()));
+    eprintln!("{} {}", label, error);
+
+    label.clear();
+    let _ = write!(label, "{}", "Context:".if_supports_color(Stream::Stderr, |t| t.yellow()));
+    eprintln!("{} {}", label, context);
+
+    if let Some(fix_msg) = fix {
+        label.clear();
+        let _ = write!(label, "{}", "Fix:".if_supports_color(Stream::Stderr, |t| t.green()));
+        eprintln!("{} {}", label, fix_msg);
+    }
+}
+
 /// Print an indented hint line to stderr, typically below an error.
 /// Format: "  hint: msg" with cyan text.
 /// Suppressed by --quiet.
