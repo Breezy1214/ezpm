@@ -120,7 +120,7 @@ fn main() {
         Some(Commands::Install) => install::install_tools(&src),
         Some(Commands::SetupWallyPackages) => install::setup_wally_packages(&src),
         Some(Commands::Lint) => quality::lint(&src),
-        Some(Commands::Format) => quality::format_code(&src),
+        Some(Commands::Format { check }) => quality::format_code(&src, check),
         Some(Commands::Docs) => {
             let docs_enabled = loaded_config
                 .as_ref()

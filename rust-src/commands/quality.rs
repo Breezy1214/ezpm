@@ -136,41 +136,76 @@ pub fn lint(src_path: &str) -> Result<()> {
 
 /// Run StyLua on the source directory to apply formatting in-place (QUAL-03).
 ///
+/// When `check` is true, passes `--check` to StyLua — exits non-zero if any
+/// files are unformatted, without writing changes (CI compatibility).
+/// When `check` is false, formats in-place and exits 0 even when files changed
+/// (rustfmt/prettier convention — reformatting is success, not failure).
+///
 /// Skips gracefully if StyLua is not installed, printing an installation hint.
-pub fn format_code(src_path: &str) -> Result<()> {
+pub fn format_code(src_path: &str, check: bool) -> Result<()> {
     if !is_tool_available("stylua") {
         output::info("StyLua is not installed.");
         output::hint("Install with: rokit add JohnnyMorganz/StyLua@2.3.1");
         return Ok(());
     }
 
+    let mut cmd = Command::new("stylua");
+    if check {
+        cmd.arg("--check");
+    }
+    cmd.arg(src_path);
+
     if output::is_verbose() {
-        let stylua_status = Command::new("stylua")
-            .arg(src_path)
-            .status()
-            .context("Failed to run stylua")?;
+        let stylua_status = cmd.status().context("Failed to run stylua")?;
 
         if !stylua_status.success() {
-            anyhow::bail!(
-                "stylua formatting failed with exit code: {:?}",
-                stylua_status.code()
-            );
+            if check {
+                output::error_block(
+                    "Format check failed",
+                    &format!("Unformatted files found in {}", src_path),
+                    Some("Run `ezpm format` to auto-fix"),
+                );
+                anyhow::bail!("format check failed");
+            } else {
+                anyhow::bail!(
+                    "stylua formatting failed with exit code: {:?}",
+                    stylua_status.code()
+                );
+            }
         }
     } else {
-        let stylua_out = Command::new("stylua")
-            .arg(src_path)
-            .output()
-            .context("Failed to run stylua")?;
+        let stylua_out = cmd.output().context("Failed to run stylua")?;
 
         if !stylua_out.status.success() {
-            anyhow::bail!(
-                "stylua formatting failed with exit code: {:?}",
-                stylua_out.status.code()
-            );
+            if check {
+                let stderr = String::from_utf8_lossy(&stylua_out.stderr);
+                if !stderr.trim().is_empty() {
+                    eprint!("{}", stderr);
+                }
+                let stdout = String::from_utf8_lossy(&stylua_out.stdout);
+                if !stdout.trim().is_empty() {
+                    print!("{}", stdout);
+                }
+                output::error_block(
+                    "Format check failed",
+                    &format!("Unformatted files found in {}", src_path),
+                    Some("Run `ezpm format` to auto-fix"),
+                );
+                anyhow::bail!("format check failed");
+            } else {
+                anyhow::bail!(
+                    "stylua formatting failed with exit code: {:?}",
+                    stylua_out.status.code()
+                );
+            }
         }
     }
 
-    output::success("Code formatted successfully!");
+    if check {
+        output::success("All files properly formatted!");
+    } else {
+        output::success("Code formatted successfully!");
+    }
     Ok(())
 }
 

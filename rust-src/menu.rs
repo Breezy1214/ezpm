@@ -128,7 +128,7 @@ fn run_command(cmd: &str) -> Result<()> {
         "alias-list" => crate::commands::alias::alias_list(&cfg.aliases),
         "alias-sync" => crate::commands::alias::alias_sync(),
         "lint" => crate::commands::quality::lint(src),
-        "format" => crate::commands::quality::format_code(src),
+        "format" => crate::commands::quality::format_code(src, false),
         "docs" => {
             let docs_enabled = cfg
                 .display

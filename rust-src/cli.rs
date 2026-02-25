@@ -51,7 +51,11 @@ pub enum Commands {
     Lint,
 
     /// Format source code
-    Format,
+    Format {
+        /// Exit non-zero if files are unformatted, without writing changes
+        #[arg(long)]
+        check: bool,
+    },
 
     /// Open documentation server
     Docs,
