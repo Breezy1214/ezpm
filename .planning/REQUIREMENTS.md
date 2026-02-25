@@ -37,10 +37,10 @@ Requirements for v1.1 Dev Server & Polish. Each maps to roadmap phases.
 
 ### Testing
 
-- [ ] **TEST-01**: Integration tests validate `fix-requires`, `init`, and `alias` command pipelines
-- [ ] **TEST-02**: Integration tests verify exit code contracts for all commands
-- [ ] **TEST-03**: CI pipeline runs full test suite (unit + integration) on every PR
-- [ ] **TEST-04**: Rust build cache in CI for faster pipeline execution
+- [x] **TEST-01**: Integration tests validate `fix-requires`, `init`, and `alias` command pipelines
+- [x] **TEST-02**: Integration tests verify exit code contracts for all commands
+- [x] **TEST-03**: CI pipeline runs full test suite (unit + integration) on every PR
+- [x] **TEST-04**: Rust build cache in CI for faster pipeline execution
 
 ## v2 Requirements
 
@@ -88,10 +88,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | CLI-01 | Phase 4 | Complete |
 | CLI-02 | Phase 4 | Complete |
 | CLI-03 | Phase 4 | Complete |
-| TEST-01 | Phase 8 | Pending |
-| TEST-02 | Phase 8 | Pending |
-| TEST-03 | Phase 8 | Pending |
-| TEST-04 | Phase 8 | Pending |
+| TEST-01 | Phase 8 | Complete |
+| TEST-02 | Phase 8 | Complete |
+| TEST-03 | Phase 8 | Complete |
+| TEST-04 | Phase 8 | Complete |
 
 **Coverage:**
 - v1.1 requirements: 20 total

@@ -10,20 +10,20 @@ See: .planning/PROJECT.md (updated 2026-02-24)
 ## Current Position
 
 Phase: 8 (Integration Tests & CI)
-Plan: 1/2 complete
-Status: Phase 8 Plan 1 complete — 19-test integration suite covering fix-requires, init, alias, format, lint, install
-Last activity: 2026-02-25 — Phase 8 Plan 1 complete (TEST-01: command pipeline validation, TEST-02: exit code contracts)
+Plan: 2/2 complete
+Status: Phase 8 COMPLETE — 21-test integration suite (serve + all commands) and CI pipeline with rust-cache and Rokit
+Last activity: 2026-02-25 — Phase 8 Plan 2 complete (TEST-02: serve exit codes, TEST-03: CI pipeline, TEST-04: rust-cache)
 
 ```
-Progress: [########--] 7.5/8 phases complete (v1.0 shipped, v1.1 in progress — Phase 8 Plan 2 remaining)
+Progress: [##########] 8/8 phases complete (v1.0 shipped, v1.1 complete — all phases done)
 ```
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 11
+- Total plans completed: 12
 - Average duration: 6 min
-- Total execution time: ~1 hour 12 min
+- Total execution time: ~1 hour 15 min
 
 **By Phase:**
 
@@ -35,7 +35,7 @@ Progress: [########--] 7.5/8 phases complete (v1.0 shipped, v1.1 in progress —
 | 04-output-foundation | 2 (of 2) | 10 min | 5 min |
 | 06-serve-command | 2 (of 2) | 16 min | 8 min |
 | 07-dx-polish | 2 (of 2) | 5 min | 2.5 min |
-| 08-integration-tests-ci | 1 (of 2) | 21 min | 21 min |
+| 08-integration-tests-ci | 2 (of 2) | 24 min | 12 min |
 
 ## Accumulated Context
 
@@ -102,6 +102,9 @@ Summary: 9 key decisions made during v1.0, all marked Good.
 - [Phase 08-01]: rokit.toml added to create_project() skeleton so rokit shims resolve tool binaries from TempDir cwd
 - [Phase 08-01]: alias list/sync exits 0 with missing ezpm.toml — load_config() returns defaults; tests updated to match actual behavior
 - [Phase 08-01]: lint violation test uses stylua formatting check (not selene unused-variable) — selene 0.30.0 not installed, but exit code contract still verified
+- [Phase 08-02]: Full rokit.toml in create_project(): rojo, darklua, wally, wally-package-types, selene, lune added — serve requires rojo+darklua; lint now also sees selene
+- [Phase 08-02]: lint_exits_zero_on_clean_code overrides init.luau with return {} — default init.luau has unused_variable (local util = require(...)) which selene now flags
+- [Phase 08-02]: CI uses single ubuntu-only job (name: test) — Swatinem/rust-cache eliminates most compile time; branch protection rename requires one CI run
 
 ### Pending Todos
 
@@ -118,6 +121,6 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-25
-Stopped at: Completed 08-01-PLAN.md — 19-test integration suite for fix-requires, init, alias, format, lint, install
+Stopped at: Completed 08-02-PLAN.md — serve integration test + CI pipeline (Phase 8 COMPLETE, all v1.1 plans done)
 Resume file: None
-Next action: Phase 8 Plan 2 — GitHub Actions CI workflow
+Next action: None — all phases complete. v1.1 milestone ready.

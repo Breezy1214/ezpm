@@ -3,7 +3,7 @@
 ## Milestones
 
 - ✅ **v1.0 MVP** — Phases 1-3 (shipped 2026-02-24)
-- 📋 **v1.1 Dev Server & Polish** — Phases 4-8 (in progress)
+- ✅ **v1.1 Dev Server & Polish** — Phases 4-8 (completed 2026-02-25)
 
 ## Phases
 
@@ -18,13 +18,13 @@ See: `.planning/milestones/v1.0-ROADMAP.md` for full details.
 
 </details>
 
-### 📋 v1.1 Dev Server & Polish
+### ✅ v1.1 Dev Server & Polish
 
 - [x] **Phase 4: Output Foundation** - Cargo dependencies, centralized output module, NO_COLOR support, global --verbose/--quiet/--color flags
 - [x] **Phase 5: Serve Services** - Async ProcessManager and FileWatcher service modules (prerequisites for serve) (completed 2026-02-25)
 - [x] **Phase 6: Serve Command** - Full ezpm serve: startup pipeline, incremental rebuilds, Rojo live sync, graceful shutdown (completed 2026-02-25)
 - [x] **Phase 7: DX Polish** - Structured error messages, non-zero exit codes, subprocess error propagation applied to all commands (completed 2026-02-25)
-- [ ] **Phase 8: Integration Tests and CI** - assert_cmd integration tests, CI test suite, Rust build cache
+- [x] **Phase 8: Integration Tests and CI** - assert_cmd integration tests, CI test suite, Rust build cache (completed 2026-02-25)
 
 ## Phase Details
 
@@ -99,8 +99,8 @@ Plans:
   4. CI pipeline completes in under 2 minutes due to Rust build cache (`Swatinem/rust-cache`)
 **Plans**: 2 plans
 Plans:
-- [ ] 08-01-PLAN.md — Shared test helpers and integration tests for all non-serve commands
-- [ ] 08-02-PLAN.md — Serve start-wait-kill test and CI workflow update with rust-cache
+- [x] 08-01-PLAN.md — Shared test helpers and integration tests for all non-serve commands
+- [x] 08-02-PLAN.md — Serve start-wait-kill test and CI workflow update with rust-cache
 
 ## Progress
 
@@ -113,4 +113,4 @@ Plans:
 | 5. Serve Services | 2/2 | Complete   | 2026-02-25 | - |
 | 6. Serve Command | 3/3 | Complete   | 2026-02-25 | - |
 | 7. DX Polish | 2/2 | Complete    | 2026-02-25 | - |
-| 8. Integration Tests and CI | 1/2 | In Progress|  | - |
+| 8. Integration Tests and CI | 2/2 | Complete | 2026-02-25 | - |
