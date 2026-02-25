@@ -82,7 +82,10 @@ Plans:
   3. A failed subprocess call (e.g., missing tool, wrong path) displays an error message with the failure context and a specific suggested fix — not a raw Rust panic or opaque error string
   4. All subprocess exit codes propagate through the error chain — no command silently swallows a tool failure and exits 0
   5. Interactive menu "serve" option dispatches to serve::run() via tokio runtime — no stub placeholder
-**Plans**: TBD
+**Plans**: 2 plans
+Plans:
+- [ ] 07-01-PLAN.md — Error block helper, lint exit codes, format --check flag
+- [ ] 07-02-PLAN.md — Subprocess propagation audit, menu serve dispatch, menu format update
 
 ### Phase 8: Integration Tests and CI
 **Goal**: The CLI contracts for all major commands are verified by automated tests that run on every PR in under 2 minutes
@@ -106,5 +109,5 @@ Plans:
 | 4. Output Foundation | v1.1 | Complete    | 2026-02-24 | 2026-02-24 |
 | 5. Serve Services | 2/2 | Complete   | 2026-02-25 | - |
 | 6. Serve Command | 3/3 | Complete   | 2026-02-25 | - |
-| 7. DX Polish | v1.1 | 0/TBD | Not started | - |
+| 7. DX Polish | v1.1 | 0/2 | Not started | - |
 | 8. Integration Tests and CI | v1.1 | 0/TBD | Not started | - |
