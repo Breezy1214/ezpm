@@ -74,6 +74,7 @@ darklua_build = "darklua_build"
 file_changes = true
 docs_enabled = false
 logs_enabled = true
+check_updates = false
 
 [aliases]
 Client = "src/client/"
@@ -98,6 +99,7 @@ port = 34872
     assert_eq!(display.file_changes, Some(true));
     assert_eq!(display.docs_enabled, Some(false));
     assert_eq!(display.logs_enabled, Some(true));
+    assert_eq!(display.check_updates, Some(false));
 
     let aliases = config.aliases.expect("aliases section");
     assert_eq!(aliases.len(), 3, "should have 3 aliases");

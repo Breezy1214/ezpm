@@ -64,6 +64,7 @@ struct DisplayTomlOutput {
     file_changes: bool,
     docs_enabled: bool,
     logs_enabled: bool,
+    check_updates: bool,
 }
 
 /// Write an ezpm.toml file to `dir` with the given configuration values.
@@ -89,6 +90,7 @@ pub fn save_ezpm_toml(
             file_changes: true,
             docs_enabled: false,
             logs_enabled: true,
+            check_updates: true,
         },
         aliases: aliases.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
     };
