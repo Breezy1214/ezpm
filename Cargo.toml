@@ -1,0 +1,48 @@
+[package]
+name = "ezpm"
+version = "0.2.0"
+edition = "2021"
+description = "Roblox project manager"
+license = "MIT"
+
+[[bin]]
+name = "ezpm"
+path = "src/main.rs"
+
+[lib]
+name = "ezpm"
+path = "src/lib.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+serde_ignored = "0.1"
+inquire = "0.7"
+thiserror = "1"
+anyhow = "1"
+walkdir = "2"
+regex = "1"
+ureq = "3"
+owo-colors = { version = "4", features = ["supports-colors"] }
+indicatif = "0.18"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "signal", "time", "sync"] }
+notify-debouncer-full = "0.7"
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31", features = ["signal"] }
+
+[[bench]]
+name = "rust_bench"
+harness = false
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"

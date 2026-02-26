@@ -2,94 +2,127 @@ name: Release
 
 on:
   push:
-    branches: [main]
-    paths:
-      - 'src/version.luau'
+    tags:
+      - 'v*'
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
-    runs-on: ubuntu-latest
+  build:
+    name: Build (${{ matrix.target }})
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-latest
+            os: linux
+            arch: x86_64
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+            os: linux
+            arch: aarch64
+          - target: x86_64-apple-darwin
+            runner: macos-13
+            os: macos
+            arch: x86_64
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            os: macos
+            arch: aarch64
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            os: windows
+            arch: x86_64
+          - target: aarch64-pc-windows-msvc
+            runner: windows-latest
+            os: windows
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Resolve version
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          echo "EZPM_VERSION=${VERSION}" >> "$GITHUB_ENV"
+
+      - name: Validate tag matches Cargo.toml version
+        shell: bash
+        run: |
+          TOML_VERSION="$(grep -m1 '^version\s*=\s*"' Cargo.toml | sed -E 's/version\s*=\s*"([^"]+)"/\1/')"
+          if [[ -z "$TOML_VERSION" ]]; then
+            echo "Could not resolve package version from Cargo.toml"
+            exit 1
+          fi
+          if [[ "$TOML_VERSION" != "$EZPM_VERSION" ]]; then
+            echo "Tag version (${EZPM_VERSION}) does not match Cargo.toml version (${TOML_VERSION})."
+            exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          fetch-depth: 2
+          targets: ${{ matrix.target }}
 
-      - name: Extract current version
-        id: current
-        run: |
-          VERSION=$(grep -oP 'EZPM_VERSION\s*=\s*"\K[^"]+' src/version.luau)
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+      - name: Install musl-tools (Linux only)
+        if: matrix.os == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
 
-      - name: Extract previous version
-        id: previous
-        run: |
-          PREV=$(git show HEAD~1:src/version.luau 2>/dev/null | grep -oP 'EZPM_VERSION\s*=\s*"\K[^"]+' || echo "")
-          echo "version=$PREV" >> "$GITHUB_OUTPUT"
+      - name: Build (Unix)
+        if: matrix.os != 'windows'
+        run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Check version changed
-        id: check
-        run: |
-          if [ "${{ steps.current.outputs.version }}" != "" ] && [ "${{ steps.current.outputs.version }}" != "${{ steps.previous.outputs.version }}" ]; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Check tag exists
-        if: steps.check.outputs.changed == 'true'
-        id: tag_check
-        run: |
-          TAG="v${{ steps.current.outputs.version }}"
-          if git ls-remote --tags origin "refs/tags/$TAG" | grep -q "$TAG"; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Install Rokit toolchain
-        if: steps.check.outputs.changed == 'true' && steps.tag_check.outputs.exists == 'false'
-        uses: CompeyDev/setup-rokit@v0.1.2
-
-      - name: Bundle with DarkLua
-        if: steps.check.outputs.changed == 'true' && steps.tag_check.outputs.exists == 'false'
-        run: |
-          mkdir -p build dist
-          darklua process src/init.luau build/bundled.luau --config .darklua-build.json
-
-      - name: Build binaries
-        if: steps.check.outputs.changed == 'true' && steps.tag_check.outputs.exists == 'false'
-        run: |
-          VERSION="${{ steps.current.outputs.version }}"
-          TARGETS=(
-            "linux-x86_64"
-            "linux-aarch64"
-            "macos-x86_64"
-            "macos-aarch64"
-            "windows-x86_64"
-            "windows-aarch64"
-          )
-
-          for TARGET in "${TARGETS[@]}"; do
-            echo "Building for $TARGET..."
-            OUTPUT_NAME="ezpm"
-            if [[ "$TARGET" == windows-* ]]; then
-              OUTPUT_NAME="ezpm.exe"
-            fi
-
-            lune build build/bundled.luau --output "build/$OUTPUT_NAME" --target "$TARGET"
-
-            ZIP_NAME="ezpm-${VERSION}-${TARGET}.zip"
-            (cd build && zip "../dist/$ZIP_NAME" "$OUTPUT_NAME")
-            rm "build/$OUTPUT_NAME"
-          done
-
-      - name: Create release
-        if: steps.check.outputs.changed == 'true' && steps.tag_check.outputs.exists == 'false'
+      - name: Build (Windows x86_64)
+        if: matrix.os == 'windows' && matrix.arch == 'x86_64'
+        run: cargo build --release --target ${{ matrix.target }}
         env:
-          GH_TOKEN: ${{ github.token }}
+          RUSTFLAGS: -C target-feature=+crt-static
+
+      - name: Build (Windows aarch64)
+        if: matrix.os == 'windows' && matrix.arch == 'aarch64'
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package (Unix)
+        if: matrix.os != 'windows'
         run: |
-          TAG="v${{ steps.current.outputs.version }}"
-          gh release create "$TAG" dist/*.zip --title "$TAG" --generate-notes --target main
+          ZIP_NAME="ezpm-${EZPM_VERSION}-${{ matrix.os }}-${{ matrix.arch }}.zip"
+          cp target/${{ matrix.target }}/release/ezpm ./ezpm
+          zip "${ZIP_NAME}" ezpm
+          rm ezpm
+
+      - name: Package (Windows)
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          $ZIP_NAME = "ezpm-$env:EZPM_VERSION-${{ matrix.os }}-${{ matrix.arch }}.zip"
+          Copy-Item "target/${{ matrix.target }}/release/ezpm.exe" -Destination "ezpm.exe"
+          Compress-Archive -Path "ezpm.exe" -DestinationPath $ZIP_NAME
+          Remove-Item "ezpm.exe"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ezpm-${{ matrix.os }}-${{ matrix.arch }}
+          path: "*.zip"
+
+  release:
+    name: Publish Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: "*.zip"
