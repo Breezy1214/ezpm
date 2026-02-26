@@ -14,4 +14,3 @@ rokit.toml
 ezpm.toml
 darklua_build
 benches/luau_bench.luau
-benches/rust_bench.rs
