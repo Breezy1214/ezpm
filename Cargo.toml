@@ -28,9 +28,10 @@ ureq = "3"
 owo-colors = { version = "4", features = ["supports-colors"] }
 indicatif = "0.18"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "signal", "time", "sync"] }
-tokio-util = { version = "0.7", features = ["rt"] }
-nix = { version = "0.31", features = ["signal"] }
 notify-debouncer-full = "0.7"
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31", features = ["signal"] }
 
 [[bench]]
 name = "rust_bench"
@@ -38,3 +39,10 @@ harness = false
 
 [dev-dependencies]
 tempfile = "3"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"

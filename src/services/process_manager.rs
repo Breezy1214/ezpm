@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::process::Stdio;
+#[cfg(unix)]
 use std::time::Duration;
 
 use anyhow::Result;
@@ -203,12 +204,16 @@ impl Drop for ProcessManager {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use std::time::Duration;
 
+    #[cfg(unix)]
     use tokio::time::timeout;
 
+    #[cfg(unix)]
     use super::*;
 
+    #[cfg(unix)]
     fn init_output() {
         // ok() silently ignores double-init across tests (OnceLock pattern).
         output::init(false, false, output::ColorChoice::Auto);

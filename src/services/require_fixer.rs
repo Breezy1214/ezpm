@@ -263,6 +263,132 @@ fn convert_path_to_alias(file_path: &str, inverted_aliases: &[(String, String)])
     converted
 }
 
+fn starts_with_ignore_ascii_case(s: &str, prefix: &str) -> bool {
+    s.get(..prefix.len())
+        .map(|head| head.eq_ignore_ascii_case(prefix))
+        .unwrap_or(false)
+}
+
+fn is_builtin_alias_path(required_path: &str) -> bool {
+    starts_with_ignore_ascii_case(required_path, "@self/")
+        || required_path.eq_ignore_ascii_case("@self")
+        || starts_with_ignore_ascii_case(required_path, "@game/")
+        || required_path.eq_ignore_ascii_case("@game")
+}
+
+fn rewrite_require_path(
+    required_path: &str,
+    sorted_aliases: &[(String, String)],
+    skip_list: &[String],
+    src_prefix: &str,
+    root_dir: Option<&Path>,
+    inverted_aliases: &[(String, String)],
+) -> Option<String> {
+    if skip_list
+        .iter()
+        .any(|entry| required_path.starts_with(entry.as_str()))
+    {
+        return None;
+    }
+
+    if is_builtin_alias_path(required_path) {
+        return None;
+    }
+
+    if required_path.starts_with("../") || required_path.starts_with("./") {
+        output::warn(&format!(
+            "relative require path '{}' is not supported — leaving untouched",
+            required_path
+        ));
+        return None;
+    }
+
+    for (alias_shortcut, real_path) in sorted_aliases {
+        if required_path.starts_with(real_path.as_str()) {
+            return Some(format!(
+                "{}{}",
+                alias_shortcut,
+                &required_path[real_path.len()..]
+            ));
+        }
+    }
+
+    let src_slash = format!("{src_prefix}/");
+    if required_path.starts_with(&src_slash) || required_path == src_prefix {
+        if let Some(root) = root_dir {
+            if let Some(file_name) = required_path.rsplit('/').next() {
+                if let Some(found) = find_file_by_name(file_name, root) {
+                    let found_str = normalize_separators(&found.to_string_lossy());
+                    let converted = convert_path_to_alias(&found_str, inverted_aliases);
+                    if converted != required_path {
+                        return Some(converted);
+                    }
+                } else {
+                    output::warn(&format!(
+                        "could not find file for source path '{}'",
+                        required_path
+                    ));
+                }
+            }
+        } else {
+            output::warn(&format!(
+                "unresolved src require path '{}' — no alias matches, leaving untouched",
+                required_path
+            ));
+        }
+        return None;
+    }
+
+    let mut resolved_path = required_path.to_string();
+    for (shortcut, real_path) in sorted_aliases {
+        if required_path.starts_with(shortcut.as_str()) {
+            resolved_path = format!("{}{}", real_path, &required_path[shortcut.len()..]);
+            break;
+        }
+    }
+
+    if resolved_path.contains("../") || resolved_path.contains("./") {
+        output::warn(&format!(
+            "relative require path '{}' (resolved: '{}') is not supported — leaving untouched",
+            required_path, resolved_path
+        ));
+        return None;
+    }
+
+    if let Some(root) = root_dir {
+        let as_file_path = resolved_path.replace('.', "/");
+        let as_file_path = if as_file_path.ends_with("/luau") {
+            &as_file_path[..as_file_path.len() - "/luau".len()]
+        } else if as_file_path.ends_with("/lua") {
+            &as_file_path[..as_file_path.len() - "/lua".len()]
+        } else {
+            &as_file_path
+        };
+
+        let full_path = format!("{as_file_path}.luau");
+        let init_path = format!("{as_file_path}/init.luau");
+
+        if !Path::new(&full_path).is_file() && !Path::new(&init_path).is_file() {
+            if let Some(file_name) = as_file_path.rsplit('/').next() {
+                if let Some(found) = find_file_by_name(file_name, root) {
+                    let found_str = normalize_separators(&found.to_string_lossy());
+                    let converted = convert_path_to_alias(&found_str, inverted_aliases);
+                    if converted != required_path {
+                        return Some(converted);
+                    }
+                } else {
+                    output::warn(&format!(
+                        "could not find file '{}' for require path '{}'",
+                        file_name, required_path
+                    ));
+                }
+            }
+        }
+    }
+
+    None
+}
+
 pub fn process_file_content(
     content: &str,
     sorted_aliases: &[(String, String)],
@@ -273,178 +399,48 @@ pub fn process_file_content(
 ) -> (String, Vec<RequireRewrite>) {
     let re = require_regex();
     let mut rewrites: Vec<RequireRewrite> = Vec::new();
-    let mut new_content = content.to_string();
+    let mut rebuilt = String::with_capacity(content.len());
+    let mut last_end = 0usize;
 
-    // Collect all require paths first to avoid borrowing issues when we mutate
-    // new_content via str::replace later.
-    let require_paths: Vec<String> = re
-        .captures_iter(content)
-        .filter_map(|cap| cap.get(1).map(|m| m.as_str().to_string()))
-        .collect();
-
-    for required_path in require_paths {
-        // ── 1. Skip list check ────────────────────────────────────────────────
-        // Matches Luau's `ignoreList` check in processSingleFile.
-        let should_skip = skip_list
-            .iter()
-            .any(|entry| required_path.starts_with(entry.as_str()));
-        if should_skip {
+    for caps in re.captures_iter(content) {
+        let Some(whole_match) = caps.get(0) else {
             continue;
-        }
-
-        // ── 2. Built-in Roblox alias check (case-insensitive) ─────────────────
-        // Matches Luau `lowerPath:match("^@self/")` etc.
-        let lower = required_path.to_lowercase();
-        if lower.starts_with("@self/")
-            || lower == "@self"
-            || lower.starts_with("@game/")
-            || lower == "@game"
-        {
+        };
+        let Some(path_match) = caps.get(1) else {
             continue;
+        };
+
+        rebuilt.push_str(&content[last_end..whole_match.start()]);
+
+        let required_path = path_match.as_str();
+        if let Some(new_path) = rewrite_require_path(
+            required_path,
+            sorted_aliases,
+            skip_list,
+            src_prefix,
+            root_dir,
+            inverted_aliases,
+        ) {
+            rebuilt.push_str("require(\"");
+            rebuilt.push_str(&new_path);
+            rebuilt.push_str("\")");
+            rewrites.push(RequireRewrite {
+                old: required_path.to_string(),
+                new: new_path,
+            });
+        } else {
+            rebuilt.push_str(whole_match.as_str());
         }
 
-        // ── 3. Relative path warning (warn but leave untouched) ───────────────
-        if required_path.starts_with("../") || required_path.starts_with("./") {
-            output::warn(&format!(
-                "relative require path '{}' is not supported — leaving untouched",
-                required_path
-            ));
-            continue;
-        }
-
-        // ── 4. Longest-match alias resolution ────────────────────────────────
-        // sorted_aliases is pre-sorted by real path length descending, so the
-        // first match is always the most specific one (Pitfall 6).
-        let mut matched = false;
-        for (alias_shortcut, real_path) in sorted_aliases {
-            if required_path.starts_with(real_path.as_str()) {
-                // Build the new path: @Alias/remainder
-                let new_path =
-                    format!("{}{}", alias_shortcut, &required_path[real_path.len()..]);
-
-                // Replace the old require(...) call with the new one using
-                // plain string replacement (matches Luau's `content:gsub`).
-                let old_require = format!(r#"require("{required_path}")"#);
-                let new_require = format!(r#"require("{new_path}")"#);
-                new_content = new_content.replace(&old_require, &new_require);
-
-                rewrites.push(RequireRewrite {
-                    old: required_path.clone(),
-                    new: new_path,
-                });
-                matched = true;
-                break; // first (longest) match wins — stop looking
-            }
-        }
-
-        // ── 6. File search fallback for unresolved src/ paths ────────────────
-        // Matches Luau's step: if path starts with rootDir/ but no alias matched,
-        // extract the filename and search recursively under root_dir.
-        if !matched {
-            let src_slash = format!("{src_prefix}/");
-            if required_path.starts_with(&src_slash) || required_path == src_prefix {
-                if let Some(root) = root_dir {
-                    if let Some(file_name) = required_path.rsplit('/').next() {
-                        if let Some(found) = find_file_by_name(file_name, root) {
-                            let found_str = normalize_separators(&found.to_string_lossy());
-                            let converted =
-                                convert_path_to_alias(&found_str, inverted_aliases);
-                            if converted != required_path {
-                                let old_require = format!(r#"require("{required_path}")"#);
-                                let new_require = format!(r#"require("{converted}")"#);
-                                new_content =
-                                    new_content.replace(&old_require, &new_require);
-                                rewrites.push(RequireRewrite {
-                                    old: required_path.clone(),
-                                    new: converted,
-                                });
-                            }
-                        } else {
-                            output::warn(&format!(
-                                "could not find file for source path '{}'",
-                                required_path
-                            ));
-                        }
-                    }
-                } else {
-                    output::warn(&format!(
-                        "unresolved src require path '{}' — no alias matches, leaving untouched",
-                        required_path
-                    ));
-                }
-                continue;
-            }
-        }
-
-        // ── 7. Shortcut resolution + dot notation conversion + file search ──
-        if !matched {
-            // Resolve alias shortcuts to real paths
-            let mut resolved_path = required_path.clone();
-            for (shortcut, real_path) in sorted_aliases {
-                if required_path.starts_with(shortcut.as_str()) {
-                    resolved_path = format!("{}{}", real_path, &required_path[shortcut.len()..]);
-                    break;
-                }
-            }
-
-            // Relative path check on resolved path 
-            if resolved_path.contains("../") || resolved_path.contains("./") {
-                output::warn(&format!(
-                    "relative require path '{}' (resolved: '{}') is not supported — leaving untouched",
-                    required_path, resolved_path
-                ));
-                continue;
-            }
-
-            if let Some(root) = root_dir {
-                // Convert dot notation to path separators (Lua module style)
-                let as_file_path = resolved_path.replace('.', "/");
-                // Strip .luau/.lua extension that got converted to /luau or /lua
-                let as_file_path = if as_file_path.ends_with("/luau") {
-                    &as_file_path[..as_file_path.len() - "/luau".len()]
-                } else if as_file_path.ends_with("/lua") {
-                    &as_file_path[..as_file_path.len() - "/lua".len()]
-                } else {
-                    &as_file_path
-                };
-
-                let full_path = format!("{as_file_path}.luau");
-                let init_path = format!("{as_file_path}/init.luau");
-
-                // If file doesn't exist at the resolved path, search for it
-                if !Path::new(&full_path).is_file()
-                    && !Path::new(&init_path).is_file()
-                {
-                    if let Some(file_name) = as_file_path.rsplit('/').next() {
-                        if let Some(found) = find_file_by_name(file_name, root) {
-                            let found_str = normalize_separators(&found.to_string_lossy());
-                            let converted =
-                                convert_path_to_alias(&found_str, inverted_aliases);
-                            if converted != required_path {
-                                let old_require =
-                                    format!(r#"require("{required_path}")"#);
-                                let new_require =
-                                    format!(r#"require("{converted}")"#);
-                                new_content =
-                                    new_content.replace(&old_require, &new_require);
-                                rewrites.push(RequireRewrite {
-                                    old: required_path.clone(),
-                                    new: converted,
-                                });
-                            }
-                        } else {
-                            output::warn(&format!(
-                                "could not find file '{}' for require path '{}'",
-                                file_name, required_path
-                            ));
-                        }
-                    }
-                }
-            }
-        }
+        last_end = whole_match.end();
     }
 
-    (new_content, rewrites)
+    if last_end == 0 {
+        return (content.to_string(), rewrites);
+    }
+
+    rebuilt.push_str(&content[last_end..]);
+    (rebuilt, rewrites)
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────

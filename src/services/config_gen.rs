@@ -2,55 +2,64 @@ use anyhow::Result;
 use serde_json::json;
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::OnceLock;
 
 // ─── Public functions ─────────────────────────────────────────────────────────
 
 /// Generate the `.darklua.json` configuration file content.
 pub fn generate_darklua_json() -> String {
-    let config = json!({
-        "process": [
-            {
-                "rule": "convert_require",
-                "current": { "name": "luau" },
-                "target": {
-                    "name": "roblox",
-                    "rojo_sourcemap": "sourcemap.json",
-                    "indexing_style": "find_first_child"
-                }
-            },
-            "compute_expression",
-            "remove_unused_if_branch",
-            "remove_unused_while",
-            "filter_after_early_return",
-            "remove_nil_declaration",
-            "remove_empty_do"
-        ]
-    });
+    static DARKLUA_JSON: OnceLock<String> = OnceLock::new();
+    DARKLUA_JSON
+        .get_or_init(|| {
+            let config = json!({
+                "process": [
+                    {
+                        "rule": "convert_require",
+                        "current": { "name": "luau" },
+                        "target": {
+                            "name": "roblox",
+                            "rojo_sourcemap": "sourcemap.json",
+                            "indexing_style": "find_first_child"
+                        }
+                    },
+                    "compute_expression",
+                    "remove_unused_if_branch",
+                    "remove_unused_while",
+                    "filter_after_early_return",
+                    "remove_nil_declaration",
+                    "remove_empty_do"
+                ]
+            });
 
-    let mut output = serde_json::to_string_pretty(&config).unwrap();
-    output.push('\n');
-    output
+            let mut output = serde_json::to_string_pretty(&config).unwrap();
+            output.push('\n');
+            output
+        })
+        .clone()
 }
 
 /// Read the lune version from `rokit.toml` if present.
 pub fn get_lune_version() -> Option<String> {
-    let contents = std::fs::read_to_string("rokit.toml").ok()?;
-    let parsed: toml::Value = toml::from_str(&contents).ok()?;
-    let lune_spec = parsed
-        .get("tools")?
-        .get("lune")?
-        .as_str()?;
-    let version = lune_spec.rsplit('@').next()?;
-    if version.is_empty() {
-        None
-    } else {
-        Some(version.to_string())
-    }
+    static LUNE_VERSION: OnceLock<Option<String>> = OnceLock::new();
+    LUNE_VERSION
+        .get_or_init(|| {
+            let contents = std::fs::read_to_string("rokit.toml").ok()?;
+            let parsed: toml::Value = toml::from_str(&contents).ok()?;
+            let lune_spec = parsed.get("tools")?.get("lune")?.as_str()?;
+            let version = lune_spec.rsplit('@').next()?;
+            if version.is_empty() {
+                None
+            } else {
+                Some(version.to_string())
+            }
+        })
+        .clone()
 }
 
 /// Generate the `.luaurc` configuration file content from an alias map.
 pub fn generate_luaurc(aliases: &HashMap<String, String>) -> String {
-    let mut aliases_obj: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+    let mut aliases_obj: serde_json::Map<String, serde_json::Value> =
+        serde_json::Map::with_capacity(aliases.len() + 1);
 
     // Add lune typedef alias if version is available
     if let Some(version) = get_lune_version() {
