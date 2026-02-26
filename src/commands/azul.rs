@@ -1,4 +1,4 @@
-//! Serve command
+//! Azul command — two-way sync with DarkLua processing.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -18,56 +18,42 @@ use crate::{
 
 use super::pipeline;
 
-// ─── Port helpers ──────────────────────────────────────────────────────────────
-
-/// Check if the given port is available for binding.
-fn port_is_available(port: u16) -> bool {
-    std::net::TcpListener::bind(std::net::SocketAddr::from(([0, 0, 0, 0], port))).is_ok()
-}
-
-/// Handle a `ProcessEvent` — Rojo auto-restart logic.
+/// Handle a `ProcessEvent` — Azul auto-restart logic.
 async fn handle_process_event(
     event: ProcessEvent,
     pm: &mut ProcessManager,
     restart_count: &mut u32,
-    port: u16,
+    rojo_project: &str,
 ) {
     match event {
-        ProcessEvent::Crashed { ref name, .. } if name == "rojo" => {
+        ProcessEvent::Crashed { ref name, .. } if name == "azul" => {
             if *restart_count < 1 {
-                output::warn("Rojo exited unexpectedly — restarting...");
-                let port_str = port.to_string();
+                output::warn("Azul exited unexpectedly — restarting...");
+                let project_arg = format!("--rojo-project={}", rojo_project);
                 if let Err(e) = pm
-                    .spawn(
-                        "rojo",
-                        "rojo",
-                        &["serve", "build.project.json", "--port", &port_str],
-                    )
+                    .spawn("azul", "azul", &["--rojo", &project_arg])
                     .await
                 {
-                    output::error(&format!("Failed to restart Rojo: {}", e));
+                    output::error(&format!("Failed to restart Azul: {}", e));
                 }
                 *restart_count += 1;
             } else {
-                output::error("Rojo crashed again — not restarting. File watching continues.");
+                output::error("Azul crashed again — not restarting. File watching continues.");
             }
         }
         ProcessEvent::Exited { name, code } => {
             output::verbose_line(&format!("Process '{}' exited with code {:?}", name, code));
         }
-        _ => {
-            // Started events are already logged by ProcessManager via verbose_line.
-        }
+        _ => {}
     }
 }
 
 // ─── Entry point ───────────────────────────────────────────────────────────────
 
-/// Run the serve command.
-pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::Result<()> {
+/// Run the azul command.
+pub async fn run(config: Option<EzpmConfig>) -> anyhow::Result<()> {
     let config = config.unwrap_or_default();
 
-    // Extract config values used throughout startup.
     let src = config
         .paths
         .as_ref()
@@ -87,21 +73,17 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
         .and_then(|d| d.file_changes)
         .unwrap_or(true);
 
-    // Port resolution: CLI flag > ezpm.toml serve.port > default 34872.
-    let port: u16 = cli_port
-        .or_else(|| config.serve.as_ref().and_then(|s| s.port))
-        .unwrap_or(34872);
-
-    // Port availability check
-    if !port_is_available(port) {
-        output::error(&format!(
-            "Port {} in use. Try: ezpm serve --port {}",
-            port,
-            port + 1
-        ));
-        output::hint("Another Rojo session may still be running");
-        return Err(anyhow::anyhow!("port {} already in use", port));
-    }
+    // Azul config
+    let rojo_compat = config
+        .azul
+        .as_ref()
+        .and_then(|a| a.rojo_compat)
+        .unwrap_or(true);
+    let rojo_project = config
+        .azul
+        .as_ref()
+        .and_then(|a| a.rojo_project.clone())
+        .unwrap_or_else(|| "build.project.json".to_string());
 
     let project_dir = std::env::current_dir().context("could not determine current directory")?;
     let src_path = project_dir.join(&src);
@@ -132,27 +114,28 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
         }
     };
 
-    // ── Step 8: Start Rojo ────────────────────────────────────────────────────
+    // ── Step 8: Start Azul ────────────────────────────────────────────────────
     let (mut process_manager, mut process_rx) = {
-        let pb = output::start_spinner("Starting Rojo...");
+        let pb = output::start_spinner("Starting Azul...");
         let t0 = std::time::Instant::now();
-        let port_str = port.to_string();
         let (mut pm, rx) = ProcessManager::new();
-        let result = pm
-            .spawn(
-                "rojo",
-                "rojo",
-                &["serve", "build.project.json", "--port", &port_str],
-            )
-            .await;
+
+        let mut args: Vec<String> = Vec::new();
+        if rojo_compat {
+            args.push("--rojo".to_string());
+            args.push(format!("--rojo-project={}", rojo_project));
+        }
+
+        let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        let result = pm.spawn("azul", "azul", &args_refs).await;
         pb.finish_and_clear();
         match result {
             Ok(()) => {
-                output::success(&format!("Rojo started ({:.0}ms)", t0.elapsed().as_millis()));
+                output::success(&format!("Azul started ({:.0}ms)", t0.elapsed().as_millis()));
                 (pm, rx)
             }
             Err(e) => {
-                output::error(&format!("Start Rojo failed: {}", e));
+                output::error(&format!("Start Azul failed: {}", e));
                 return Err(e);
             }
         }
@@ -166,13 +149,13 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
         let _ = write!(
             banner,
             "  {}  {}",
-            "ezpm serve".if_supports_color(Stream::Stdout, |t| t.bold()),
+            "ezpm azul".if_supports_color(Stream::Stdout, |t| t.bold()),
             "ready".if_supports_color(Stream::Stdout, |t| t.green())
         );
         output::print_line(&banner);
     }
     output::print_line("");
-    output::info(&format!("Rojo serving on port {}", port));
+    output::info("Azul syncing with Roblox Studio");
     output::info(&format!(
         "Watching {}/ for changes (.lua, .luau, init.meta.json)",
         src
@@ -182,7 +165,7 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
 
     // ── Watch loop ────────────────────────────────────────────────────────────
     let mut failed_files: HashSet<PathBuf> = HashSet::new();
-    let mut rojo_restart_count: u32 = 0;
+    let mut azul_restart_count: u32 = 0;
 
     loop {
         tokio::select! {
@@ -204,7 +187,7 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
                         output::error(&format!("File watcher error: {}", msg));
                         break;
                     }
-                    None => break, // watcher dropped — channel closed
+                    None => break,
                 }
             }
             proc_event = process_rx.recv() => {
@@ -212,8 +195,8 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
                     handle_process_event(
                         evt,
                         &mut process_manager,
-                        &mut rojo_restart_count,
-                        port,
+                        &mut azul_restart_count,
+                        &rojo_project,
                     )
                     .await;
                 }
@@ -225,7 +208,6 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
         }
     }
 
-    // Cleanup after loop exit — kill all processes then release the watcher.
     process_manager.kill_all().await;
     drop(watcher);
 

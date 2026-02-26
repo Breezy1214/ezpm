@@ -94,6 +94,44 @@ fn is_tool_available(tool: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Check if azul is installed by running `azul --version`.
+fn is_azul_installed() -> bool {
+    Command::new("azul")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Check if npm is available by running `npm --version`.
+fn is_npm_available() -> bool {
+    Command::new("npm")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Install azul via npm.
+fn install_azul() -> Result<()> {
+    let pb = output::start_spinner("Installing Azul via npm...");
+
+    let result = Command::new("npm")
+        .args(["install", "-g", "azul"])
+        .output()
+        .context("Failed to run npm install -g azul")?;
+
+    pb.finish_and_clear();
+
+    if result.status.success() {
+        output::success("Azul installed successfully!");
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        anyhow::bail!("npm install -g azul failed: {}", stderr.trim());
+    }
+}
+
 // ─── Public functions ─────────────────────────────────────────────────────────
 
 /// Run `rokit install`, then delegate to `setup_wally_packages`
@@ -137,6 +175,33 @@ pub fn install_tools(src_prefix: &str, aliases: Option<&HashMap<String, String>>
 
     if Path::new("wally.toml").exists() {
         setup_wally_packages(src_prefix, aliases)?;
+    }
+
+    // ── Azul (optional) ──────────────────────────────────────────────────────
+    if !is_azul_installed() {
+        let install_azul_prompt = inquire::Confirm::new(
+            "Would you like to install Azul for two-way Studio sync?",
+        )
+        .with_default(false)
+        .prompt();
+
+        match install_azul_prompt {
+            Ok(true) => {
+                if is_npm_available() {
+                    if let Err(e) = install_azul() {
+                        output::warn(&format!("Azul installation failed: {}", e));
+                    }
+                } else {
+                    output::warn("npm is not available. Install Node.js first, then run: npm install -g azul");
+                }
+            }
+            Ok(false) => {
+                output::info("Skipping Azul installation.");
+            }
+            Err(_) => {
+                // User cancelled
+            }
+        }
     }
 
     output::success("All tools installed successfully!");

@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use ezpm::{
     cli::{AliasCommands, Cli, ColorArg, Commands},
-    commands::{alias, init, install, quality, serve},
+    commands::{alias, azul, init, install, quality, serve},
     config,
     output,
     services::{require_fixer, version},
@@ -184,6 +184,13 @@ fn main() {
                 .build()
                 .expect("failed to build tokio runtime");
             rt.block_on(serve::run(loaded_config, port))
+        }
+        Some(Commands::Azul) => {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("failed to build tokio runtime");
+            rt.block_on(azul::run(loaded_config))
         }
     };
 

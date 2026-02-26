@@ -41,6 +41,9 @@ pub enum Commands {
         port: Option<u16>,
     },
 
+    /// Start Azul two-way sync with DarkLua processing
+    Azul,
+
     /// Initialize a new project
     Init,
 

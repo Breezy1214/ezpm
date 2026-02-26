@@ -8,6 +8,7 @@ use crate::output;
 const MENU_ITEMS: &[(&str, &str)] = &[
     ("init           Create a new EZPM project", "init"),
     ("serve          Start file watcher + DarkLua + Rojo", "serve"),
+    ("azul           Start file watcher + DarkLua + Azul sync", "azul"),
     ("fix-requires   Rewrite require paths to @alias notation", "fix-requires"),
     ("install        Install tools and packages", "install"),
     (
@@ -142,6 +143,13 @@ fn run_command(cmd: &str) -> Result<()> {
                 .build()
                 .context("failed to build tokio runtime")?;
             rt.block_on(crate::commands::serve::run(Some(cfg), None))
+        }
+        "azul" => {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .context("failed to build tokio runtime")?;
+            rt.block_on(crate::commands::azul::run(Some(cfg)))
         }
         _ => {
             output::warn(&format!("Unknown command: {}", cmd));

@@ -10,6 +10,7 @@ pub struct EzpmConfig {
     pub display: Option<DisplayConfig>,
     pub aliases: Option<HashMap<String, String>>,
     pub serve: Option<ServeConfig>,
+    pub azul: Option<AzulConfig>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Default)]
@@ -35,6 +36,14 @@ pub struct DisplayConfig {
 pub struct ServeConfig {
     /// Default port is 34872
     pub port: Option<u16>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Default)]
+pub struct AzulConfig {
+    /// Whether to pass --rojo flag to azul (default: true)
+    pub rojo_compat: Option<bool>,
+    /// Custom rojo project file for azul (default: build.project.json)
+    pub rojo_project: Option<String>,
 }
 
 /// Serialization-only struct for writing ezpm.toml.
