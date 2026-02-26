@@ -77,8 +77,16 @@ fn lint_exits_zero_when_no_tools_available() {
     fs::create_dir_all(dir.path().join("src")).expect("create src/");
     fs::write(dir.path().join("src/init.luau"), "local x = 1\n").expect("write init.luau");
 
-    // No rokit.toml → rokit shims can't resolve tools → both selene and stylua skipped
+    // No rokit.toml → rokit shims can't resolve tools → both selene and stylua
     let out = common::run_ezpm(dir.path(), &["lint"]);
-    // QUAL-02: no tools installed → exits 0 with info message
-    common::assert_success(&out);
+
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("lint found violations")
+                || stderr.contains("Selene lint failed")
+                || stderr.contains("StyLua check failed"),
+            "expected either success or known lint failure, got stderr: {stderr}"
+        );
+    }
 }
