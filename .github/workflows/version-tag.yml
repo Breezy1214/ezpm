@@ -1,0 +1,86 @@
+name: Version Tag
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - Cargo.toml
+
+concurrency:
+  group: version-tag-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  tag-version:
+    name: Create version tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Resolve version tag
+        id: version
+        shell: bash
+        run: |
+          VERSION="$(grep -m1 '^version\s*=\s*"' Cargo.toml | sed -E 's/version\s*=\s*"([^"]+)"/\1/')"
+          if [[ -z "$VERSION" ]]; then
+            echo "Could not resolve package version from Cargo.toml"
+            exit 1
+          fi
+          echo "raw_version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Validate version changed
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          BEFORE_SHA="${{ github.event.before }}"
+          CURRENT_VERSION="${{ steps.version.outputs.raw_version }}"
+
+          if [[ "$BEFORE_SHA" == "0000000000000000000000000000000000000000" ]]; then
+            echo "No previous commit available (initial push); skipping version-change validation."
+            exit 0
+          fi
+
+          PREVIOUS_VERSION="$(git show "${BEFORE_SHA}:Cargo.toml" 2>/dev/null | grep -m1 '^version\s*=\s*"' | sed -E 's/version\s*=\s*"([^"]+)"/\1/' || true)"
+
+          if [[ -z "$PREVIOUS_VERSION" ]]; then
+            echo "Could not determine previous Cargo.toml version; skipping validation."
+            exit 0
+          fi
+
+          if [[ "$PREVIOUS_VERSION" == "$CURRENT_VERSION" ]]; then
+            echo "Cargo.toml changed but package version stayed at ${CURRENT_VERSION}."
+            echo "Please bump [package].version before merging to main."
+            exit 1
+          fi
+
+          echo "Version changed: ${PREVIOUS_VERSION} -> ${CURRENT_VERSION}."
+
+      - name: Check whether tag exists
+        id: check
+        shell: bash
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          if git ls-remote --tags --exit-code origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Tag ${TAG} already exists; skipping creation."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Tag ${TAG} does not exist; creating it."
+          fi
+
+      - name: Create and push tag
+        if: steps.check.outputs.exists == 'false'
+        shell: bash
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag "${TAG}"
+          git push origin "${TAG}"

@@ -5,12 +5,18 @@ on:
     tags:
       - 'v*'
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
     name: Build (${{ matrix.target }})
+    permissions:
+      contents: read
     strategy:
       matrix:
         include:
@@ -42,6 +48,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Resolve version
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          echo "EZPM_VERSION=${VERSION}" >> "$GITHUB_ENV"
+
+      - name: Validate tag matches Cargo.toml version
+        shell: bash
+        run: |
+          TOML_VERSION="$(grep -m1 '^version\s*=\s*"' Cargo.toml | sed -E 's/version\s*=\s*"([^"]+)"/\1/')"
+          if [[ -z "$TOML_VERSION" ]]; then
+            echo "Could not resolve package version from Cargo.toml"
+            exit 1
+          fi
+          if [[ "$TOML_VERSION" != "$EZPM_VERSION" ]]; then
+            echo "Tag version (${EZPM_VERSION}) does not match Cargo.toml version (${TOML_VERSION})."
+            exit 1
+          fi
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -67,8 +92,7 @@ jobs:
       - name: Package (Unix)
         if: matrix.os != 'windows'
         run: |
-          VERSION="${GITHUB_REF#refs/tags/v}"
-          ZIP_NAME="ezpm-${VERSION}-${{ matrix.os }}-${{ matrix.arch }}.zip"
+          ZIP_NAME="ezpm-${EZPM_VERSION}-${{ matrix.os }}-${{ matrix.arch }}.zip"
           cp target/${{ matrix.target }}/release/ezpm ./ezpm
           zip "${ZIP_NAME}" ezpm
           rm ezpm
@@ -77,8 +101,7 @@ jobs:
         if: matrix.os == 'windows'
         shell: pwsh
         run: |
-          $VERSION = "${{ github.ref_name }}".TrimStart('v')
-          $ZIP_NAME = "ezpm-${VERSION}-${{ matrix.os }}-${{ matrix.arch }}.zip"
+          $ZIP_NAME = "ezpm-$env:EZPM_VERSION-${{ matrix.os }}-${{ matrix.arch }}.zip"
           Copy-Item "target/${{ matrix.target }}/release/ezpm.exe" -Destination "ezpm.exe"
           Compress-Archive -Path "ezpm.exe" -DestinationPath $ZIP_NAME
           Remove-Item "ezpm.exe"
@@ -93,6 +116,8 @@ jobs:
     name: Publish Release
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
