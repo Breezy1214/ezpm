@@ -80,7 +80,15 @@ async fn handle_changes(
                 .await;
             }
             FileChange::FileDeleted(path) => {
-                handle_file_deleted(path, src, build, project_dir, is_batch, file_changes_enabled)
+                handle_file_deleted(
+                    path,
+                    src,
+                    build,
+                    aliases,
+                    project_dir,
+                    is_batch,
+                    file_changes_enabled,
+                )
                     .await;
             }
             FileChange::DirectoryCreated(path) => {
@@ -96,7 +104,15 @@ async fn handle_changes(
                 .await;
             }
             FileChange::DirectoryRemoved(path) => {
-                handle_directory_removed(path, src, build, project_dir, is_batch, file_changes_enabled)
+                handle_directory_removed(
+                    path,
+                    src,
+                    build,
+                    aliases,
+                    project_dir,
+                    is_batch,
+                    file_changes_enabled,
+                )
                     .await;
             }
         }
@@ -141,19 +157,54 @@ async fn handle_lua_change(
 ) {
     let t0 = Instant::now();
 
-    // Step 1: Fix require paths — fast in-process, no spawn_blocking needed.
-    if let Err(e) = require_fixer::fix_single_file(path, aliases, src) {
-        output::error(&format!(
-            "{}: require fix failed: {}",
-            display_name(path),
-            e
-        ));
-        failed_files.insert(path.to_path_buf());
-        return;
+    // Step 1: Fix require paths on the entire src tree.
+    let src_clone = src.to_string();
+    let aliases_clone = aliases.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        require_fixer::fix_requires(&PathBuf::from(&src_clone), &aliases_clone, &src_clone)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => {
+            output::error(&format!("{}: require fix failed: {}", display_name(path), e));
+            failed_files.insert(path.to_path_buf());
+            return;
+        }
+        Err(e) => {
+            output::error(&format!(
+                "{}: require fix task panicked: {}",
+                display_name(path),
+                e
+            ));
+            failed_files.insert(path.to_path_buf());
+            return;
+        }
     }
 
-    // Step 2: Compute parent directory paths — match Luau's onFileChanged which
-    // runs `darklua process <parent_dir> <build_parent_dir>`.
+    // Step 2: Regenerate sourcemap.
+    let project_dir_clone = project_dir.to_path_buf();
+    let result = tokio::task::spawn_blocking(move || {
+        sourcemap::generate_sourcemap(&project_dir_clone)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(r)) if r.success => {}
+        Ok(Ok(r)) => {
+            let detail = r.stderr.trim().to_string();
+            output::error(&format!("Sourcemap update failed: {}", detail));
+        }
+        Ok(Err(e)) => {
+            output::error(&format!("Sourcemap update failed: {}", e));
+        }
+        Err(e) => {
+            output::error(&format!("Sourcemap task panicked: {}", e));
+        }
+    }
+
+    // Step 3: Compute parent directory paths
     let src_root = project_dir.join(src);
     let build_root = project_dir.join(build);
     let src_parent = match path.parent() {
@@ -190,7 +241,7 @@ async fn handle_lua_change(
         return;
     }
 
-    // Step 3: Run DarkLua on parent directory via spawn_blocking.
+    // Step 4: Run DarkLua on parent directory via spawn_blocking.
     let darklua_src_parent = path_for_darklua(&src_parent, project_dir);
     let darklua_build_parent = path_for_darklua(&build_parent, project_dir);
 
@@ -203,7 +254,7 @@ async fn handle_lua_change(
 
     match result {
         Ok(Ok(r)) if r.success => {
-            // Step 4: Recovery detection — was this file previously failed?
+            // Step 5: Recovery detection — was this file previously failed?
             let was_failed = failed_files.remove(path);
             if !is_batch && file_changes_enabled {
                 if was_failed {
@@ -299,22 +350,37 @@ async fn handle_file_created(
 ) {
     let t0 = Instant::now();
 
-    // If the created file is Lua/Luau, fix requires first (before sourcemap).
+    // If the created file is Lua/Luau, run parity pipeline.
     let is_lua = matches!(
         path.extension().and_then(|e| e.to_str()),
         Some("lua") | Some("luau")
     );
 
     if is_lua {
-        // Step 1: Fix require paths on the single file.
-        if let Err(e) = require_fixer::fix_single_file(path, aliases, src) {
-            output::error(&format!(
-                "{}: require fix failed: {}",
-                display_name(path),
-                e
-            ));
-            failed_files.insert(path.to_path_buf());
-            return;
+        // Step 1: Fix require paths on entire src tree.
+        let src_clone = src.to_string();
+        let aliases_clone = aliases.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            require_fixer::fix_requires(&PathBuf::from(&src_clone), &aliases_clone, &src_clone)
+        })
+        .await;
+
+        match result {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => {
+                output::error(&format!("{}: require fix failed: {}", display_name(path), e));
+                failed_files.insert(path.to_path_buf());
+                return;
+            }
+            Err(e) => {
+                output::error(&format!(
+                    "{}: require fix task panicked: {}",
+                    display_name(path),
+                    e
+                ));
+                failed_files.insert(path.to_path_buf());
+                return;
+            }
         }
     }
 
@@ -508,11 +574,12 @@ async fn handle_directory_created(
 
 /// Handle a `FileChange::DirectoryRemoved` event.
 ///
-/// Matches Luau's onDirectoryRemoved: sourcemap → remove build directory.
+/// fix requires → sourcemap → remove build directory.
 async fn handle_directory_removed(
     path: &Path,
     src: &str,
     build: &str,
+    aliases: &HashMap<String, String>,
     project_dir: &Path,
     is_batch: bool,
     file_changes_enabled: bool,
@@ -524,7 +591,27 @@ async fn handle_directory_removed(
         .to_string_lossy()
         .to_string();
 
-    // Step 1: Regenerate sourcemap.
+    // Step 1: Fix requires on entire src tree.
+    let src_clone = src.to_string();
+    let aliases_clone = aliases.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        require_fixer::fix_requires(&PathBuf::from(&src_clone), &aliases_clone, &src_clone)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => {
+            output::error(&format!("{}/: require fix failed: {}", dirname, e));
+            return;
+        }
+        Err(e) => {
+            output::error(&format!("{}/: require fix task panicked: {}", dirname, e));
+            return;
+        }
+    }
+
+    // Step 2: Regenerate sourcemap.
     let project_dir_clone = project_dir.to_path_buf();
     let result = tokio::task::spawn_blocking(move || {
         sourcemap::generate_sourcemap(&project_dir_clone)
@@ -549,7 +636,7 @@ async fn handle_directory_removed(
         }
     }
 
-    // Step 2: Remove the corresponding build directory.
+    // Step 3: Remove the corresponding build directory.
     let src_root = project_dir.join(src);
     let build_root = project_dir.join(build);
 
@@ -567,28 +654,38 @@ async fn handle_file_deleted(
     path: &Path,
     src: &str,
     build: &str,
+    aliases: &HashMap<String, String>,
     project_dir: &Path,
     is_batch: bool,
     file_changes_enabled: bool,
 ) {
     let t0 = Instant::now();
 
-    // Delete the corresponding build entry — may be a file or directory.
-    let src_root = project_dir.join(src);
-    let build_root = project_dir.join(build);
-    if let Some(build_path) = src_to_build_path(path, &src_root, &build_root) {
-        if build_path.is_file() {
-            if let Err(e) = std::fs::remove_file(&build_path) {
-                output::error(&format!("failed to delete build file: {}", e));
-            }
-        } else if build_path.is_dir() {
-            if let Err(e) = std::fs::remove_dir_all(&build_path) {
-                output::error(&format!("failed to delete build directory: {}", e));
-            }
+    // Step 1: Fix requires on entire src tree.
+    let src_clone = src.to_string();
+    let aliases_clone = aliases.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        require_fixer::fix_requires(&PathBuf::from(&src_clone), &aliases_clone, &src_clone)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => {
+            output::error(&format!("{}: require fix failed: {}", display_name(path), e));
+            return;
+        }
+        Err(e) => {
+            output::error(&format!(
+                "{}: require fix task panicked: {}",
+                display_name(path),
+                e
+            ));
+            return;
         }
     }
 
-    // Regenerate sourcemap — can take 100-500ms, must use spawn_blocking.
+    // Step 2: Regenerate sourcemap 
     let project_dir_clone = project_dir.to_path_buf();
     let result = tokio::task::spawn_blocking(move || {
         sourcemap::generate_sourcemap(&project_dir_clone)
@@ -610,6 +707,21 @@ async fn handle_file_deleted(
         }
         Err(e) => {
             output::error(&format!("Sourcemap task panicked: {}", e));
+        }
+    }
+
+    // Step 3: Delete the corresponding build entry — may be a file or directory.
+    let src_root = project_dir.join(src);
+    let build_root = project_dir.join(build);
+    if let Some(build_path) = src_to_build_path(path, &src_root, &build_root) {
+        if build_path.is_file() {
+            if let Err(e) = std::fs::remove_file(&build_path) {
+                output::error(&format!("failed to delete build file: {}", e));
+            }
+        } else if build_path.is_dir() {
+            if let Err(e) = std::fs::remove_dir_all(&build_path) {
+                output::error(&format!("failed to delete build directory: {}", e));
+            }
         }
     }
 }
