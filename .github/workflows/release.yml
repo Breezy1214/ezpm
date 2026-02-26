@@ -18,6 +18,7 @@ jobs:
     permissions:
       contents: read
     strategy:
+      fail-fast: false
       matrix:
         include:
           - target: x86_64-unknown-linux-musl
@@ -57,7 +58,7 @@ jobs:
       - name: Validate tag matches Cargo.toml version
         shell: bash
         run: |
-          TOML_VERSION="$(grep -m1 '^version\s*=\s*"' Cargo.toml | sed -E 's/version\s*=\s*"([^"]+)"/\1/')"
+          TOML_VERSION="$(grep -m1 '^version\s*=\s*"' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')"
           if [[ -z "$TOML_VERSION" ]]; then
             echo "Could not resolve package version from Cargo.toml"
             exit 1
