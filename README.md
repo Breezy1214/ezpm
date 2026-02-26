@@ -2,7 +2,7 @@
 
 A CLI build tool for Roblox projects that handles the tedious parts of the development pipeline (path aliasing, require path correction, DarkLua transformation, and Rojo live sync) so you can write Luau and not think about build plumbing.
 
-ezpm is written in Luau, runs on [Lune](https://lune-org.github.io/docs), and compiles to standalone binaries for Linux, macOS, and Windows.
+ezpm is written in Rust and ships as a single native CLI binary for Linux, macOS, and Windows.
 
 ## Key Features
 
@@ -15,6 +15,8 @@ ezpm is written in Luau, runs on [Lune](https://lune-org.github.io/docs), and co
 
 ## Installation
 
+### Option 1 (recommended): install via Rokit
+
 Requires [Rokit](https://github.com/rojo-rbx/rokit).
 
 ```bash
@@ -25,19 +27,45 @@ To update to the latest version:
 
 ```bash
 rokit update ezpm
+rokit install
 ```
 
-### Manual installation
+### Option 2: install from source with Cargo
 
-**From release binaries** — Download a prebuilt binary from [Releases](https://github.com/Breezy1214/sync/releases) for your platform (Linux, macOS, or Windows — x86_64 and aarch64). Extract and place `ezpm` on your PATH.
-
-**From source:**
+Requires Rust stable (`cargo` in your PATH).
 
 ```bash
 git clone https://github.com/Breezy1214/ezpm.git
 cd ezpm
-rokit install      # installs Lune, Rojo, DarkLua, Wally, etc.
-lune run ezpm      # launches the interactive menu
+cargo install --path .
+```
+
+Run from anywhere after install:
+
+```bash
+ezpm
+```
+
+Or run without installing globally:
+
+```bash
+cargo run --
+```
+
+### Manual installation
+
+**From release binaries** — Download a prebuilt binary from [Releases](https://github.com/Breezy1214/ezpm/releases) for your platform (Linux, macOS, or Windows — x86_64 and aarch64). Extract and place `ezpm` on your PATH.
+
+**From source (development workflow):**
+
+```bash
+git clone https://github.com/Breezy1214/ezpm.git
+cd ezpm
+cargo build --release
+# macOS/Linux
+./target/release/ezpm
+# Windows (PowerShell)
+.\target\release\ezpm.exe
 ```
 
 ## Quick Start
@@ -73,6 +101,7 @@ ezpm init             Scaffold project and generate ezpm.toml
 ezpm alias add        Add a path alias
 ezpm alias remove     Remove a path alias
 ezpm alias list       List configured aliases
+ezpm alias sync       Reload aliases from ezpm.toml and regenerate configs
 ezpm docs             Moonwave documentation server
 ezpm help             Print usage
 ```
@@ -101,6 +130,8 @@ darklua_build = "darklua_build"
 [display]
 file_changes = true
 docs_enabled = false
+logs_enabled = true
+check_updates = true
 
 [aliases]
 Client = "src/client/"
@@ -118,7 +149,10 @@ Aliases are the core mechanism for clean require paths. Define them under `[alia
 ezpm alias add       # interactive prompt for name and path
 ezpm alias remove    # select from existing aliases
 ezpm alias list      # display current aliases
+ezpm alias sync      # reload aliases from ezpm.toml and regenerate .darklua.json / .luaurc
 ```
+
+Use `alias sync` after manually editing aliases in `ezpm.toml` to regenerate the config files without re-running `init`.
 
 ### Toolchain
 
@@ -126,7 +160,6 @@ Tools are managed via [Rokit](https://github.com/rojo-rbx/rokit) and pinned in `
 
 | Tool | Purpose |
 |------|---------|
-| [Lune](https://github.com/lune-org/lune) | Luau runtime (runs ezpm itself) |
 | [Rojo](https://github.com/rojo-rbx/rojo) | Studio sync |
 | [DarkLua](https://github.com/seaofvoices/darklua) | Require path transformation and Lua optimization |
 | [Wally](https://github.com/UpliftGames/wally) | Package manager |
@@ -135,16 +168,15 @@ Tools are managed via [Rokit](https://github.com/rojo-rbx/rokit) and pinned in `
 
 ## Limitations
 
-- **Polling-based file watcher.** File change detection uses a 1-second polling interval, not OS-level filesystem events. Changes are picked up reliably but not instantly.
 - **No relative require paths.** The require fixer does not support `./` or `../` paths. All requires must use `@alias/` notation or absolute source paths.
-- **Rojo port is hardcoded.** The dev server uses Rojo's default port (34872). Running multiple instances simultaneously requires manual port management.
+- **Project file requirement.** `ezpm serve` expects `default.project.json` in the project root; run `ezpm init` first if it's missing.
 - **DarkLua is required.** The build pipeline assumes DarkLua for path transformation. There is no bypass for projects that don't need it.
-- **Early stage.** The project is at v0.1.0. APIs and config format may change.
+- **Early stage.** The project is at v0.2.0. APIs and config format may still change.
 
 ## Contributing
 
-Contributions are welcome. All source lives in `src/`. The entrypoint is `src/init.luau`.
+Contributions are welcome. Rust source lives in `src/` and the CLI entrypoint is `src/main.rs`.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE.md) file for details.
+This project is licensed under the MIT License - see [LICENSE](LICENSE) for details.
