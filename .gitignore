@@ -13,4 +13,5 @@ default.project.json
 rokit.toml
 ezpm.toml
 darklua_build
-CLAUDE.md
+benches/luau_bench.luau
+benches/rust_bench.rs

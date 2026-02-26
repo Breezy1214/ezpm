@@ -32,5 +32,9 @@ tokio-util = { version = "0.7", features = ["rt"] }
 nix = { version = "0.31", features = ["signal"] }
 notify-debouncer-full = "0.7"
 
+[[bench]]
+name = "rust_bench"
+harness = false
+
 [dev-dependencies]
 tempfile = "3"
