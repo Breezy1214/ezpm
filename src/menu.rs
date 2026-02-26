@@ -24,13 +24,7 @@ const MENU_ITEMS: &[(&str, &str)] = &[
 // ─── ASCII logo ───────────────────────────────────────────────────────────────
 fn print_logo(version: &str) {
     println!();
-    println!("{}", "  ███████╗███████╗██████╗ ███╗   ███╗".if_supports_color(Stream::Stdout, |t| t.cyan()));
-    println!("{}", "  ██╔════╝╚══███╔╝██╔══██╗████╗ ████║".if_supports_color(Stream::Stdout, |t| t.cyan()));
-    println!("{}", "  █████╗    ███╔╝ ██████╔╝██╔████╔██║".if_supports_color(Stream::Stdout, |t| t.cyan()));
-    println!("{}", "  ██╔══╝   ███╔╝  ██╔═══╝ ██║╚██╔╝██║".if_supports_color(Stream::Stdout, |t| t.cyan()));
-    println!("{}", "  ███████╗███████╗██║     ██║ ╚═╝ ██║".if_supports_color(Stream::Stdout, |t| t.cyan()));
-    println!("{}", "  ╚══════╝╚══════╝╚═╝     ╚═╝     ╚═╝".if_supports_color(Stream::Stdout, |t| t.cyan()));
-    println!("{}", format!("                              v{}", version).if_supports_color(Stream::Stdout, |t| t.cyan()));
+    println!("{}", format!("EZPM v{}", version).if_supports_color(Stream::Stdout, |t| t.cyan()));
     println!();
 }
 
