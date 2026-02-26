@@ -97,7 +97,7 @@ fn is_tool_available(tool: &str) -> bool {
 // ─── Public functions ─────────────────────────────────────────────────────────
 
 /// Run `rokit install`, then delegate to `setup_wally_packages`
-pub fn install_tools(src_prefix: &str) -> Result<()> {
+pub fn install_tools(src_prefix: &str, aliases: Option<&HashMap<String, String>>) -> Result<()> {
     ensure_required_tools()?;
 
     let pb = output::start_spinner("Installing development tools...");
@@ -136,7 +136,7 @@ pub fn install_tools(src_prefix: &str) -> Result<()> {
     output::success("Rokit tools installed.");
 
     if Path::new("wally.toml").exists() {
-        setup_wally_packages(src_prefix, None)?;
+        setup_wally_packages(src_prefix, aliases)?;
     }
 
     output::success("All tools installed successfully!");

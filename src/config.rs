@@ -99,6 +99,70 @@ pub fn save_ezpm_toml(
     Ok(())
 }
 
+/// Update only the `[aliases]` table in `ezpm.toml`, preserving all other
+pub fn save_aliases_preserving_config(
+    dir: &Path,
+    project_name: &str,
+    src_dir: &str,
+    darklua_build: &str,
+    aliases: &HashMap<String, String>,
+) -> Result<()> {
+    let toml_path = dir.join("ezpm.toml");
+
+    if !toml_path.exists() {
+        return save_ezpm_toml(dir, project_name, src_dir, darklua_build, aliases);
+    }
+
+    let contents = std::fs::read_to_string(&toml_path)
+        .map_err(|e| anyhow::anyhow!("Failed to read ezpm.toml: {}", e))?;
+
+    let mut root: toml::Value = toml::from_str(&contents)
+        .map_err(|e| anyhow::anyhow!("Failed to parse ezpm.toml: {}", e))?;
+
+    if !root.is_table() {
+        root = toml::Value::Table(toml::map::Map::new());
+    }
+
+    let root_table = root
+        .as_table_mut()
+        .expect("root must be a TOML table after normalization");
+
+    if !root_table.contains_key("project") {
+        let mut project_table = toml::map::Map::new();
+        project_table.insert(
+            "name".to_string(),
+            toml::Value::String(project_name.to_string()),
+        );
+        root_table.insert("project".to_string(), toml::Value::Table(project_table));
+    }
+
+    if !root_table.contains_key("paths") {
+        let mut paths_table = toml::map::Map::new();
+        paths_table.insert("src".to_string(), toml::Value::String(src_dir.to_string()));
+        paths_table.insert(
+            "darklua_build".to_string(),
+            toml::Value::String(darklua_build.to_string()),
+        );
+        root_table.insert("paths".to_string(), toml::Value::Table(paths_table));
+    }
+
+    let mut aliases_table = toml::map::Map::new();
+    let mut sorted_aliases: Vec<(&String, &String)> = aliases.iter().collect();
+    sorted_aliases.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+    for (name, path) in sorted_aliases {
+        aliases_table.insert(name.clone(), toml::Value::String(path.clone()));
+    }
+
+    root_table.insert("aliases".to_string(), toml::Value::Table(aliases_table));
+
+    let toml_str = toml::to_string_pretty(&root)
+        .map_err(|e| anyhow::anyhow!("Failed to serialize ezpm.toml: {}", e))?;
+    std::fs::write(toml_path, toml_str)?;
+
+    Ok(())
+}
+
 /// Parse an ezpm.toml string, returning the config and any warnings about unknown fields.
 pub fn load_config_from_str(input: &str) -> Result<(EzpmConfig, Vec<String>)> {
     if input.trim().is_empty() {

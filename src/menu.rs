@@ -104,7 +104,7 @@ fn run_command(cmd: &str) -> Result<()> {
 
     match cmd {
         "init" => crate::commands::init::run_init(),
-        "install" => crate::commands::install::install_tools(src),
+        "install" => crate::commands::install::install_tools(src, cfg.aliases.as_ref()),
         "setup-wally-packages" => crate::commands::install::setup_wally_packages(src, cfg.aliases.as_ref()),
         "alias-menu" => crate::commands::alias::alias_menu(),
         "lint" => crate::commands::quality::lint(src),

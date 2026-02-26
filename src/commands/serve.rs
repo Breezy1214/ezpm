@@ -43,6 +43,7 @@ async fn handle_changes(
     aliases: &HashMap<String, String>,
     project_dir: &Path,
     failed_files: &mut HashSet<PathBuf>,
+    file_changes_enabled: bool,
 ) {
     let t0 = Instant::now();
     let is_batch = changes.len() > 1;
@@ -50,27 +51,58 @@ async fn handle_changes(
     for change in changes {
         match change {
             FileChange::LuaChange(path) => {
-                handle_lua_change(path, src, build, aliases, project_dir, failed_files, is_batch).await;
+                handle_lua_change(
+                    path,
+                    src,
+                    build,
+                    aliases,
+                    project_dir,
+                    failed_files,
+                    is_batch,
+                    file_changes_enabled,
+                )
+                .await;
             }
             FileChange::MetaChange(path) => {
-                handle_meta_change(path, src, build, is_batch).await;
+                handle_meta_change(path, src, build, is_batch, file_changes_enabled).await;
             }
             FileChange::FileCreated(path) => {
-                handle_file_created(path, src, build, aliases, project_dir, failed_files, is_batch).await;
+                handle_file_created(
+                    path,
+                    src,
+                    build,
+                    aliases,
+                    project_dir,
+                    failed_files,
+                    is_batch,
+                    file_changes_enabled,
+                )
+                .await;
             }
             FileChange::FileDeleted(path) => {
-                handle_file_deleted(path, src, build, project_dir, is_batch).await;
+                handle_file_deleted(path, src, build, project_dir, is_batch, file_changes_enabled)
+                    .await;
             }
             FileChange::DirectoryCreated(path) => {
-                handle_directory_created(path, src, build, aliases, project_dir, is_batch).await;
+                handle_directory_created(
+                    path,
+                    src,
+                    build,
+                    aliases,
+                    project_dir,
+                    is_batch,
+                    file_changes_enabled,
+                )
+                .await;
             }
             FileChange::DirectoryRemoved(path) => {
-                handle_directory_removed(path, src, build, project_dir, is_batch).await;
+                handle_directory_removed(path, src, build, project_dir, is_batch, file_changes_enabled)
+                    .await;
             }
         }
     }
 
-    if is_batch {
+    if is_batch && file_changes_enabled {
         output::success(&format!(
             "Rebuilt {} files ({}ms)",
             changes.len(),
@@ -105,6 +137,7 @@ async fn handle_lua_change(
     project_dir: &Path,
     failed_files: &mut HashSet<PathBuf>,
     is_batch: bool,
+    file_changes_enabled: bool,
 ) {
     let t0 = Instant::now();
 
@@ -158,8 +191,11 @@ async fn handle_lua_change(
     }
 
     // Step 3: Run DarkLua on parent directory via spawn_blocking.
+    let darklua_src_parent = path_for_darklua(&src_parent, project_dir);
+    let darklua_build_parent = path_for_darklua(&build_parent, project_dir);
+
     let result = tokio::task::spawn_blocking(move || {
-        darklua_runner::process_tree(&src_parent, &build_parent)
+        darklua_runner::process_tree(&darklua_src_parent, &darklua_build_parent)
     })
     .await;
 
@@ -169,7 +205,7 @@ async fn handle_lua_change(
         Ok(Ok(r)) if r.success => {
             // Step 4: Recovery detection — was this file previously failed?
             let was_failed = failed_files.remove(path);
-            if !is_batch {
+            if !is_batch && file_changes_enabled {
                 if was_failed {
                     output::success(&format!("{} fixed ({}ms)", filename, t0.elapsed().as_millis()));
                 } else {
@@ -197,7 +233,13 @@ async fn handle_lua_change(
 }
 
 /// Handle a `FileChange::MetaChange` event — copy the single meta file to build.
-async fn handle_meta_change(path: &Path, src: &str, build: &str, is_batch: bool) {
+async fn handle_meta_change(
+    path: &Path,
+    src: &str,
+    build: &str,
+    is_batch: bool,
+    file_changes_enabled: bool,
+) {
     let project_dir = match std::env::current_dir() {
         Ok(d) => d,
         Err(e) => {
@@ -232,7 +274,7 @@ async fn handle_meta_change(path: &Path, src: &str, build: &str, is_batch: bool)
 
     match std::fs::copy(path, &build_dest) {
         Ok(_) => {
-            if !is_batch {
+            if !is_batch && file_changes_enabled {
                 output::success(&format!("Copied {}", filename));
             }
         }
@@ -253,6 +295,7 @@ async fn handle_file_created(
     project_dir: &Path,
     failed_files: &mut HashSet<PathBuf>,
     is_batch: bool,
+    file_changes_enabled: bool,
 ) {
     let t0 = Instant::now();
 
@@ -284,7 +327,7 @@ async fn handle_file_created(
 
     match result {
         Ok(Ok(r)) if r.success => {
-            if !is_batch {
+            if !is_batch && file_changes_enabled {
                 output::success(&format!("Sourcemap updated ({}ms)", t0.elapsed().as_millis()));
             }
         }
@@ -324,9 +367,10 @@ async fn handle_file_created(
             return;
         }
 
-        let src_file = path.to_path_buf();
+        let src_file = path_for_darklua(path, project_dir);
+        let darklua_build_parent = path_for_darklua(&build_parent, project_dir);
         let result = tokio::task::spawn_blocking(move || {
-            darklua_runner::process_file(&src_file, &build_parent)
+            darklua_runner::process_file(&src_file, &darklua_build_parent)
         })
         .await;
 
@@ -334,7 +378,7 @@ async fn handle_file_created(
         match result {
             Ok(Ok(r)) if r.success => {
                 failed_files.remove(path);
-                if !is_batch {
+                if !is_batch && file_changes_enabled {
                     output::success(&format!("Rebuilt {} ({}ms)", filename, t0.elapsed().as_millis()));
                 }
             }
@@ -365,6 +409,7 @@ async fn handle_directory_created(
     aliases: &HashMap<String, String>,
     project_dir: &Path,
     is_batch: bool,
+    file_changes_enabled: bool,
 ) {
     let t0 = Instant::now();
     let dirname = path
@@ -435,15 +480,16 @@ async fn handle_directory_created(
         return;
     }
 
-    let src_dir = path.to_path_buf();
+    let src_dir = path_for_darklua(path, project_dir);
+    let darklua_build_dir = path_for_darklua(&build_dir, project_dir);
     let result = tokio::task::spawn_blocking(move || {
-        darklua_runner::process_tree(&src_dir, &build_dir)
+        darklua_runner::process_tree(&src_dir, &darklua_build_dir)
     })
     .await;
 
     match result {
         Ok(Ok(r)) if r.success => {
-            if !is_batch {
+            if !is_batch && file_changes_enabled {
                 output::success(&format!("Rebuilt {}/ ({}ms)", dirname, t0.elapsed().as_millis()));
             }
         }
@@ -469,6 +515,7 @@ async fn handle_directory_removed(
     build: &str,
     project_dir: &Path,
     is_batch: bool,
+    file_changes_enabled: bool,
 ) {
     let t0 = Instant::now();
     let dirname = path
@@ -486,7 +533,7 @@ async fn handle_directory_removed(
 
     match result {
         Ok(Ok(r)) if r.success => {
-            if !is_batch {
+            if !is_batch && file_changes_enabled {
                 output::success(&format!("Sourcemap updated ({}ms)", t0.elapsed().as_millis()));
             }
         }
@@ -522,6 +569,7 @@ async fn handle_file_deleted(
     build: &str,
     project_dir: &Path,
     is_batch: bool,
+    file_changes_enabled: bool,
 ) {
     let t0 = Instant::now();
 
@@ -549,7 +597,7 @@ async fn handle_file_deleted(
 
     match result {
         Ok(Ok(r)) if r.success => {
-            if !is_batch {
+            if !is_batch && file_changes_enabled {
                 output::success(&format!("Sourcemap updated ({}ms)", t0.elapsed().as_millis()));
             }
         }
@@ -622,6 +670,11 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
         .unwrap_or("darklua_build")
         .to_string();
     let aliases: HashMap<String, String> = config.aliases.clone().unwrap_or_default();
+    let file_changes_enabled = config
+        .display
+        .as_ref()
+        .and_then(|d| d.file_changes)
+        .unwrap_or(true);
 
     // Port resolution: CLI flag > ezpm.toml serve.port > default 34872.
     let port: u16 = cli_port
@@ -736,8 +789,8 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
     {
         let pb = output::start_spinner("Running DarkLua...");
         let t0 = Instant::now();
-        let src_path_clone = src_path.clone();
-        let build_path_clone = build_path.clone();
+        let src_path_clone = PathBuf::from(&src);
+        let build_path_clone = PathBuf::from(&build);
         let result = tokio::task::spawn_blocking(move || {
             darklua_runner::process_tree_with_retry(&src_path_clone, &build_path_clone)
         })
@@ -877,6 +930,7 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
                             &aliases,
                             &project_dir,
                             &mut failed_files,
+                            file_changes_enabled,
                         )
                         .await;
                     }
@@ -924,3 +978,10 @@ pub(crate) fn src_to_build_path(
         .ok()
         .map(|rel| build_root.join(rel))
 }
+
+    fn path_for_darklua(path: &Path, project_dir: &Path) -> PathBuf {
+        path
+            .strip_prefix(project_dir)
+            .unwrap_or(path)
+            .to_path_buf()
+    }

@@ -103,7 +103,13 @@ pub fn alias_add() -> Result<()> {
         .unwrap_or("darklua_build")
         .to_string();
 
-    config::save_ezpm_toml(Path::new("."), &project_name, &src_dir, &darklua_build, &aliases)?;
+    config::save_aliases_preserving_config(
+        Path::new("."),
+        &project_name,
+        &src_dir,
+        &darklua_build,
+        &aliases,
+    )?;
 
     // Auto-regenerate .darklua.json and .luaurc
     config_gen::write_config_files(Path::new("."), &aliases)?;
@@ -187,7 +193,13 @@ pub fn alias_remove() -> Result<()> {
         .unwrap_or("darklua_build")
         .to_string();
 
-    config::save_ezpm_toml(Path::new("."), &project_name, &src_dir, &darklua_build, &aliases)?;
+    config::save_aliases_preserving_config(
+        Path::new("."),
+        &project_name,
+        &src_dir,
+        &darklua_build,
+        &aliases,
+    )?;
 
     // Auto-regenerate .darklua.json and .luaurc
     config_gen::write_config_files(Path::new("."), &aliases)?;

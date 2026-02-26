@@ -163,18 +163,20 @@ pub fn run_init() -> Result<()> {
         })
         .collect();
 
-    // ── Step 9: Create scaffolding directories for src aliases ────────────────
-    let src_prefix = format!("{}/", src_dir);
+    // ── Step 9: Create scaffolding directories
+    if !Path::new(&src_dir).exists() {
+        std::fs::create_dir_all(&src_dir)
+            .with_context(|| format!("Failed to create directory: {}", src_dir))?;
+        output::success(&format!("Created directory: {}", src_dir));
+    }
+
     for alias_path in aliases.values() {
-        if alias_path.starts_with(&src_prefix) {
-            // Strip trailing slash for directory creation
-            let dir_path = alias_path.trim_end_matches('/');
-            let path = Path::new(dir_path);
-            if !path.exists() {
-                std::fs::create_dir_all(path)
-                    .with_context(|| format!("Failed to create directory: {}", dir_path))?;
-                output::success(&format!("Created directory: {}", dir_path));
-            }
+        let dir_path = alias_path.trim_end_matches('/');
+        let path = Path::new(dir_path);
+        if !path.exists() {
+            std::fs::create_dir_all(path)
+                .with_context(|| format!("Failed to create directory: {}", dir_path))?;
+            output::success(&format!("Created directory: {}", dir_path));
         }
     }
 

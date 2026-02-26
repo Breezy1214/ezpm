@@ -47,9 +47,20 @@ fn print_version_footer(rx: &mpsc::Receiver<Option<String>>, current_ver: &str) 
 fn main() {
     let cli = Cli::parse();
 
+    let loaded_config_result = config::load_config();
+
+    let logs_enabled = loaded_config_result
+        .as_ref()
+        .ok()
+        .and_then(|(cfg, _)| cfg.display.as_ref())
+        .and_then(|d| d.logs_enabled)
+        .unwrap_or(true);
+
+    let effective_quiet = cli.quiet || (!logs_enabled && !cli.verbose);
+
     output::init(
         cli.verbose,
-        cli.quiet,
+        effective_quiet,
         match cli.color {
             ColorArg::Auto => output::ColorChoice::Auto,
             ColorArg::Always => output::ColorChoice::Always,
@@ -58,7 +69,7 @@ fn main() {
     );
 
     // Load config at startup; print any warnings to stderr
-    let loaded_config = match config::load_config() {
+    let loaded_config = match loaded_config_result {
         Ok((cfg, warnings)) => {
             for w in &warnings {
                 output::warn(w);
@@ -89,7 +100,7 @@ fn main() {
         });
     }
 
-    // ── Command dispatch (CLI-02) ─────────────────────────────────────────────
+    // ── Command dispatch ─────────────────────────────────────────────
     let src = loaded_config
         .as_ref()
         .and_then(|c| c.paths.as_ref())
@@ -104,7 +115,10 @@ fn main() {
             Ok(())
         }
         Some(Commands::Init) => init::run_init(),
-        Some(Commands::Install) => install::install_tools(&src),
+        Some(Commands::Install) => {
+            let aliases = loaded_config.as_ref().and_then(|c| c.aliases.as_ref());
+            install::install_tools(&src, aliases)
+        }
         Some(Commands::SetupWallyPackages) => {
             let aliases = loaded_config.as_ref().and_then(|c| c.aliases.as_ref());
             install::setup_wally_packages(&src, aliases)
