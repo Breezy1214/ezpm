@@ -157,30 +157,15 @@ async fn handle_lua_change(
 ) {
     let t0 = Instant::now();
 
-    // Step 1: Fix require paths on the entire src tree.
-    let src_clone = src.to_string();
-    let aliases_clone = aliases.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        require_fixer::fix_requires(&PathBuf::from(&src_clone), &aliases_clone, &src_clone)
-    })
-    .await;
-
-    match result {
-        Ok(Ok(_)) => {}
-        Ok(Err(e)) => {
-            output::error(&format!("{}: require fix failed: {}", display_name(path), e));
-            failed_files.insert(path.to_path_buf());
-            return;
-        }
-        Err(e) => {
-            output::error(&format!(
-                "{}: require fix task panicked: {}",
-                display_name(path),
-                e
-            ));
-            failed_files.insert(path.to_path_buf());
-            return;
-        }
+    // Step 1: Fix require paths for the changed file only
+    if let Err(e) = require_fixer::fix_single_file(path, aliases, src) {
+        output::error(&format!(
+            "{}: require fix failed: {}",
+            display_name(path),
+            e
+        ));
+        failed_files.insert(path.to_path_buf());
+        return;
     }
 
     // Step 2: Regenerate sourcemap.
@@ -350,37 +335,22 @@ async fn handle_file_created(
 ) {
     let t0 = Instant::now();
 
-    // If the created file is Lua/Luau, run parity pipeline.
+    // If the created file is Lua/Luau, run hybrid pipeline.
     let is_lua = matches!(
         path.extension().and_then(|e| e.to_str()),
         Some("lua") | Some("luau")
     );
 
     if is_lua {
-        // Step 1: Fix require paths on entire src tree.
-        let src_clone = src.to_string();
-        let aliases_clone = aliases.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            require_fixer::fix_requires(&PathBuf::from(&src_clone), &aliases_clone, &src_clone)
-        })
-        .await;
-
-        match result {
-            Ok(Ok(_)) => {}
-            Ok(Err(e)) => {
-                output::error(&format!("{}: require fix failed: {}", display_name(path), e));
-                failed_files.insert(path.to_path_buf());
-                return;
-            }
-            Err(e) => {
-                output::error(&format!(
-                    "{}: require fix task panicked: {}",
-                    display_name(path),
-                    e
-                ));
-                failed_files.insert(path.to_path_buf());
-                return;
-            }
+        // Step 1: Fix require paths on the created file only
+        if let Err(e) = require_fixer::fix_single_file(path, aliases, src) {
+            output::error(&format!(
+                "{}: require fix failed: {}",
+                display_name(path),
+                e
+            ));
+            failed_files.insert(path.to_path_buf());
+            return;
         }
     }
 
