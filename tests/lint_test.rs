@@ -1,11 +1,4 @@
 // Integration tests for `ezpm lint` command.
-//
-// NOTE: `ezpm lint` runs both Selene and StyLua --check. In this environment,
-// the rokit.toml provides StyLua (used for both lint and format). If Selene is
-// not installed, the lint command skips it gracefully and only StyLua runs.
-//
-// Tests verify exit codes and graceful skip behavior.
-// Does NOT assert on specific stdout/stderr text (locked decision).
 
 mod common;
 
@@ -14,17 +7,11 @@ use std::fs;
 // ─── Happy path ───────────────────────────────────────────────────────────────
 
 /// `ezpm lint` exits 0 when src/ contains clean, properly formatted .luau files.
-///
-/// Clean code passes StyLua's formatting check. If Selene is installed, it must
-/// also find no violations. The test verifies the happy-path exit 0 contract.
 #[test]
 fn lint_exits_zero_on_clean_code() {
     let dir = common::create_project();
 
-    // Overwrite init.luau with a file that is both stylua-formatted and
-    // selene-clean (no unused variables, no warnings). The default
-    // create_project() skeleton has `local util = require(...)` which selene
-    // flags as unused_variable when selene is installed via rokit.toml.
+   
     fs::write(
         dir.path().join("src/client/init.luau"),
         "return {}\n",
@@ -38,9 +25,6 @@ fn lint_exits_zero_on_clean_code() {
 // ─── Exit code contracts (ERR-02) ────────────────────────────────────────────
 
 /// `ezpm lint` exits non-zero when src/ contains formatting violations.
-///
-/// The StyLua --check component of `lint` detects unformatted files and exits
-/// non-zero (ERR-02 contract). Selene may be skipped gracefully if not installed.
 #[test]
 fn lint_exits_nonzero_on_formatting_violations() {
     let dir = common::create_project();
@@ -59,10 +43,7 @@ fn lint_exits_nonzero_on_formatting_violations() {
 
 /// `ezpm lint` exits 0 when no linting tools are installed.
 ///
-/// If neither Selene nor StyLua is available, lint gracefully skips both
-/// and exits 0 (QUAL-02: skip gracefully when tools not installed).
-/// This test verifies the skip path by running lint in a TempDir without a
-/// rokit.toml — rokit shims fail, so is_tool_available() returns false for all.
+
 #[test]
 fn lint_exits_zero_when_no_tools_available() {
     use tempfile::TempDir;
