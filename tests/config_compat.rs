@@ -16,8 +16,7 @@ fn make_temp_dir(files: &[(&str, &str)]) -> TempDir {
 
 #[test]
 fn luau_format_ezpm_toml_loads_without_error() {
-    // Read the actual project ezpm.toml
-    let contents = fs::read_to_string("ezpm.toml").expect("ezpm.toml must exist in project root");
+    let contents = include_str!("fixtures/ezpm.toml");
 
     let (config, warnings) = load_config_from_str(&contents).expect("should parse without error");
 

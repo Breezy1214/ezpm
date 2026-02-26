@@ -97,20 +97,28 @@ Packages = "Packages/"
 }
 
 // ─── Command runner ───────────────────────────────────────────────────────────
-
-/// Spawn `ezpm <args>` with `cwd` set to `project_dir`.
-///
-/// - Sets `EZPM_NO_UPDATE_CHECK=1` to suppress background version check noise.
-/// - Captures stdout and stderr.
-/// - Does NOT panic on non-zero exit — returns the full `Output` for callers to
-///   assert on.
 pub fn run_ezpm(project_dir: &Path, args: &[&str]) -> Output {
-    Command::new(ezpm_bin())
+    run_ezpm_with_env(project_dir, args, std::iter::empty::<(&str, &str)>())
+}
+
+/// Spawn `ezpm <args>` with `cwd` set to `project_dir` and extra env vars.
+pub fn run_ezpm_with_env<I, K, V>(project_dir: &Path, args: &[&str], extra_env: I) -> Output
+where
+    I: IntoIterator<Item = (K, V)>,
+    K: AsRef<std::ffi::OsStr>,
+    V: AsRef<std::ffi::OsStr>,
+{
+    let mut cmd = Command::new(ezpm_bin());
+    cmd
         .args(args)
         .current_dir(project_dir)
-        .env("EZPM_NO_UPDATE_CHECK", "1")
-        .output()
-        .expect("failed to spawn ezpm binary")
+        .env("EZPM_NO_UPDATE_CHECK", "1");
+
+    for (key, value) in extra_env {
+        cmd.env(key, value);
+    }
+
+    cmd.output().expect("failed to spawn ezpm binary")
 }
 
 // ─── Assertion helpers ────────────────────────────────────────────────────────
@@ -134,9 +142,6 @@ pub fn assert_success(output: &Output) {
 }
 
 /// Assert that `output` has a non-zero exit code.
-///
-/// On failure (command exited 0 when it should have failed), prints captured
-/// stdout and stderr before panicking.
 pub fn assert_failure(output: &Output) {
     if output.status.success() {
         eprintln!(
