@@ -9,7 +9,7 @@ use ezpm::{
     commands::{alias, init, install, quality, serve},
     config,
     output,
-    services::{require_fixer, version},
+    services::{require_fixer, selene, version},
 };
 
 // ─── Version check ────────────────────────────────────────────────────────────
@@ -99,6 +99,8 @@ fn main() {
             let _ = tx.send(fetch_latest_version());
         });
     }
+
+    selene::generate_selene_roblox_std();
 
     // ── Command dispatch ─────────────────────────────────────────────
     let src = loaded_config

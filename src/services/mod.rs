@@ -4,5 +4,6 @@ pub mod file_watcher;
 pub mod meta_copier;
 pub mod process_manager;
 pub mod require_fixer;
+pub mod selene;
 pub mod sourcemap;
 pub mod version;
