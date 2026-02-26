@@ -1,6 +1,6 @@
 [package]
 name = "ezpm"
-version = "0.2.0"
+version = "0.1.99"
 edition = "2021"
 description = "Roblox project manager"
 license = "MIT"
