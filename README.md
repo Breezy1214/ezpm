@@ -133,6 +133,10 @@ docs_enabled = false
 logs_enabled = true
 check_updates = true
 
+[serve]
+port = 34872
+require_fix_mode = "hybrid" # strict | hybrid | fast
+
 [aliases]
 Client = "src/client/"
 Server = "src/server/"
@@ -140,6 +144,14 @@ Shared = "src/shared/"
 Packages = "Packages/"
 ServerPackages = "ServerPackages/"
 ```
+
+`require_fix_mode` controls how aggressively `ezpm serve` rewrites `require()` paths during file watching:
+
+- `strict` — Maximum correctness/parity. Runs full-tree require fixing for Lua file changes/creates and directory create/remove + file delete events.
+- `hybrid` — Balanced default. Uses single-file fixing for Lua changes/creates, and full-tree fixing for file delete + directory remove events.
+- `fast` — Maximum performance. Uses single-file fixing for Lua changes/creates and skips full-tree fixing on delete/remove/create directory events.
+
+If unsure, keep `hybrid`.
 
 ### Aliases
 

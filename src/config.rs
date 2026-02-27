@@ -35,6 +35,22 @@ pub struct DisplayConfig {
 pub struct ServeConfig {
     /// Default port is 34872
     pub port: Option<u16>,
+    /// strict | hybrid | fast (default: hybrid)
+    pub require_fix_mode: Option<RequireFixMode>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum RequireFixMode {
+    Strict,
+    Hybrid,
+    Fast,
+}
+
+impl Default for RequireFixMode {
+    fn default() -> Self {
+        Self::Hybrid
+    }
 }
 
 /// Serialization-only struct for writing ezpm.toml.
@@ -92,7 +108,10 @@ pub fn save_ezpm_toml(
             logs_enabled: true,
             check_updates: true,
         },
-        aliases: aliases.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+        aliases: aliases
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
     };
 
     let toml_str = toml::to_string_pretty(&output)
@@ -294,8 +313,8 @@ mod tests {
         save_ezpm_toml(dir.path(), "test-project", "src", "darklua_build", &aliases)
             .expect("save must succeed");
 
-        let contents = std::fs::read_to_string(dir.path().join("ezpm.toml"))
-            .expect("must read ezpm.toml");
+        let contents =
+            std::fs::read_to_string(dir.path().join("ezpm.toml")).expect("must read ezpm.toml");
 
         // Verify it can be parsed back
         let (config, warnings) = load_config_from_str(&contents).expect("must parse");
@@ -305,7 +324,29 @@ mod tests {
             Some("test-project")
         );
         let loaded_aliases = config.aliases.unwrap_or_default();
-        assert_eq!(loaded_aliases.get("Client"), Some(&"src/client/".to_string()));
-        assert_eq!(loaded_aliases.get("Server"), Some(&"src/server/".to_string()));
+        assert_eq!(
+            loaded_aliases.get("Client"),
+            Some(&"src/client/".to_string())
+        );
+        assert_eq!(
+            loaded_aliases.get("Server"),
+            Some(&"src/server/".to_string())
+        );
+    }
+
+    #[test]
+    fn test_load_config_parses_require_fix_mode() {
+        let input = r#"
+[serve]
+port = 34872
+require_fix_mode = "fast"
+"#;
+
+        let (config, warnings) = load_config_from_str(input).expect("must parse");
+        assert!(warnings.is_empty(), "no warnings expected");
+        assert_eq!(
+            config.serve.as_ref().and_then(|s| s.require_fix_mode),
+            Some(RequireFixMode::Fast)
+        );
     }
 }

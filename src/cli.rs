@@ -35,6 +35,9 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Commands {
     /// Start the development server
+    #[command(
+        long_about = "Start file watching, DarkLua processing, sourcemap generation, and Rojo serve.\n\nYou can tune require-fixing behavior in ezpm.toml:\n  [serve]\n  require_fix_mode = \"hybrid\"\n\nModes:\n  strict  Full-tree require fixing on most watcher events (highest correctness, slowest).\n  hybrid  Single-file fixing for edits/creates; full-tree fixing on deletes/removals (default).\n  fast    Single-file fixing only (fastest, may leave stale requires after structural changes)."
+    )]
     Serve {
         /// Override the Rojo serve port for this session
         #[arg(long, short = 'p')]

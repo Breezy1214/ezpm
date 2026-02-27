@@ -9,11 +9,14 @@ use owo_colors::OwoColorize;
 use owo_colors::Stream;
 
 use crate::{
-    config::EzpmConfig,
+    config::{EzpmConfig, RequireFixMode},
     output,
     services::{
-        darklua_runner, file_watcher::{FileChange, FileWatcher, WatchEvent},
-        meta_copier, process_manager::{ProcessEvent, ProcessManager}, require_fixer, sourcemap,
+        darklua_runner,
+        file_watcher::{FileChange, FileWatcher, WatchEvent},
+        meta_copier,
+        process_manager::{ProcessEvent, ProcessManager},
+        require_fixer, sourcemap,
     },
 };
 
@@ -30,8 +33,7 @@ fn generate_build_project(src: &str, build: &str) -> anyhow::Result<()> {
     let content = std::fs::read_to_string("default.project.json")
         .context("Missing default.project.json — run 'ezpm init' to create it")?;
     let output = content.replace(&format!("{src}/"), &format!("{build}/"));
-    std::fs::write("build.project.json", output)
-        .context("Failed to write build.project.json")?;
+    std::fs::write("build.project.json", output).context("Failed to write build.project.json")?;
     Ok(())
 }
 
@@ -41,6 +43,7 @@ async fn handle_changes(
     src: &str,
     build: &str,
     aliases: &HashMap<String, String>,
+    require_fix_mode: RequireFixMode,
     project_dir: &Path,
     failed_files: &mut HashSet<PathBuf>,
     file_changes_enabled: bool,
@@ -56,6 +59,7 @@ async fn handle_changes(
                     src,
                     build,
                     aliases,
+                    require_fix_mode,
                     project_dir,
                     failed_files,
                     is_batch,
@@ -72,6 +76,7 @@ async fn handle_changes(
                     src,
                     build,
                     aliases,
+                    require_fix_mode,
                     project_dir,
                     failed_files,
                     is_batch,
@@ -85,11 +90,12 @@ async fn handle_changes(
                     src,
                     build,
                     aliases,
+                    require_fix_mode,
                     project_dir,
                     is_batch,
                     file_changes_enabled,
                 )
-                    .await;
+                .await;
             }
             FileChange::DirectoryCreated(path) => {
                 handle_directory_created(
@@ -97,6 +103,7 @@ async fn handle_changes(
                     src,
                     build,
                     aliases,
+                    require_fix_mode,
                     project_dir,
                     is_batch,
                     file_changes_enabled,
@@ -109,11 +116,12 @@ async fn handle_changes(
                     src,
                     build,
                     aliases,
+                    require_fix_mode,
                     project_dir,
                     is_batch,
                     file_changes_enabled,
                 )
-                    .await;
+                .await;
             }
         }
     }
@@ -129,10 +137,7 @@ async fn handle_changes(
 
 /// Build a user-friendly display name for a file path.
 fn display_name(path: &Path) -> String {
-    let file_name = path
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy();
+    let file_name = path.file_name().unwrap_or_default().to_string_lossy();
 
     // Check if this is an init.* file that needs parent context.
     if file_name.starts_with("init.") {
@@ -150,6 +155,7 @@ async fn handle_lua_change(
     src: &str,
     build: &str,
     aliases: &HashMap<String, String>,
+    require_fix_mode: RequireFixMode,
     project_dir: &Path,
     failed_files: &mut HashSet<PathBuf>,
     is_batch: bool,
@@ -157,23 +163,56 @@ async fn handle_lua_change(
 ) {
     let t0 = Instant::now();
 
-    // Step 1: Fix require paths for the changed file only
-    if let Err(e) = require_fixer::fix_single_file(path, aliases, src) {
-        output::error(&format!(
-            "{}: require fix failed: {}",
-            display_name(path),
-            e
-        ));
-        failed_files.insert(path.to_path_buf());
-        return;
+    // Step 1: Fix require paths using configured strategy.
+    match require_fix_mode {
+        RequireFixMode::Strict => {
+            let src_clone = src.to_string();
+            let aliases_clone = aliases.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                require_fixer::fix_requires(&PathBuf::from(&src_clone), &aliases_clone, &src_clone)
+            })
+            .await;
+
+            match result {
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => {
+                    output::error(&format!(
+                        "{}: require fix failed: {}",
+                        display_name(path),
+                        e
+                    ));
+                    failed_files.insert(path.to_path_buf());
+                    return;
+                }
+                Err(e) => {
+                    output::error(&format!(
+                        "{}: require fix task panicked: {}",
+                        display_name(path),
+                        e
+                    ));
+                    failed_files.insert(path.to_path_buf());
+                    return;
+                }
+            }
+        }
+        RequireFixMode::Hybrid | RequireFixMode::Fast => {
+            if let Err(e) = require_fixer::fix_single_file(path, aliases, src) {
+                output::error(&format!(
+                    "{}: require fix failed: {}",
+                    display_name(path),
+                    e
+                ));
+                failed_files.insert(path.to_path_buf());
+                return;
+            }
+        }
     }
 
     // Step 2: Regenerate sourcemap.
     let project_dir_clone = project_dir.to_path_buf();
-    let result = tokio::task::spawn_blocking(move || {
-        sourcemap::generate_sourcemap(&project_dir_clone)
-    })
-    .await;
+    let result =
+        tokio::task::spawn_blocking(move || sourcemap::generate_sourcemap(&project_dir_clone))
+            .await;
 
     match result {
         Ok(Ok(r)) if r.success => {}
@@ -243,9 +282,17 @@ async fn handle_lua_change(
             let was_failed = failed_files.remove(path);
             if !is_batch && file_changes_enabled {
                 if was_failed {
-                    output::success(&format!("{} fixed ({}ms)", filename, t0.elapsed().as_millis()));
+                    output::success(&format!(
+                        "{} fixed ({}ms)",
+                        filename,
+                        t0.elapsed().as_millis()
+                    ));
                 } else {
-                    output::success(&format!("Rebuilt {} ({}ms)", filename, t0.elapsed().as_millis()));
+                    output::success(&format!(
+                        "Rebuilt {} ({}ms)",
+                        filename,
+                        t0.elapsed().as_millis()
+                    ));
                 }
             }
         }
@@ -328,6 +375,7 @@ async fn handle_file_created(
     src: &str,
     build: &str,
     aliases: &HashMap<String, String>,
+    require_fix_mode: RequireFixMode,
     project_dir: &Path,
     failed_files: &mut HashSet<PathBuf>,
     is_batch: bool,
@@ -342,29 +390,69 @@ async fn handle_file_created(
     );
 
     if is_lua {
-        // Step 1: Fix require paths on the created file only
-        if let Err(e) = require_fixer::fix_single_file(path, aliases, src) {
-            output::error(&format!(
-                "{}: require fix failed: {}",
-                display_name(path),
-                e
-            ));
-            failed_files.insert(path.to_path_buf());
-            return;
+        // Step 1: Fix require paths using configured strategy.
+        match require_fix_mode {
+            RequireFixMode::Strict => {
+                let src_clone = src.to_string();
+                let aliases_clone = aliases.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    require_fixer::fix_requires(
+                        &PathBuf::from(&src_clone),
+                        &aliases_clone,
+                        &src_clone,
+                    )
+                })
+                .await;
+
+                match result {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => {
+                        output::error(&format!(
+                            "{}: require fix failed: {}",
+                            display_name(path),
+                            e
+                        ));
+                        failed_files.insert(path.to_path_buf());
+                        return;
+                    }
+                    Err(e) => {
+                        output::error(&format!(
+                            "{}: require fix task panicked: {}",
+                            display_name(path),
+                            e
+                        ));
+                        failed_files.insert(path.to_path_buf());
+                        return;
+                    }
+                }
+            }
+            RequireFixMode::Hybrid | RequireFixMode::Fast => {
+                if let Err(e) = require_fixer::fix_single_file(path, aliases, src) {
+                    output::error(&format!(
+                        "{}: require fix failed: {}",
+                        display_name(path),
+                        e
+                    ));
+                    failed_files.insert(path.to_path_buf());
+                    return;
+                }
+            }
         }
     }
 
     // Step 2: Regenerate sourcemap.
     let project_dir_clone = project_dir.to_path_buf();
-    let result = tokio::task::spawn_blocking(move || {
-        sourcemap::generate_sourcemap(&project_dir_clone)
-    })
-    .await;
+    let result =
+        tokio::task::spawn_blocking(move || sourcemap::generate_sourcemap(&project_dir_clone))
+            .await;
 
     match result {
         Ok(Ok(r)) if r.success => {
             if !is_batch && file_changes_enabled {
-                output::success(&format!("Sourcemap updated ({}ms)", t0.elapsed().as_millis()));
+                output::success(&format!(
+                    "Sourcemap updated ({}ms)",
+                    t0.elapsed().as_millis()
+                ));
             }
         }
         Ok(Ok(r)) => {
@@ -384,7 +472,10 @@ async fn handle_file_created(
         let src_root = project_dir.join(src);
         let build_root = project_dir.join(build);
 
-        let build_parent = match path.parent().and_then(|p| src_to_build_path(p, &src_root, &build_root)) {
+        let build_parent = match path
+            .parent()
+            .and_then(|p| src_to_build_path(p, &src_root, &build_root))
+        {
             Some(p) => p,
             None => {
                 output::error(&format!(
@@ -415,7 +506,11 @@ async fn handle_file_created(
             Ok(Ok(r)) if r.success => {
                 failed_files.remove(path);
                 if !is_batch && file_changes_enabled {
-                    output::success(&format!("Rebuilt {} ({}ms)", filename, t0.elapsed().as_millis()));
+                    output::success(&format!(
+                        "Rebuilt {} ({}ms)",
+                        filename,
+                        t0.elapsed().as_millis()
+                    ));
                 }
             }
             Ok(Ok(r)) => {
@@ -443,6 +538,7 @@ async fn handle_directory_created(
     src: &str,
     build: &str,
     aliases: &HashMap<String, String>,
+    require_fix_mode: RequireFixMode,
     project_dir: &Path,
     is_batch: bool,
     file_changes_enabled: bool,
@@ -454,32 +550,33 @@ async fn handle_directory_created(
         .to_string_lossy()
         .to_string();
 
-    // Step 1: Fix requires on the entire src tree (not just the new dir).
-    let src_clone = src.to_string();
-    let aliases_clone = aliases.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        require_fixer::fix_requires(&PathBuf::from(&src_clone), &aliases_clone, &src_clone)
-    })
-    .await;
+    // Step 1: Strict mode keeps full-tree require fixing on directory create.
+    if matches!(require_fix_mode, RequireFixMode::Strict) {
+        let src_clone = src.to_string();
+        let aliases_clone = aliases.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            require_fixer::fix_requires(&PathBuf::from(&src_clone), &aliases_clone, &src_clone)
+        })
+        .await;
 
-    match result {
-        Ok(Ok(_)) => {}
-        Ok(Err(e)) => {
-            output::error(&format!("{}/: require fix failed: {}", dirname, e));
-            return;
-        }
-        Err(e) => {
-            output::error(&format!("{}/: require fix task panicked: {}", dirname, e));
-            return;
+        match result {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => {
+                output::error(&format!("{}/: require fix failed: {}", dirname, e));
+                return;
+            }
+            Err(e) => {
+                output::error(&format!("{}/: require fix task panicked: {}", dirname, e));
+                return;
+            }
         }
     }
 
     // Step 2: Regenerate sourcemap.
     let project_dir_clone = project_dir.to_path_buf();
-    let result = tokio::task::spawn_blocking(move || {
-        sourcemap::generate_sourcemap(&project_dir_clone)
-    })
-    .await;
+    let result =
+        tokio::task::spawn_blocking(move || sourcemap::generate_sourcemap(&project_dir_clone))
+            .await;
 
     match result {
         Ok(Ok(r)) if r.success => {}
@@ -502,10 +599,7 @@ async fn handle_directory_created(
     let build_dir = match src_to_build_path(path, &src_root, &build_root) {
         Some(p) => p,
         None => {
-            output::error(&format!(
-                "{}/: could not compute build path",
-                dirname
-            ));
+            output::error(&format!("{}/: could not compute build path", dirname));
             return;
         }
     };
@@ -526,7 +620,11 @@ async fn handle_directory_created(
     match result {
         Ok(Ok(r)) if r.success => {
             if !is_batch && file_changes_enabled {
-                output::success(&format!("Rebuilt {}/ ({}ms)", dirname, t0.elapsed().as_millis()));
+                output::success(&format!(
+                    "Rebuilt {}/ ({}ms)",
+                    dirname,
+                    t0.elapsed().as_millis()
+                ));
             }
         }
         Ok(Ok(r)) => {
@@ -550,6 +648,7 @@ async fn handle_directory_removed(
     src: &str,
     build: &str,
     aliases: &HashMap<String, String>,
+    require_fix_mode: RequireFixMode,
     project_dir: &Path,
     is_batch: bool,
     file_changes_enabled: bool,
@@ -561,37 +660,41 @@ async fn handle_directory_removed(
         .to_string_lossy()
         .to_string();
 
-    // Step 1: Fix requires on entire src tree.
-    let src_clone = src.to_string();
-    let aliases_clone = aliases.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        require_fixer::fix_requires(&PathBuf::from(&src_clone), &aliases_clone, &src_clone)
-    })
-    .await;
+    // Step 1: strict/hybrid fix requires on entire src tree; fast skips this.
+    if !matches!(require_fix_mode, RequireFixMode::Fast) {
+        let src_clone = src.to_string();
+        let aliases_clone = aliases.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            require_fixer::fix_requires(&PathBuf::from(&src_clone), &aliases_clone, &src_clone)
+        })
+        .await;
 
-    match result {
-        Ok(Ok(_)) => {}
-        Ok(Err(e)) => {
-            output::error(&format!("{}/: require fix failed: {}", dirname, e));
-            return;
-        }
-        Err(e) => {
-            output::error(&format!("{}/: require fix task panicked: {}", dirname, e));
-            return;
+        match result {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => {
+                output::error(&format!("{}/: require fix failed: {}", dirname, e));
+                return;
+            }
+            Err(e) => {
+                output::error(&format!("{}/: require fix task panicked: {}", dirname, e));
+                return;
+            }
         }
     }
 
     // Step 2: Regenerate sourcemap.
     let project_dir_clone = project_dir.to_path_buf();
-    let result = tokio::task::spawn_blocking(move || {
-        sourcemap::generate_sourcemap(&project_dir_clone)
-    })
-    .await;
+    let result =
+        tokio::task::spawn_blocking(move || sourcemap::generate_sourcemap(&project_dir_clone))
+            .await;
 
     match result {
         Ok(Ok(r)) if r.success => {
             if !is_batch && file_changes_enabled {
-                output::success(&format!("Sourcemap updated ({}ms)", t0.elapsed().as_millis()));
+                output::success(&format!(
+                    "Sourcemap updated ({}ms)",
+                    t0.elapsed().as_millis()
+                ));
             }
         }
         Ok(Ok(r)) => {
@@ -625,47 +728,56 @@ async fn handle_file_deleted(
     src: &str,
     build: &str,
     aliases: &HashMap<String, String>,
+    require_fix_mode: RequireFixMode,
     project_dir: &Path,
     is_batch: bool,
     file_changes_enabled: bool,
 ) {
     let t0 = Instant::now();
 
-    // Step 1: Fix requires on entire src tree.
-    let src_clone = src.to_string();
-    let aliases_clone = aliases.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        require_fixer::fix_requires(&PathBuf::from(&src_clone), &aliases_clone, &src_clone)
-    })
-    .await;
+    // Step 1: strict/hybrid fix requires on entire src tree; fast skips this.
+    if !matches!(require_fix_mode, RequireFixMode::Fast) {
+        let src_clone = src.to_string();
+        let aliases_clone = aliases.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            require_fixer::fix_requires(&PathBuf::from(&src_clone), &aliases_clone, &src_clone)
+        })
+        .await;
 
-    match result {
-        Ok(Ok(_)) => {}
-        Ok(Err(e)) => {
-            output::error(&format!("{}: require fix failed: {}", display_name(path), e));
-            return;
-        }
-        Err(e) => {
-            output::error(&format!(
-                "{}: require fix task panicked: {}",
-                display_name(path),
-                e
-            ));
-            return;
+        match result {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => {
+                output::error(&format!(
+                    "{}: require fix failed: {}",
+                    display_name(path),
+                    e
+                ));
+                return;
+            }
+            Err(e) => {
+                output::error(&format!(
+                    "{}: require fix task panicked: {}",
+                    display_name(path),
+                    e
+                ));
+                return;
+            }
         }
     }
 
-    // Step 2: Regenerate sourcemap 
+    // Step 2: Regenerate sourcemap
     let project_dir_clone = project_dir.to_path_buf();
-    let result = tokio::task::spawn_blocking(move || {
-        sourcemap::generate_sourcemap(&project_dir_clone)
-    })
-    .await;
+    let result =
+        tokio::task::spawn_blocking(move || sourcemap::generate_sourcemap(&project_dir_clone))
+            .await;
 
     match result {
         Ok(Ok(r)) if r.success => {
             if !is_batch && file_changes_enabled {
-                output::success(&format!("Sourcemap updated ({}ms)", t0.elapsed().as_millis()));
+                output::success(&format!(
+                    "Sourcemap updated ({}ms)",
+                    t0.elapsed().as_millis()
+                ));
             }
         }
         Ok(Ok(r)) => {
@@ -757,13 +869,18 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
         .as_ref()
         .and_then(|d| d.file_changes)
         .unwrap_or(true);
+    let require_fix_mode = config
+        .serve
+        .as_ref()
+        .and_then(|s| s.require_fix_mode)
+        .unwrap_or_default();
 
     // Port resolution: CLI flag > ezpm.toml serve.port > default 34872.
     let port: u16 = cli_port
         .or_else(|| config.serve.as_ref().and_then(|s| s.port))
         .unwrap_or(34872);
 
-    // Port availability check 
+    // Port availability check
     if !port_is_available(port) {
         output::error(&format!(
             "Port {} in use. Try: ezpm serve --port {}",
@@ -888,7 +1005,9 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
                 // Success but stderr still non-empty after retry — fail
                 let detail = r.stderr.trim().to_string();
                 output::error(&format!("DarkLua warnings persist after retry: {}", detail));
-                return Err(anyhow::anyhow!("darklua processing had persistent warnings"));
+                return Err(anyhow::anyhow!(
+                    "darklua processing had persistent warnings"
+                ));
             }
             Ok(r) => {
                 let detail = r.stderr.trim().to_string();
@@ -993,6 +1112,7 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
         "Watching {}/ for changes (.lua, .luau, init.meta.json)",
         src
     ));
+    output::info(&format!("Require-fix mode: {:?}", require_fix_mode).to_lowercase());
     output::info("Press Ctrl-C to stop");
     output::print_line("");
 
@@ -1010,6 +1130,7 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
                             &src,
                             &build,
                             &aliases,
+                            require_fix_mode,
                             &project_dir,
                             &mut failed_files,
                             file_changes_enabled,
@@ -1061,9 +1182,6 @@ pub(crate) fn src_to_build_path(
         .map(|rel| build_root.join(rel))
 }
 
-    fn path_for_darklua(path: &Path, project_dir: &Path) -> PathBuf {
-        path
-            .strip_prefix(project_dir)
-            .unwrap_or(path)
-            .to_path_buf()
-    }
+fn path_for_darklua(path: &Path, project_dir: &Path) -> PathBuf {
+    path.strip_prefix(project_dir).unwrap_or(path).to_path_buf()
+}
