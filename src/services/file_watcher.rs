@@ -195,6 +195,9 @@ fn classify_events(events: &[DebouncedEvent], ignore_patterns: &[String]) -> Vec
         }
     }
 
+    // Filesystem-aware conflict resolution: when a debounce batch contains both a
+    // delete and a non-delete event for the same path (e.g., git discard replaces a
+    // file), check whether the path still exists on disk to decide the correct event.
     let deleted_paths: HashSet<PathBuf> = result
         .iter()
         .filter_map(|c| match c {
@@ -204,13 +207,50 @@ fn classify_events(events: &[DebouncedEvent], ignore_patterns: &[String]) -> Vec
         .collect();
 
     if !deleted_paths.is_empty() {
+        // Partition: paths that still exist on disk were replaced, not truly deleted.
+        let still_exists: HashSet<&PathBuf> = deleted_paths
+            .iter()
+            .filter(|p| p.exists())
+            .collect();
+
         result.retain(|c| match c {
-            FileChange::FileDeleted(_) | FileChange::DirectoryRemoved(_) => true,
+            // Drop delete events for paths that still exist (replaced, not deleted).
+            FileChange::FileDeleted(p) | FileChange::DirectoryRemoved(p) => {
+                !still_exists.contains(p)
+            }
+            // Drop non-delete events only for paths that are truly gone.
             FileChange::LuaChange(p)
             | FileChange::MetaChange(p)
             | FileChange::FileCreated(p)
-            | FileChange::DirectoryCreated(p) => !deleted_paths.contains(p),
+            | FileChange::DirectoryCreated(p) => {
+                !deleted_paths.contains(p) || still_exists.contains(p)
+            }
         });
+
+        // For paths that still exist but had no non-delete event in the batch,
+        // synthesize an appropriate event so the build stays in sync.
+        for path in &still_exists {
+            let has_non_delete = result.iter().any(|c| {
+                let p = match c {
+                    FileChange::LuaChange(p)
+                    | FileChange::MetaChange(p)
+                    | FileChange::FileCreated(p)
+                    | FileChange::DirectoryCreated(p) => p,
+                    _ => return false,
+                };
+                p == *path
+            });
+
+            if !has_non_delete {
+                if path.is_dir() {
+                    result.push(FileChange::DirectoryCreated((*path).clone()));
+                } else if let Some(change) = classify_modify(path) {
+                    result.push(change);
+                } else if is_relevant(path) {
+                    result.push(FileChange::FileCreated((*path).clone()));
+                }
+            }
+        }
     }
 
     result
@@ -447,31 +487,90 @@ mod tests {
         );
     }
 
-    // ── Test 8b: classify_events — delete-wins deduplication ─────────────
+    // ── Test 8b: classify_events — truly deleted file (not on disk) ─────
 
     #[test]
-    fn test_classify_events_delete_wins_over_lua_change() {
+    fn test_classify_events_delete_wins_when_file_truly_gone() {
         init_output();
 
-        // Simulate macOS race: same file gets both Modify and Remove in one debounce batch.
+        // Path does not exist on disk — delete should win over modify.
         let events = vec![
             make_debounced_event(
                 EventKind::Modify(ModifyKind::Data(DataChange::Any)),
-                vec![PathBuf::from("src/foo.lua")],
+                vec![PathBuf::from("src/nonexistent_file.lua")],
             ),
             make_debounced_event(
                 EventKind::Remove(notify_debouncer_full::notify::event::RemoveKind::File),
-                vec![PathBuf::from("src/foo.lua")],
+                vec![PathBuf::from("src/nonexistent_file.lua")],
             ),
         ];
 
         let result = classify_events(&events, &[]);
 
-        // Only FileDeleted should remain — LuaChange is suppressed.
-        assert_eq!(result.len(), 1, "expected 1 event after delete-wins dedup, got {:?}", result);
+        assert_eq!(result.len(), 1, "expected 1 event after dedup, got {:?}", result);
         assert!(
-            matches!(&result[0], FileChange::FileDeleted(p) if p == Path::new("src/foo.lua")),
-            "expected FileDeleted for src/foo.lua, got {:?}",
+            matches!(&result[0], FileChange::FileDeleted(p) if p == Path::new("src/nonexistent_file.lua")),
+            "expected FileDeleted when file is truly gone, got {:?}",
+            result
+        );
+    }
+
+    // ── Test 8c: classify_events — replaced file (still on disk) ─────────
+
+    #[test]
+    fn test_classify_events_modify_wins_when_file_still_exists() {
+        init_output();
+
+        // Create a real temp file so exists() returns true.
+        let tmp = tempfile::TempDir::new().expect("failed to create tempdir");
+        let lua_file = tmp.path().join("replaced.lua");
+        std::fs::write(&lua_file, b"-- content").expect("failed to write file");
+
+        let events = vec![
+            make_debounced_event(
+                EventKind::Remove(notify_debouncer_full::notify::event::RemoveKind::File),
+                vec![lua_file.clone()],
+            ),
+            make_debounced_event(
+                EventKind::Modify(ModifyKind::Data(DataChange::Any)),
+                vec![lua_file.clone()],
+            ),
+        ];
+
+        let result = classify_events(&events, &[]);
+
+        // File still exists on disk — the modify (LuaChange) should win, delete dropped.
+        assert_eq!(result.len(), 1, "expected 1 event after dedup, got {:?}", result);
+        assert!(
+            matches!(&result[0], FileChange::LuaChange(p) if p == &lua_file),
+            "expected LuaChange when file still exists on disk, got {:?}",
+            result
+        );
+    }
+
+    // ── Test 8d: classify_events — delete-only but file replaced (synthesize) ──
+
+    #[test]
+    fn test_classify_events_synthesize_event_for_replaced_file() {
+        init_output();
+
+        // File has only a delete event, but still exists (e.g., git checkout replaced it).
+        let tmp = tempfile::TempDir::new().expect("failed to create tempdir");
+        let lua_file = tmp.path().join("checkout.lua");
+        std::fs::write(&lua_file, b"-- restored").expect("failed to write file");
+
+        let events = vec![make_debounced_event(
+            EventKind::Remove(notify_debouncer_full::notify::event::RemoveKind::File),
+            vec![lua_file.clone()],
+        )];
+
+        let result = classify_events(&events, &[]);
+
+        // Delete dropped, synthetic LuaChange created since file exists.
+        assert_eq!(result.len(), 1, "expected 1 synthetic event, got {:?}", result);
+        assert!(
+            matches!(&result[0], FileChange::LuaChange(p) if p == &lua_file),
+            "expected synthetic LuaChange for replaced file, got {:?}",
             result
         );
     }
