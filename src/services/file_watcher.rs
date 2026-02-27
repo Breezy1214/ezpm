@@ -88,7 +88,7 @@ impl FileWatcher {
             }
         };
 
-        let mut debouncer = new_debouncer(Duration::from_millis(300), None, callback)?;
+        let mut debouncer = new_debouncer(Duration::from_millis(100), None, callback)?;
 
         // Watch the directory recursively via OS-native events.
         debouncer.watch(watch_dir, RecursiveMode::Recursive)?;
