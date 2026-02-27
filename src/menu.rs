@@ -5,30 +5,48 @@ use crate::output;
 
 // ─── Menu items ───────────────────────────────────────────────────────────────
 
-const MENU_ITEMS: &[(&str, &str)] = &[
-    ("init           Create a new EZPM project", "init"),
+const MENU_ITEMS: &[(&str, &str, &str)] = &[
+    ("init", "Create a new EZPM project", "init"),
+    ("serve", "Start file watcher + DarkLua + Rojo", "serve"),
     (
-        "serve          Start file watcher + DarkLua + Rojo",
-        "serve",
-    ),
-    (
-        "fix-requires   Rewrite require paths to @alias notation",
+        "fix-requires",
+        "Rewrite require paths to @alias notation",
         "fix-requires",
     ),
-    ("install        Install tools and packages", "install"),
+    ("install", "Install tools and packages", "install"),
     (
-        "setup-wally-packages   Clean + install + type Wally packages",
+        "setup-wally-packages",
+        "Clean + install + type Wally packages",
         "setup-wally-packages",
     ),
     (
-        "alias          Manage path aliases (add/remove/list/sync)",
+        "alias",
+        "Manage path aliases (add/remove/list/sync)",
         "alias-menu",
     ),
-    ("lint           Run Selene and StyLua checks", "lint"),
-    ("format         Format source with StyLua", "format"),
-    ("docs           Launch Moonwave docs server", "docs"),
-    ("exit", "exit"),
+    ("lint", "Run Selene and StyLua checks", "lint"),
+    ("format", "Format source with StyLua", "format"),
+    ("docs", "Launch Moonwave docs server", "docs"),
+    ("exit", "Exit", "exit"),
 ];
+
+fn build_menu_options() -> Vec<(String, &'static str)> {
+    let max_cmd_width = MENU_ITEMS
+        .iter()
+        .map(|(cmd, _, _)| cmd.chars().count())
+        .max()
+        .unwrap_or(0);
+
+    MENU_ITEMS
+        .iter()
+        .map(|(cmd, desc, action)| {
+            (
+                format!("{cmd:<width$}   {desc}", width = max_cmd_width),
+                *action,
+            )
+        })
+        .collect()
+}
 
 // ─── ASCII logo ───────────────────────────────────────────────────────────────
 fn print_logo(version: &str, update_notice: Option<&str>) {
@@ -50,21 +68,22 @@ fn print_logo(version: &str, update_notice: Option<&str>) {
 pub fn run_interactive_menu(update_notice: Option<&str>) {
     let version = env!("CARGO_PKG_VERSION");
     let mut menu_update_notice = update_notice;
+    let options = build_menu_options();
 
     loop {
         print_logo(version, menu_update_notice);
         menu_update_notice = None;
 
-        let labels: Vec<&str> = MENU_ITEMS.iter().map(|(label, _)| *label).collect();
+        let labels: Vec<&str> = options.iter().map(|(label, _)| label.as_str()).collect();
 
         let result = inquire::Select::new("What would you like to do?", labels).prompt();
 
         match result {
             Ok(selection) => {
                 // Find the command key for the selected label
-                let cmd = MENU_ITEMS
+                let cmd = options
                     .iter()
-                    .find(|(label, _)| *label == selection)
+                    .find(|(label, _)| label.as_str() == selection)
                     .map(|(_, cmd)| *cmd)
                     .unwrap_or("");
 
