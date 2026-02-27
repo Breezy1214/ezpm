@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::Result;
-use notify_debouncer_full::notify::event::{CreateKind, EventKind, RemoveKind};
+use notify_debouncer_full::notify::event::{CreateKind, EventKind, ModifyKind, RemoveKind};
 use notify_debouncer_full::notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_full::{new_debouncer, DebounceEventResult, Debouncer, DebouncedEvent, RecommendedCache};
 use tokio::sync::mpsc;
@@ -172,6 +172,28 @@ fn classify_events(events: &[DebouncedEvent], ignore_patterns: &[String]) -> Vec
                             } else {
                                 None
                             }
+                        }
+                    }
+                }
+                EventKind::Modify(ModifyKind::Name(_)) => {
+                    // Rename/move: check the filesystem to classify correctly.
+                    // The old path no longer exists; the new path does.
+                    if path.is_dir() {
+                        Some(FileChange::DirectoryCreated(path.clone()))
+                    } else if path.exists() {
+                        if is_relevant(path) {
+                            Some(FileChange::FileCreated(path.clone()))
+                        } else {
+                            None
+                        }
+                    } else {
+                        // Path is gone — it was renamed/moved away from here.
+                        if is_relevant(path) {
+                            Some(FileChange::FileDeleted(path.clone()))
+                        } else if path.extension().is_none() {
+                            Some(FileChange::DirectoryRemoved(path.clone()))
+                        } else {
+                            None
                         }
                     }
                 }
@@ -571,6 +593,91 @@ mod tests {
         assert!(
             matches!(&result[0], FileChange::LuaChange(p) if p == &lua_file),
             "expected synthetic LuaChange for replaced file, got {:?}",
+            result
+        );
+    }
+
+    // ── Test 9a: classify_events — directory rename emits remove + create ──
+
+    #[test]
+    fn test_classify_events_directory_rename() {
+        init_output();
+
+        // Simulate a directory move: old path gone, new path exists.
+        let tmp = tempfile::TempDir::new().expect("failed to create tempdir");
+        let new_dir = tmp.path().join("NewFolder");
+        std::fs::create_dir_all(&new_dir).expect("failed to create dir");
+
+        let old_dir = tmp.path().join("OldFolder"); // does not exist on disk
+
+        let events = vec![
+            make_debounced_event(
+                EventKind::Modify(ModifyKind::Name(
+                    notify_debouncer_full::notify::event::RenameMode::From,
+                )),
+                vec![old_dir.clone()],
+            ),
+            make_debounced_event(
+                EventKind::Modify(ModifyKind::Name(
+                    notify_debouncer_full::notify::event::RenameMode::To,
+                )),
+                vec![new_dir.clone()],
+            ),
+        ];
+
+        let result = classify_events(&events, &[]);
+
+        assert_eq!(result.len(), 2, "expected 2 events for dir rename, got {:?}", result);
+        assert!(
+            result.iter().any(|c| matches!(c, FileChange::DirectoryRemoved(p) if p == &old_dir)),
+            "expected DirectoryRemoved for old path, got {:?}",
+            result
+        );
+        assert!(
+            result.iter().any(|c| matches!(c, FileChange::DirectoryCreated(p) if p == &new_dir)),
+            "expected DirectoryCreated for new path, got {:?}",
+            result
+        );
+    }
+
+    // ── Test 9b: classify_events — lua file rename emits delete + create ──
+
+    #[test]
+    fn test_classify_events_lua_file_rename() {
+        init_output();
+
+        let tmp = tempfile::TempDir::new().expect("failed to create tempdir");
+        let new_file = tmp.path().join("new_name.lua");
+        std::fs::write(&new_file, b"-- moved").expect("failed to write file");
+
+        let old_file = tmp.path().join("old_name.lua"); // does not exist on disk
+
+        let events = vec![
+            make_debounced_event(
+                EventKind::Modify(ModifyKind::Name(
+                    notify_debouncer_full::notify::event::RenameMode::From,
+                )),
+                vec![old_file.clone()],
+            ),
+            make_debounced_event(
+                EventKind::Modify(ModifyKind::Name(
+                    notify_debouncer_full::notify::event::RenameMode::To,
+                )),
+                vec![new_file.clone()],
+            ),
+        ];
+
+        let result = classify_events(&events, &[]);
+
+        assert_eq!(result.len(), 2, "expected 2 events for file rename, got {:?}", result);
+        assert!(
+            result.iter().any(|c| matches!(c, FileChange::FileDeleted(p) if p == &old_file)),
+            "expected FileDeleted for old path, got {:?}",
+            result
+        );
+        assert!(
+            result.iter().any(|c| matches!(c, FileChange::FileCreated(p) if p == &new_file)),
+            "expected FileCreated for new path, got {:?}",
             result
         );
     }
