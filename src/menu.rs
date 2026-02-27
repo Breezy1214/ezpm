@@ -7,14 +7,23 @@ use crate::output;
 
 const MENU_ITEMS: &[(&str, &str)] = &[
     ("init           Create a new EZPM project", "init"),
-    ("serve          Start file watcher + DarkLua + Rojo", "serve"),
-    ("fix-requires   Rewrite require paths to @alias notation", "fix-requires"),
+    (
+        "serve          Start file watcher + DarkLua + Rojo",
+        "serve",
+    ),
+    (
+        "fix-requires   Rewrite require paths to @alias notation",
+        "fix-requires",
+    ),
     ("install        Install tools and packages", "install"),
     (
         "setup-wally-packages   Clean + install + type Wally packages",
         "setup-wally-packages",
     ),
-    ("alias          Manage path aliases (add/remove/list/sync)", "alias-menu"),
+    (
+        "alias          Manage path aliases (add/remove/list/sync)",
+        "alias-menu",
+    ),
     ("lint           Run Selene and StyLua checks", "lint"),
     ("format         Format source with StyLua", "format"),
     ("docs           Launch Moonwave docs server", "docs"),
@@ -22,18 +31,29 @@ const MENU_ITEMS: &[(&str, &str)] = &[
 ];
 
 // ─── ASCII logo ───────────────────────────────────────────────────────────────
-fn print_logo(version: &str) {
+fn print_logo(version: &str, update_notice: Option<&str>) {
     println!();
-    println!("{}", format!("EZPM v{}", version).if_supports_color(Stream::Stdout, |t| t.cyan()));
+    println!(
+        "{}",
+        format!("EZPM v{}", version).if_supports_color(Stream::Stdout, |t| t.cyan())
+    );
+    if let Some(notice) = update_notice {
+        println!(
+            "{}",
+            notice.if_supports_color(Stream::Stdout, |t| t.yellow())
+        );
+    }
     println!();
 }
 
 // ─── Interactive menu ─────────────────────────────────────────────────────────
-pub fn run_interactive_menu() {
+pub fn run_interactive_menu(update_notice: Option<&str>) {
     let version = env!("CARGO_PKG_VERSION");
+    let mut menu_update_notice = update_notice;
 
     loop {
-        print_logo(version);
+        print_logo(version, menu_update_notice);
+        menu_update_notice = None;
 
         let labels: Vec<&str> = MENU_ITEMS.iter().map(|(label, _)| *label).collect();
 
@@ -99,7 +119,9 @@ fn run_command(cmd: &str) -> Result<()> {
     match cmd {
         "init" => crate::commands::init::run_init(),
         "install" => crate::commands::install::install_tools(src, cfg.aliases.as_ref()),
-        "setup-wally-packages" => crate::commands::install::setup_wally_packages(src, cfg.aliases.as_ref()),
+        "setup-wally-packages" => {
+            crate::commands::install::setup_wally_packages(src, cfg.aliases.as_ref())
+        }
         "alias-menu" => crate::commands::alias::alias_menu(),
         "lint" => crate::commands::quality::lint(src),
         "format" => crate::commands::quality::format_code(src, false),
@@ -113,8 +135,11 @@ fn run_command(cmd: &str) -> Result<()> {
         }
         "fix-requires" => {
             let aliases = cfg.aliases.unwrap_or_default();
-            let result =
-                crate::services::require_fixer::fix_requires(std::path::Path::new(src), &aliases, src)?;
+            let result = crate::services::require_fixer::fix_requires(
+                std::path::Path::new(src),
+                &aliases,
+                src,
+            )?;
             if result.files_changed == 0 {
                 output::success(&format!(
                     "All requires up to date. 0 changes across {} files.",
