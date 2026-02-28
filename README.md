@@ -10,6 +10,7 @@ ezpm is written in Rust and ships as a single native CLI binary for Linux, macOS
 - **Automatic require path fixing** — Scans your source tree and rewrites `require()` calls to use `@alias/` notation, eliminating broken or inconsistent paths.
 - **Path alias management** — Define aliases in `ezpm.toml` once; `.darklua.json` and `.luaurc` are generated automatically to keep DarkLua and your LSP in sync.
 - **Project scaffolding** — `ezpm init` detects existing config files, imports aliases, creates directory structure, and generates `default.project.json`.
+- **Dependency analysis** — `ezpm check` builds a dependency graph, detects circular requires, enforces architecture rules (e.g. Client cannot import Server), and finds unused modules. Outputs human-readable or `--json` for CI.
 - **Integrated toolchain** — Linting (Selene), formatting (StyLua), Wally package installation, and Moonwave docs from one interface.
 - **Interactive menu** — Arrow-key navigation for all commands. Subcommands also work directly from the CLI.
 
@@ -102,6 +103,8 @@ ezpm alias add        Add a path alias
 ezpm alias remove     Remove a path alias
 ezpm alias list       List configured aliases
 ezpm alias sync       Reload aliases from ezpm.toml and regenerate configs
+ezpm check            Dependency analysis (cycles, architecture rules, unused modules)
+ezpm check --json     Machine-readable JSON output for CI
 ezpm docs             Moonwave documentation server
 ezpm help             Print usage
 ```
@@ -152,6 +155,46 @@ ServerPackages = "ServerPackages/"
 - `fast` — Maximum performance. Uses single-file fixing for Lua changes/creates and skips full-tree fixing on delete/remove/create directory events.
 
 If unsure, keep `hybrid`.
+
+### Dependency Checking
+
+`ezpm check` statically analyzes your project's `require()` graph. It runs with no configuration, but you can add architecture rules in `ezpm.toml`:
+
+```toml
+[check.layers]
+client = "src/client/"
+server = "src/server/"
+shared = "src/shared/"
+
+[[check.forbid]]
+from = "client"
+to = "server"
+reason = "Client must never import server modules"
+
+[[check.forbid]]
+from = "server"
+to = "client"
+reason = "Server must never import client modules"
+```
+
+What it detects:
+
+- **Circular dependencies** — Any `require()` cycle (A → B → C → A) is reported.
+- **Architecture violations** — Cross-layer imports that match a `[[check.forbid]]` rule.
+- **Unused modules** — Files unreachable from entry points (`src/<layer>/init.luau`).
+
+Use `--json` for CI integration:
+
+```bash
+ezpm check --json    # structured JSON output
+```
+
+You can also configure custom entry points:
+
+```toml
+[check]
+entry_points = ["src/client/init.luau", "src/server/init.luau"]
+```
 
 ### Aliases
 

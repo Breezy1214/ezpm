@@ -71,6 +71,13 @@ pub enum Commands {
     #[command(name = "setup-wally-packages")]
     SetupWallyPackages,
 
+    /// Analyze dependencies: detect circular requires, validate architecture rules, find unused modules
+    Check {
+        /// Output results as JSON for CI/machine processing
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Manage path aliases
     Alias {
         #[command(subcommand)]

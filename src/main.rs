@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use ezpm::{
     cli::{AliasCommands, Cli, ColorArg, Commands},
-    commands::{alias, init, install, quality, serve},
+    commands::{alias, check, init, install, quality, serve},
     config, output,
     services::{require_fixer, selene, version},
 };
@@ -192,6 +192,7 @@ fn main() {
                 Err(e) => Err(e),
             }
         }
+        Some(Commands::Check { json }) => check::run_check(loaded_config.as_ref(), json),
         Some(Commands::Alias { subcommand }) => match subcommand {
             Some(AliasCommands::Add) => alias::alias_add(),
             Some(AliasCommands::Remove) => alias::alias_remove(),
