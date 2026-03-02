@@ -3,6 +3,22 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 
+// ─── Check (dependency analysis) config ──────────────────────────────────────
+
+#[derive(Debug, Deserialize, Serialize, Default, Clone)]
+pub struct CheckConfig {
+    pub entry_points: Option<Vec<String>>,
+    pub layers: Option<HashMap<String, String>>,
+    pub forbid: Option<Vec<ForbidRule>>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct ForbidRule {
+    pub from: String,
+    pub to: String,
+    pub reason: Option<String>,
+}
+
 #[derive(Debug, Deserialize, Serialize, Default)]
 pub struct EzpmConfig {
     pub project: Option<ProjectConfig>,
@@ -10,6 +26,7 @@ pub struct EzpmConfig {
     pub display: Option<DisplayConfig>,
     pub aliases: Option<HashMap<String, String>>,
     pub serve: Option<ServeConfig>,
+    pub check: Option<CheckConfig>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Default)]
