@@ -48,6 +48,59 @@ ezpm init     # detects your existing config, imports aliases
 ezpm serve    # picks up right where you left off
 ```
 
+### Update
+
+```bash
+rokit update ezpm
+rokit install
+```
+
+## Setting up your `src/` tree
+
+`ezpm init` asks for a **Source directory** (default: `src`) and scaffolds aliases + folders from that.
+
+Default layout:
+
+```text
+src/
+	client/
+	server/
+	shared/
+Packages/
+ServerPackages/
+```
+
+These map to default aliases:
+
+- `@Client -> src/client/`
+- `@Server -> src/server/`
+- `@Shared -> src/shared/`
+- `@Packages -> Packages/`
+- `@ServerPackages -> ServerPackages/`
+
+If you use a different source root, set it in `ezpm.toml`:
+
+```toml
+[paths]
+src = "game"
+darklua_build = "darklua_build"
+
+[aliases]
+Client = "game/client/"
+Server = "game/server/"
+Shared = "game/shared/"
+Packages = "Packages/"
+ServerPackages = "ServerPackages/"
+```
+
+Then run:
+
+```bash
+ezpm alias sync
+```
+
+to regenerate `.darklua.json` and `.luaurc` from your aliases.
+
 ## What You Get
 
 ### `ezpm serve` — Your entire dev loop, one command
@@ -80,11 +133,21 @@ Scans every file and rewrites `require()` calls to use your `@alias/` paths. No 
 
 ```
 ezpm install     Rokit + Wally packages + type generation
+ezpm setup-wally-packages   Reinstall Wally deps + regenerate sourcemap/types
 ezpm lint        Selene + StyLua --check
 ezpm format      StyLua format
+ezpm format --check   Check formatting only (CI-friendly)
 ezpm alias       Add, remove, list, or sync path aliases
 ezpm docs        Moonwave documentation server
 ezpm             Interactive menu (arrow-key navigation)
+```
+
+Global flags (available on every command):
+
+```bash
+--verbose         detailed output
+--quiet           suppress non-error output
+--color <auto|always|never>
 ```
 
 ## Configuration
@@ -95,16 +158,30 @@ All config lives in `ezpm.toml`. Sensible defaults out of the box — only edit 
 [project]
 name = "my-game"
 
+[paths]
+src = "src"
+darklua_build = "darklua_build"
+
+[display]
+file_changes = true
+docs_enabled = false
+logs_enabled = true
+check_updates = true
+
 [aliases]
 Client = "src/client/"
 Server = "src/server/"
 Shared = "src/shared/"
 Packages = "Packages/"
+ServerPackages = "ServerPackages/"
 
 [serve]
 port = 34872
 require_fix_mode = "hybrid"   # strict | hybrid | fast
 ```
+
+`docs_enabled` must be `true` for `ezpm docs` to launch Moonwave.
+Set `EZPM_NO_UPDATE_CHECK=1` to disable GitHub release checks.
 
 **`require_fix_mode`** controls how aggressively the file watcher rewrites requires:
 
@@ -114,7 +191,17 @@ require_fix_mode = "hybrid"   # strict | hybrid | fast
 
 ### Architecture rules (optional)
 
+Use `[check]` to control `ezpm check` behavior:
+
 ```toml
+[check]
+# Optional: paths in dependency graph to treat as roots for unused-module analysis.
+# If omitted, ezpm auto-detects src/<layer>/init.lua(u) entrypoints.
+entry_points = [
+	"src/client/init.luau",
+	"src/server/init.luau"
+]
+
 [check.layers]
 client = "src/client/"
 server = "src/server/"
@@ -124,7 +211,19 @@ shared = "src/shared/"
 from = "client"
 to = "server"
 reason = "Client must never import server modules"
+
+[[check.forbid]]
+from = "server"
+to = "client"
+reason = "Server must not import client-only UI code"
 ```
+
+Rules that matter:
+
+- `from` / `to` must match keys in `[check.layers]` exactly.
+- Layer matching is path-prefix based, so keep trailing `/` in layer paths.
+- Only cross-layer imports are checked; same-layer imports are always allowed.
+- If no `entry_points` and no `src/<layer>/init.lua(u)` files are found, unused-module detection treats all modules as reachable.
 
 ## Toolchain
 
