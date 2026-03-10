@@ -14,3 +14,7 @@ rokit.toml
 ezpm.toml
 darklua_build
 benches/luau_bench.luau
+node_modules/
+out/
+.vscode-test/
+vscode-ezpm/.npm-cache
