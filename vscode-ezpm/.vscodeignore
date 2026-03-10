@@ -1,0 +1,7 @@
+.vscode/**
+.vscode-test/**
+src/**
+test/**
+*.ts
+.gitignore
+README.dev.md
