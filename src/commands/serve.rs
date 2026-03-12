@@ -4,10 +4,6 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use anyhow::Context;
-use owo_colors::OwoColorize;
-use owo_colors::Stream;
-
 use crate::{
     config::{EzpmConfig, RequireFixMode},
     output,
@@ -19,6 +15,9 @@ use crate::{
         require_fixer, sourcemap,
     },
 };
+use anyhow::Context;
+use owo_colors::OwoColorize;
+use owo_colors::Stream;
 
 // ─── Port helpers ──────────────────────────────────────────────────────────────
 
@@ -1120,7 +1119,32 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
     let mut failed_files: HashSet<PathBuf> = HashSet::new();
     let mut rojo_restart_count: u32 = 0;
 
+    // Listen for SIGHUP/SIGTERM so closing the terminal (without Ctrl-C)
+    // still triggers a clean shutdown that kills the Rojo process group.
+    #[cfg(unix)]
+    let mut sig_hup = {
+        use tokio::signal::unix::{signal, SignalKind};
+        signal(SignalKind::hangup()).context("failed to register SIGHUP handler")?
+    };
+    #[cfg(unix)]
+    let mut sig_term = {
+        use tokio::signal::unix::{signal, SignalKind};
+        signal(SignalKind::terminate()).context("failed to register SIGTERM handler")?
+    };
+
     loop {
+        let terminal_signal = async {
+            #[cfg(unix)]
+            {
+                tokio::select! {
+                    _ = sig_hup.recv() => {}
+                    _ = sig_term.recv() => {}
+                }
+            }
+            #[cfg(not(unix))]
+            std::future::pending::<()>().await
+        };
+
         tokio::select! {
             event = watcher_rx.recv() => {
                 match event {
@@ -1157,6 +1181,10 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
             }
             _ = tokio::signal::ctrl_c() => {
                 output::info("Stopping...");
+                break;
+            }
+            _ = terminal_signal => {
+                output::info("Terminal closed — stopping...");
                 break;
             }
         }
