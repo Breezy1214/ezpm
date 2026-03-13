@@ -24,7 +24,6 @@ pub fn build_graph(
     let re = require_regex();
     let scan_dir = project_root.join(src_prefix);
 
-    // Build inverted alias map: real_path → alias_name (e.g. "src/client/" → "Client")
     let mut inverted: Vec<(String, String)> = aliases
         .iter()
         .filter(|(_, path)| {
@@ -41,10 +40,8 @@ pub fn build_graph(
             (normalized, name.clone())
         })
         .collect();
-    // Sort by path length descending for longest-prefix matching
     inverted.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
 
-    // Collect all Lua files under src_prefix and register as nodes
     let files: Vec<_> = WalkDir::new(&scan_dir)
         .into_iter()
         .filter_map(|e| e.ok())
@@ -57,11 +54,8 @@ pub fn build_graph(
         graph.add_node(&rel);
     }
 
-    // Parse each file for require() calls and add edges
     for file in &files {
         let rel_from = normalize_path(file, project_root);
-        let from_id = graph.add_node(&rel_from);
-
         let content = match std::fs::read_to_string(file) {
             Ok(c) => c,
             Err(e) => {
@@ -70,9 +64,13 @@ pub fn build_graph(
             }
         };
 
+        if !content.contains("require(\"") {
+            continue;
+        }
+
+        let from_id = graph.add_node(&rel_from);
         for caps in re.captures_iter(&content) {
             let require_path = &caps[1];
-
             if let Some(resolved) =
                 resolve_require(require_path, aliases, src_prefix, project_root, &inverted)
             {
@@ -326,5 +324,24 @@ mod tests {
 
         let graph = build_graph(p, &test_aliases(), "src").unwrap();
         assert_eq!(graph.edge_count(), 0);
+    }
+
+    #[test]
+    fn build_graph_preserves_edges_on_repeated_build() {
+        let dir = setup_project();
+        let p = dir.path();
+        let aliases = test_aliases();
+
+        let graph = build_graph(p, &aliases, "src").unwrap();
+        assert_eq!(graph.edge_count(), 2);
+
+        fs::write(p.join("src/shared/util.luau"), "local x = 1\nreturn x\n").unwrap();
+
+        let graph = build_graph(p, &aliases, "src").unwrap();
+        assert_eq!(
+            graph.edge_count(),
+            2,
+            "repeated builds must retain edges from all files"
+        );
     }
 }
