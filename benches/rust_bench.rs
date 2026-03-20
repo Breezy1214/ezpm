@@ -4,6 +4,7 @@
 //! - Config TOML parsing
 //! - Require path rewriting (process_file_content)
 //! - Config file generation (.darklua.json, .luaurc)
+//! - Optimization comparisons (FixContext caching, directory-wide fix_requires)
 //!
 //! Run with: cargo bench --bench rust_bench
 
@@ -12,9 +13,7 @@ use std::time::Instant;
 
 use ezpm::config::load_config_from_str;
 use ezpm::services::config_gen::{generate_darklua_json, generate_luaurc};
-use ezpm::services::require_fixer::{
-    process_file_content,
-};
+use ezpm::services::require_fixer::{self, process_file_content};
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -38,12 +37,44 @@ fn bench<F: FnMut()>(name: &str, iterations: u64, mut f: F) {
     };
 
     println!(
-        "  {:<40} {:>10.3} ms total | {:>10} ns/iter | {:>10} ops/sec  ({} iterations)",
+        "  {:<50} {:>10.3} ms total | {:>10} ns/iter | {:>10} ops/sec  ({} iterations)",
         name,
         elapsed.as_secs_f64() * 1000.0,
         per_iter.as_nanos(),
         format_number(ops_per_sec),
         format_number(iterations),
+    );
+}
+
+fn bench_compare<F1: FnMut(), F2: FnMut()>(name: &str, iterations: u64, mut old: F1, mut new: F2) {
+    for _ in 0..100 {
+        old();
+        new();
+    }
+
+    let start_old = Instant::now();
+    for _ in 0..iterations {
+        old();
+    }
+    let elapsed_old = start_old.elapsed();
+
+    let start_new = Instant::now();
+    for _ in 0..iterations {
+        new();
+    }
+    let elapsed_new = start_new.elapsed();
+
+    let old_ns = elapsed_old.as_nanos() as f64 / iterations as f64;
+    let new_ns = elapsed_new.as_nanos() as f64 / iterations as f64;
+    let speedup = if new_ns > 0.0 {
+        old_ns / new_ns
+    } else {
+        f64::INFINITY
+    };
+
+    println!(
+        "  {:<50} old: {:>8.0} ns/iter | new: {:>8.0} ns/iter | speedup: {:.2}x",
+        name, old_ns, new_ns, speedup,
     );
 }
 
@@ -116,15 +147,9 @@ fn large_luau_file() -> String {
     content.push_str("local ReplicatedStorage = game:GetService(\"ReplicatedStorage\")\n\n");
 
     for i in 0..200 {
-        let alias_paths = [
-            "src/client/",
-            "src/server/",
-            "src/shared/",
-        ];
+        let alias_paths = ["src/client/", "src/server/", "src/shared/"];
         let path = alias_paths[i % alias_paths.len()];
-        content.push_str(&format!(
-            "local Module{i} = require(\"{path}Module{i}\")\n"
-        ));
+        content.push_str(&format!("local Module{i} = require(\"{path}Module{i}\")\n"));
     }
 
     content.push_str("\nreturn {}\n");
@@ -133,7 +158,10 @@ fn large_luau_file() -> String {
 
 // ─── Build helpers matching require_fixer internals ───────────────────────────
 
-fn build_sorted_src_aliases(aliases: &HashMap<String, String>, src_prefix: &str) -> Vec<(String, String)> {
+fn build_sorted_src_aliases(
+    aliases: &HashMap<String, String>,
+    src_prefix: &str,
+) -> Vec<(String, String)> {
     let prefix = format!("{src_prefix}/");
     let mut list: Vec<(String, String)> = aliases
         .iter()
@@ -183,6 +211,30 @@ fn build_inverted_aliases(aliases: &HashMap<String, String>) -> Vec<(String, Str
     inverted
 }
 
+fn create_temp_lua_tree(count: usize) -> tempfile::TempDir {
+    let dir = tempfile::TempDir::new().expect("create temp dir");
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(src.join("client")).unwrap();
+    std::fs::create_dir_all(src.join("server")).unwrap();
+    std::fs::create_dir_all(src.join("shared")).unwrap();
+
+    let subdirs = ["client", "server", "shared"];
+    for i in 0..count {
+        let subdir = subdirs[i % subdirs.len()];
+        let content = if i % 3 == 0 {
+            format!(
+                "local mod = require(\"src/{}/Module{}\")\nreturn {{}}\n",
+                subdirs[(i + 1) % subdirs.len()],
+                i
+            )
+        } else {
+            "local x = 42\nreturn {}\n".to_string()
+        };
+        std::fs::write(src.join(subdir).join(format!("Module{}.luau", i)), content).unwrap();
+    }
+    dir
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 fn main() {
@@ -203,7 +255,6 @@ fn main() {
         let _ = load_config_from_str(toml_input);
     });
 
-    // Larger TOML with many aliases
     let large_toml = {
         let mut s = sample_toml().to_string();
         for i in 0..50 {
@@ -238,16 +289,20 @@ fn main() {
     });
 
     let large_content = large_luau_file();
-    bench("process_file_content (200 requires)", large_iterations, || {
-        let _ = process_file_content(
-            &large_content,
-            &sorted_aliases,
-            &skip_list,
-            src_prefix,
-            None,
-            &inverted_aliases,
-        );
-    });
+    bench(
+        "process_file_content (200 requires)",
+        large_iterations,
+        || {
+            let _ = process_file_content(
+                &large_content,
+                &sorted_aliases,
+                &skip_list,
+                src_prefix,
+                None,
+                &inverted_aliases,
+            );
+        },
+    );
 
     println!();
 
@@ -262,7 +317,6 @@ fn main() {
         let _ = generate_luaurc(&aliases);
     });
 
-    // Larger alias set
     let mut large_aliases = aliases.clone();
     for i in 0..50 {
         large_aliases.insert(format!("Alias{i}"), format!("src/module{i}/"));
@@ -273,23 +327,62 @@ fn main() {
 
     println!();
 
+    // ── 4. Optimization benchmarks ──────────────────────────────────────────
+    println!("── Optimization: FixContext caching (#2) ────────────────────────────");
+
+    bench_compare(
+        "fix_single_file rebuild vs cached (6 requires)",
+        iterations,
+        || {
+            let _sorted = build_sorted_src_aliases(&aliases, src_prefix);
+            let _skip = build_skip_list(&aliases, src_prefix);
+            let _inv = build_inverted_aliases(&aliases);
+            let _ = process_file_content(small_content, &_sorted, &_skip, src_prefix, None, &_inv);
+        },
+        || {
+            let _ = process_file_content(
+                small_content,
+                &sorted_aliases,
+                &skip_list,
+                src_prefix,
+                None,
+                &inverted_aliases,
+            );
+        },
+    );
+
+    println!();
+
+    // ── 5. Directory-wide require fixing ───────────────────────────────────
+    println!("── fix_requires 200 files ───────────────────────────────────────────");
+    bench("fix_requires 200 files", large_iterations, || {
+        let dir = create_temp_lua_tree(200);
+        let src_dir = dir.path().join("src");
+        let _ = require_fixer::fix_requires(&src_dir, &aliases, "src");
+    });
+
+    println!();
+
     // ── Summary ───────────────────────────────────────────────────────────────
     println!("── Overall Timing ─────────────────────────────────────────────────");
 
-    // End-to-end: parse config + rewrite 200 requires + generate configs
-    bench("full pipeline (parse + 200 rewrites + gen configs)", large_iterations, || {
-        let _ = load_config_from_str(sample_toml());
-        let _ = process_file_content(
-            &large_content,
-            &sorted_aliases,
-            &skip_list,
-            src_prefix,
-            None,
-            &inverted_aliases,
-        );
-        let _ = generate_darklua_json();
-        let _ = generate_luaurc(&aliases);
-    });
+    bench(
+        "full pipeline (parse + 200 rewrites + gen configs)",
+        large_iterations,
+        || {
+            let _ = load_config_from_str(sample_toml());
+            let _ = process_file_content(
+                &large_content,
+                &sorted_aliases,
+                &skip_list,
+                src_prefix,
+                None,
+                &inverted_aliases,
+            );
+            let _ = generate_darklua_json();
+            let _ = generate_luaurc(&aliases);
+        },
+    );
 
     println!();
 }

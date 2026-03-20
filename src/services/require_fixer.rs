@@ -38,6 +38,25 @@ pub struct RequireRewrite {
     pub new: String,
 }
 
+/// Pre-built alias data structures for reuse across multiple `fix_single_file` calls.
+pub struct FixContext {
+    pub sorted_aliases: Vec<(String, String)>,
+    pub skip_list: Vec<String>,
+    pub inverted_aliases: Vec<(String, String)>,
+    pub src_prefix: String,
+}
+
+impl FixContext {
+    pub fn new(aliases: &HashMap<String, String>, src_prefix: &str) -> Self {
+        Self {
+            sorted_aliases: build_sorted_src_aliases(aliases, src_prefix),
+            skip_list: build_skip_list(aliases, src_prefix),
+            inverted_aliases: build_inverted_aliases(aliases),
+            src_prefix: src_prefix.to_string(),
+        }
+    }
+}
+
 // ─── Public functions ─────────────────────────────────────────────────────────
 
 /// Scan all .lua/.luau files under `root_dir` and rewrite require paths to
@@ -48,26 +67,31 @@ pub struct RequireRewrite {
 ///
 /// `src_prefix` is the source directory prefix (e.g. `"src"`) used to
 /// distinguish internal aliases (rooted under src/) from external ones.
+///
 pub fn fix_requires(
     root_dir: &Path,
     aliases: &HashMap<String, String>,
     src_prefix: &str,
 ) -> Result<FixResult> {
-    // Build sorted alias list, skip list, and inverted aliases once (performance)
     let sorted_aliases = build_sorted_src_aliases(aliases, src_prefix);
     let skip_list = build_skip_list(aliases, src_prefix);
     let inverted_aliases = build_inverted_aliases(aliases);
 
-    let mut result = FixResult::default();
-
-    for entry in WalkDir::new(root_dir)
+    let files: Vec<PathBuf> = WalkDir::new(root_dir)
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file() && is_lua_file(e.path()))
-    {
-        result.total_files_scanned += 1;
+        .map(|e| e.into_path())
+        .collect();
 
-        let content = std::fs::read_to_string(entry.path())?;
+    let total_files_scanned = files.len();
+
+    let mut changes: Vec<FileChange> = Vec::new();
+    for path in &files {
+        let content = std::fs::read_to_string(path)?;
+        if !content.contains("require(\"") {
+            continue;
+        }
         let (new_content, rewrites) = process_file_content(
             &content,
             &sorted_aliases,
@@ -76,19 +100,22 @@ pub fn fix_requires(
             Some(root_dir),
             &inverted_aliases,
         );
-
-        if !rewrites.is_empty() {
-            // BUILD-04: only write when changes are actually made
-            std::fs::write(entry.path(), &new_content)?;
-            result.files_changed += 1;
-            result.changes.push(FileChange {
-                file: entry.path().to_path_buf(),
-                rewrites,
-            });
+        if rewrites.is_empty() {
+            continue;
         }
+        std::fs::write(path, &new_content)?;
+        changes.push(FileChange {
+            file: path.clone(),
+            rewrites,
+        });
     }
 
-    Ok(result)
+    let files_changed = changes.len();
+    Ok(FixResult {
+        files_changed,
+        total_files_scanned,
+        changes,
+    })
 }
 
 /// Process a single file, rewriting its require paths in place.
@@ -116,6 +143,35 @@ pub fn fix_single_file(
     }
 
     // BUILD-04: only write when changes are actually made
+    std::fs::write(file_path, &new_content)?;
+    Ok(Some(FileChange {
+        file: file_path.to_path_buf(),
+        rewrites,
+    }))
+}
+
+/// Process a single file using pre-built alias data from a `FixContext`.
+pub fn fix_single_file_with_context(
+    file_path: &Path,
+    ctx: &FixContext,
+) -> Result<Option<FileChange>> {
+    let content = std::fs::read_to_string(file_path)?;
+    if !content.contains("require(\"") {
+        return Ok(None);
+    }
+    let (new_content, rewrites) = process_file_content(
+        &content,
+        &ctx.sorted_aliases,
+        &ctx.skip_list,
+        &ctx.src_prefix,
+        Some(Path::new(&ctx.src_prefix)),
+        &ctx.inverted_aliases,
+    );
+
+    if rewrites.is_empty() {
+        return Ok(None);
+    }
+
     std::fs::write(file_path, &new_content)?;
     Ok(Some(FileChange {
         file: file_path.to_path_buf(),
@@ -182,9 +238,8 @@ pub fn is_lua_file(path: &Path) -> bool {
 /// Return the compiled require-path regex
 pub fn require_regex() -> &'static Regex {
     static REQUIRE_RE: OnceLock<Regex> = OnceLock::new();
-    REQUIRE_RE.get_or_init(|| {
-        Regex::new(r#"require\("([^"]+)"\)"#).expect("require regex is valid")
-    })
+    REQUIRE_RE
+        .get_or_init(|| Regex::new(r#"require\("([^"]+)"\)"#).expect("require regex is valid"))
 }
 
 /// Recursively search for a file by name under `search_dir`.
@@ -474,7 +529,11 @@ mod tests {
         let sorted = build_sorted_src_aliases(&aliases, "src");
 
         // Must have at least 2 entries
-        assert!(sorted.len() >= 2, "expected 2 sorted aliases, got {:?}", sorted);
+        assert!(
+            sorted.len() >= 2,
+            "expected 2 sorted aliases, got {:?}",
+            sorted
+        );
         // SharedClient's real path (src/client/shared/) is longer → must appear first
         assert!(
             sorted[0].1.len() >= sorted[1].1.len(),
@@ -565,10 +624,22 @@ mod tests {
         let aliases: HashMap<String, String> = HashMap::new();
         let skip = build_skip_list(&aliases, "src");
 
-        assert!(skip.contains(&"@self/".to_string()), "@self/ must be in skip list");
-        assert!(skip.contains(&"@self".to_string()), "@self must be in skip list");
-        assert!(skip.contains(&"@game/".to_string()), "@game/ must be in skip list");
-        assert!(skip.contains(&"@game".to_string()), "@game must be in skip list");
+        assert!(
+            skip.contains(&"@self/".to_string()),
+            "@self/ must be in skip list"
+        );
+        assert!(
+            skip.contains(&"@self".to_string()),
+            "@self must be in skip list"
+        );
+        assert!(
+            skip.contains(&"@game/".to_string()),
+            "@game/ must be in skip list"
+        );
+        assert!(
+            skip.contains(&"@game".to_string()),
+            "@game must be in skip list"
+        );
     }
 
     // ── Require detection tests ───────────────────────────────────────────────
@@ -581,7 +652,11 @@ mod tests {
             .captures_iter(content)
             .filter_map(|c| c.get(1).map(|m| m.as_str()))
             .collect();
-        assert_eq!(caps, vec!["@Client/module"], "double-quote require must be found");
+        assert_eq!(
+            caps,
+            vec!["@Client/module"],
+            "double-quote require must be found"
+        );
     }
 
     #[test]
@@ -592,7 +667,10 @@ mod tests {
             .captures_iter(content)
             .filter_map(|c| c.get(1).map(|m| m.as_str()))
             .collect();
-        assert!(caps.is_empty(), "single-quote require must NOT be matched (Luau parity)");
+        assert!(
+            caps.is_empty(),
+            "single-quote require must NOT be matched (Luau parity)"
+        );
     }
 
     #[test]
@@ -621,7 +699,8 @@ local c = require("@Packages/rodux")
         let skip = build_skip_list(&aliases, "src");
 
         let content = r#"local m = require("src/client/module")"#;
-        let (new_content, rewrites) = process_file_content(content, &sorted, &skip, "src", None, &[]);
+        let (new_content, rewrites) =
+            process_file_content(content, &sorted, &skip, "src", None, &[]);
 
         assert_eq!(rewrites.len(), 1, "one rewrite should occur");
         assert_eq!(rewrites[0].old, "src/client/module");
@@ -646,7 +725,10 @@ local c = require("@Packages/rodux")
 
         assert_eq!(rewrites.len(), 1);
         // SharedClient is the longer (more specific) match
-        assert_eq!(rewrites[0].new, "@SharedClient/util", "SharedClient must win over Client");
+        assert_eq!(
+            rewrites[0].new, "@SharedClient/util",
+            "SharedClient must win over Client"
+        );
     }
 
     #[test]
@@ -656,7 +738,8 @@ local c = require("@Packages/rodux")
         let skip = build_skip_list(&aliases, "src");
 
         let content = r#"local r = require("@Packages/rodux")"#;
-        let (new_content, rewrites) = process_file_content(content, &sorted, &skip, "src", None, &[]);
+        let (new_content, rewrites) =
+            process_file_content(content, &sorted, &skip, "src", None, &[]);
 
         assert!(rewrites.is_empty(), "external alias must not be rewritten");
         assert_eq!(new_content, content, "content must be unchanged");
@@ -668,7 +751,8 @@ local c = require("@Packages/rodux")
         let skip = build_skip_list(&HashMap::new(), "src");
 
         let content = r#"local m = require("@self/module")"#;
-        let (new_content, rewrites) = process_file_content(content, &sorted, &skip, "src", None, &[]);
+        let (new_content, rewrites) =
+            process_file_content(content, &sorted, &skip, "src", None, &[]);
 
         assert!(rewrites.is_empty(), "@self require must not be rewritten");
         assert_eq!(new_content, content, "content must be unchanged");
@@ -680,7 +764,8 @@ local c = require("@Packages/rodux")
         let skip = build_skip_list(&HashMap::new(), "src");
 
         let content = r#"local m = require("@game/ReplicatedStorage")"#;
-        let (new_content, rewrites) = process_file_content(content, &sorted, &skip, "src", None, &[]);
+        let (new_content, rewrites) =
+            process_file_content(content, &sorted, &skip, "src", None, &[]);
 
         assert!(rewrites.is_empty(), "@game require must not be rewritten");
         assert_eq!(new_content, content, "content must be unchanged");
@@ -694,9 +779,13 @@ local c = require("@Packages/rodux")
 
         // Content has no requires at all
         let content = "local x = 42\nreturn x\n";
-        let (new_content, rewrites) = process_file_content(content, &sorted, &skip, "src", None, &[]);
+        let (new_content, rewrites) =
+            process_file_content(content, &sorted, &skip, "src", None, &[]);
 
-        assert!(rewrites.is_empty(), "no rewrites for content with no requires");
+        assert!(
+            rewrites.is_empty(),
+            "no rewrites for content with no requires"
+        );
         assert_eq!(new_content, content, "content must be unchanged");
     }
 
@@ -717,8 +806,14 @@ local b = require("src/server/api")
 
         assert_eq!(rewrites.len(), 2, "both requires must be rewritten");
         let new_paths: Vec<&str> = rewrites.iter().map(|r| r.new.as_str()).collect();
-        assert!(new_paths.contains(&"@Client/ui"), "Client rewrite must be present");
-        assert!(new_paths.contains(&"@Server/api"), "Server rewrite must be present");
+        assert!(
+            new_paths.contains(&"@Client/ui"),
+            "Client rewrite must be present"
+        );
+        assert!(
+            new_paths.contains(&"@Server/api"),
+            "Server rewrite must be present"
+        );
     }
 
     #[test]
@@ -729,11 +824,14 @@ local b = require("src/server/api")
         let sorted = build_sorted_src_aliases(&aliases, "src");
         let skip = build_skip_list(&aliases, "src");
 
-        
         let content = r#"local m = require("@Client/module")"#;
-        let (new_content, rewrites) = process_file_content(content, &sorted, &skip, "src", None, &[]);
+        let (new_content, rewrites) =
+            process_file_content(content, &sorted, &skip, "src", None, &[]);
 
-        assert!(rewrites.is_empty(), "aliased path with no filesystem must not be rewritten");
+        assert!(
+            rewrites.is_empty(),
+            "aliased path with no filesystem must not be rewritten"
+        );
         assert_eq!(new_content, content, "content must be unchanged");
     }
 
@@ -746,10 +844,14 @@ local b = require("src/server/api")
         let skip = build_skip_list(&aliases, "src");
 
         let content = r#"local m = require("@Client/module")"#;
-        let (new_content, rewrites) = process_file_content(content, &sorted, &skip, "src", None, &[]);
+        let (new_content, rewrites) =
+            process_file_content(content, &sorted, &skip, "src", None, &[]);
 
         // No filesystem to search — path stays the same
-        assert!(rewrites.is_empty(), "aliased path with no filesystem should not be rewritten");
+        assert!(
+            rewrites.is_empty(),
+            "aliased path with no filesystem should not be rewritten"
+        );
         assert_eq!(new_content, content, "content must be unchanged");
     }
 
@@ -780,7 +882,10 @@ local b = require("src/server/api")
 
         let result = fix_requires(dir.path(), &aliases, "src").expect("fix_requires must succeed");
 
-        assert_eq!(result.total_files_scanned, 3, "all 3 .luau files must be scanned");
+        assert_eq!(
+            result.total_files_scanned, 3,
+            "all 3 .luau files must be scanned"
+        );
         assert_eq!(result.files_changed, 3, "all 3 files must be changed");
     }
 
@@ -799,7 +904,10 @@ local b = require("src/server/api")
         let result = fix_requires(dir.path(), &aliases, "src").expect("fix_requires must succeed");
 
         // Only .luau and .lua files are scanned
-        assert_eq!(result.total_files_scanned, 2, ".txt and .json must not be scanned");
+        assert_eq!(
+            result.total_files_scanned, 2,
+            ".txt and .json must not be scanned"
+        );
     }
 
     #[test]
@@ -865,7 +973,47 @@ local b = require("src/server/api")
         let result = fix_requires(dir.path(), &aliases, "src").expect("fix_requires must succeed");
 
         assert_eq!(result.total_files_scanned, 3, "3 files scanned");
-        assert_eq!(result.files_changed, 2, "only 2 files changed (b.luau has no requires)");
+        assert_eq!(
+            result.files_changed, 2,
+            "only 2 files changed (b.luau has no requires)"
+        );
         assert_eq!(result.changes.len(), 2, "2 FileChange entries");
+    }
+
+    #[test]
+    fn test_fix_requires_rewrites_unchanged_dependents_after_topology_change() {
+        let dir = make_temp_tree(&[
+            ("consumer.luau", r#"local m = require("@Client/module")"#),
+            ("src/shared/module.luau", "return {}\n"),
+        ]);
+
+        let mut aliases = HashMap::new();
+        aliases.insert("Client".to_string(), "src/client/".to_string());
+        aliases.insert("Shared".to_string(), "src/shared/".to_string());
+        aliases.insert("Server".to_string(), "src/server/".to_string());
+
+        fix_requires(dir.path(), &aliases, "src").expect("initial scan must succeed");
+
+        let consumer_path = dir.path().join("consumer.luau");
+        let initial = std::fs::read_to_string(&consumer_path).expect("read initial consumer");
+        assert!(
+            initial.contains("@Shared/module"),
+            "initial scan should resolve the consumer to the shared alias: {initial}"
+        );
+
+        std::fs::create_dir_all(dir.path().join("src/server")).expect("create server dir");
+        std::fs::rename(
+            dir.path().join("src/shared/module.luau"),
+            dir.path().join("src/server/module.luau"),
+        )
+        .expect("move module to server");
+
+        fix_requires(dir.path(), &aliases, "src").expect("rescan after move must succeed");
+
+        let updated = std::fs::read_to_string(&consumer_path).expect("read updated consumer");
+        assert!(
+            updated.contains("@Server/module"),
+            "rescan must rewrite unchanged dependents after topology changes: {updated}"
+        );
     }
 }

@@ -4,10 +4,6 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use anyhow::Context;
-use owo_colors::OwoColorize;
-use owo_colors::Stream;
-
 use crate::{
     config::{EzpmConfig, RequireFixMode},
     output,
@@ -19,6 +15,9 @@ use crate::{
         require_fixer, sourcemap,
     },
 };
+use anyhow::Context;
+use owo_colors::OwoColorize;
+use owo_colors::Stream;
 
 // ─── Port helpers ──────────────────────────────────────────────────────────────
 
@@ -38,6 +37,20 @@ fn generate_build_project(src: &str, build: &str) -> anyhow::Result<()> {
 }
 
 // ─── Watch loop helpers ────────────────────────────────────────────────────────
+
+async fn run_fix_requires(
+    src: &str,
+    aliases: &HashMap<String, String>,
+) -> anyhow::Result<require_fixer::FixResult> {
+    let src_clone = src.to_string();
+    let aliases_clone = aliases.clone();
+    tokio::task::spawn_blocking(move || {
+        require_fixer::fix_requires(&PathBuf::from(&src_clone), &aliases_clone, &src_clone)
+    })
+    .await
+    .unwrap_or_else(|e| Err(anyhow::anyhow!("task panicked: {}", e)))
+}
+
 async fn handle_changes(
     changes: &[FileChange],
     src: &str,
@@ -47,6 +60,7 @@ async fn handle_changes(
     project_dir: &Path,
     failed_files: &mut HashSet<PathBuf>,
     file_changes_enabled: bool,
+    fix_ctx: &require_fixer::FixContext,
 ) {
     let t0 = Instant::now();
     let is_batch = changes.len() > 1;
@@ -64,6 +78,7 @@ async fn handle_changes(
                     failed_files,
                     is_batch,
                     file_changes_enabled,
+                    fix_ctx,
                 )
                 .await;
             }
@@ -81,6 +96,7 @@ async fn handle_changes(
                     failed_files,
                     is_batch,
                     file_changes_enabled,
+                    fix_ctx,
                 )
                 .await;
             }
@@ -160,43 +176,25 @@ async fn handle_lua_change(
     failed_files: &mut HashSet<PathBuf>,
     is_batch: bool,
     file_changes_enabled: bool,
+    fix_ctx: &require_fixer::FixContext,
 ) {
     let t0 = Instant::now();
 
     // Step 1: Fix require paths using configured strategy.
     match require_fix_mode {
         RequireFixMode::Strict => {
-            let src_clone = src.to_string();
-            let aliases_clone = aliases.clone();
-            let result = tokio::task::spawn_blocking(move || {
-                require_fixer::fix_requires(&PathBuf::from(&src_clone), &aliases_clone, &src_clone)
-            })
-            .await;
-
-            match result {
-                Ok(Ok(_)) => {}
-                Ok(Err(e)) => {
-                    output::error(&format!(
-                        "{}: require fix failed: {}",
-                        display_name(path),
-                        e
-                    ));
-                    failed_files.insert(path.to_path_buf());
-                    return;
-                }
-                Err(e) => {
-                    output::error(&format!(
-                        "{}: require fix task panicked: {}",
-                        display_name(path),
-                        e
-                    ));
-                    failed_files.insert(path.to_path_buf());
-                    return;
-                }
+            if let Err(e) = run_fix_requires(src, aliases).await {
+                output::error(&format!(
+                    "{}: require fix failed: {}",
+                    display_name(path),
+                    e
+                ));
+                failed_files.insert(path.to_path_buf());
+                return;
             }
         }
         RequireFixMode::Hybrid | RequireFixMode::Fast => {
-            if let Err(e) = require_fixer::fix_single_file(path, aliases, src) {
+            if let Err(e) = require_fixer::fix_single_file_with_context(path, fix_ctx) {
                 output::error(&format!(
                     "{}: require fix failed: {}",
                     display_name(path),
@@ -368,8 +366,6 @@ async fn handle_meta_change(
 }
 
 /// Handle a `FileChange::FileCreated` event.
-///
-/// Matches Luau order: fix requires → sourcemap → darklua (single file to build parent dir).
 async fn handle_file_created(
     path: &Path,
     src: &str,
@@ -380,54 +376,30 @@ async fn handle_file_created(
     failed_files: &mut HashSet<PathBuf>,
     is_batch: bool,
     file_changes_enabled: bool,
+    fix_ctx: &require_fixer::FixContext,
 ) {
     let t0 = Instant::now();
 
-    // If the created file is Lua/Luau, run hybrid pipeline.
     let is_lua = matches!(
         path.extension().and_then(|e| e.to_str()),
         Some("lua") | Some("luau")
     );
 
     if is_lua {
-        // Step 1: Fix require paths using configured strategy.
         match require_fix_mode {
             RequireFixMode::Strict => {
-                let src_clone = src.to_string();
-                let aliases_clone = aliases.clone();
-                let result = tokio::task::spawn_blocking(move || {
-                    require_fixer::fix_requires(
-                        &PathBuf::from(&src_clone),
-                        &aliases_clone,
-                        &src_clone,
-                    )
-                })
-                .await;
-
-                match result {
-                    Ok(Ok(_)) => {}
-                    Ok(Err(e)) => {
-                        output::error(&format!(
-                            "{}: require fix failed: {}",
-                            display_name(path),
-                            e
-                        ));
-                        failed_files.insert(path.to_path_buf());
-                        return;
-                    }
-                    Err(e) => {
-                        output::error(&format!(
-                            "{}: require fix task panicked: {}",
-                            display_name(path),
-                            e
-                        ));
-                        failed_files.insert(path.to_path_buf());
-                        return;
-                    }
+                if let Err(e) = run_fix_requires(src, aliases).await {
+                    output::error(&format!(
+                        "{}: require fix failed: {}",
+                        display_name(path),
+                        e
+                    ));
+                    failed_files.insert(path.to_path_buf());
+                    return;
                 }
             }
             RequireFixMode::Hybrid | RequireFixMode::Fast => {
-                if let Err(e) = require_fixer::fix_single_file(path, aliases, src) {
+                if let Err(e) = require_fixer::fix_single_file_with_context(path, fix_ctx) {
                     output::error(&format!(
                         "{}: require fix failed: {}",
                         display_name(path),
@@ -531,8 +503,6 @@ async fn handle_file_created(
 }
 
 /// Handle a `FileChange::DirectoryCreated` event.
-///
-/// Matches Luau's onDirectoryCreated: fix all requires → sourcemap → darklua on new dir.
 async fn handle_directory_created(
     path: &Path,
     src: &str,
@@ -550,25 +520,10 @@ async fn handle_directory_created(
         .to_string_lossy()
         .to_string();
 
-    // Step 1: Strict mode keeps full-tree require fixing on directory create.
     if matches!(require_fix_mode, RequireFixMode::Strict) {
-        let src_clone = src.to_string();
-        let aliases_clone = aliases.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            require_fixer::fix_requires(&PathBuf::from(&src_clone), &aliases_clone, &src_clone)
-        })
-        .await;
-
-        match result {
-            Ok(Ok(_)) => {}
-            Ok(Err(e)) => {
-                output::error(&format!("{}/: require fix failed: {}", dirname, e));
-                return;
-            }
-            Err(e) => {
-                output::error(&format!("{}/: require fix task panicked: {}", dirname, e));
-                return;
-            }
+        if let Err(e) = run_fix_requires(src, aliases).await {
+            output::error(&format!("{}/: require fix failed: {}", dirname, e));
+            return;
         }
     }
 
@@ -660,25 +615,10 @@ async fn handle_directory_removed(
         .to_string_lossy()
         .to_string();
 
-    // Step 1: strict/hybrid fix requires on entire src tree; fast skips this.
     if !matches!(require_fix_mode, RequireFixMode::Fast) {
-        let src_clone = src.to_string();
-        let aliases_clone = aliases.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            require_fixer::fix_requires(&PathBuf::from(&src_clone), &aliases_clone, &src_clone)
-        })
-        .await;
-
-        match result {
-            Ok(Ok(_)) => {}
-            Ok(Err(e)) => {
-                output::error(&format!("{}/: require fix failed: {}", dirname, e));
-                return;
-            }
-            Err(e) => {
-                output::error(&format!("{}/: require fix task panicked: {}", dirname, e));
-                return;
-            }
+        if let Err(e) = run_fix_requires(src, aliases).await {
+            output::error(&format!("{}/: require fix failed: {}", dirname, e));
+            return;
         }
     }
 
@@ -735,33 +675,14 @@ async fn handle_file_deleted(
 ) {
     let t0 = Instant::now();
 
-    // Step 1: strict/hybrid fix requires on entire src tree; fast skips this.
     if !matches!(require_fix_mode, RequireFixMode::Fast) {
-        let src_clone = src.to_string();
-        let aliases_clone = aliases.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            require_fixer::fix_requires(&PathBuf::from(&src_clone), &aliases_clone, &src_clone)
-        })
-        .await;
-
-        match result {
-            Ok(Ok(_)) => {}
-            Ok(Err(e)) => {
-                output::error(&format!(
-                    "{}: require fix failed: {}",
-                    display_name(path),
-                    e
-                ));
-                return;
-            }
-            Err(e) => {
-                output::error(&format!(
-                    "{}: require fix task panicked: {}",
-                    display_name(path),
-                    e
-                ));
-                return;
-            }
+        if let Err(e) = run_fix_requires(src, aliases).await {
+            output::error(&format!(
+                "{}: require fix failed: {}",
+                display_name(path),
+                e
+            ));
+            return;
         }
     }
 
@@ -1119,8 +1040,34 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
     // ── Watch loop ────────────────────────────────────────────────────────────
     let mut failed_files: HashSet<PathBuf> = HashSet::new();
     let mut rojo_restart_count: u32 = 0;
+    let fix_ctx = require_fixer::FixContext::new(&aliases, &src);
+
+    // Listen for SIGHUP/SIGTERM so closing the terminal (without Ctrl-C)
+    // still triggers a clean shutdown that kills the Rojo process group.
+    #[cfg(unix)]
+    let mut sig_hup = {
+        use tokio::signal::unix::{signal, SignalKind};
+        signal(SignalKind::hangup()).context("failed to register SIGHUP handler")?
+    };
+    #[cfg(unix)]
+    let mut sig_term = {
+        use tokio::signal::unix::{signal, SignalKind};
+        signal(SignalKind::terminate()).context("failed to register SIGTERM handler")?
+    };
 
     loop {
+        let terminal_signal = async {
+            #[cfg(unix)]
+            {
+                tokio::select! {
+                    _ = sig_hup.recv() => {}
+                    _ = sig_term.recv() => {}
+                }
+            }
+            #[cfg(not(unix))]
+            std::future::pending::<()>().await
+        };
+
         tokio::select! {
             event = watcher_rx.recv() => {
                 match event {
@@ -1134,6 +1081,7 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
                             &project_dir,
                             &mut failed_files,
                             file_changes_enabled,
+                            &fix_ctx,
                         )
                         .await;
                     }
@@ -1157,6 +1105,10 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
             }
             _ = tokio::signal::ctrl_c() => {
                 output::info("Stopping...");
+                break;
+            }
+            _ = terminal_signal => {
+                output::info("Terminal closed — stopping...");
                 break;
             }
         }
