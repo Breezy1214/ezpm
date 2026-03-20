@@ -1,69 +1,66 @@
 export interface CommandSpec {
 	commandId: string;
 	args: string[];
-	successMessage: string;
-	interactive: boolean;
+	execution: "runner" | "terminal";
+	successMessage?: string;
 }
 
 export const COMMAND_SPECS: CommandSpec[] = [
 	{
 		commandId: "ezpm.install",
 		args: ["install"],
+		execution: "runner",
 		successMessage: "ezpm install completed.",
-		interactive: false,
 	},
 	{
 		commandId: "ezpm.lint",
 		args: ["lint"],
+		execution: "runner",
 		successMessage: "ezpm lint completed.",
-		interactive: false,
 	},
 	{
 		commandId: "ezpm.format",
 		args: ["format"],
+		execution: "runner",
 		successMessage: "ezpm format completed.",
-		interactive: false,
 	},
 	{
 		commandId: "ezpm.formatCheck",
 		args: ["format", "--check"],
+		execution: "runner",
 		successMessage: "ezpm format --check passed.",
-		interactive: false,
 	},
 	{
 		commandId: "ezpm.docs",
 		args: ["docs"],
-		successMessage: "ezpm docs finished.",
-		interactive: false,
+		execution: "terminal",
 	},
 	{
 		commandId: "ezpm.fixRequires",
 		args: ["fix-requires"],
+		execution: "runner",
 		successMessage: "ezpm fix-requires completed.",
-		interactive: false,
 	},
 	{
 		commandId: "ezpm.check",
 		args: ["check"],
+		execution: "runner",
 		successMessage: "ezpm check passed.",
-		interactive: false,
 	},
 	{
 		commandId: "ezpm.setupWallyPackages",
 		args: ["setup-wally-packages"],
+		execution: "runner",
 		successMessage: "ezpm setup-wally-packages completed.",
-		interactive: false,
 	},
 	{
 		commandId: "ezpm.init",
 		args: ["init"],
-		successMessage: "",
-		interactive: true,
+		execution: "terminal",
 	},
 	{
 		commandId: "ezpm.alias",
 		args: ["alias"],
-		successMessage: "",
-		interactive: true,
+		execution: "terminal",
 	},
 ];

@@ -13,11 +13,30 @@ export class EzpmDiagnosticsProvider implements vscode.Disposable {
 		this.collection = vscode.languages.createDiagnosticCollection("ezpm");
 	}
 
-	public async refresh(folder: vscode.WorkspaceFolder): Promise<void> {
-		const runResult = await this.runner.run({
-			cwd: folder.uri.fsPath,
-			args: ["check", "--json"],
-		});
+	public async refresh(
+		folder: vscode.WorkspaceFolder,
+		options?: { silent?: boolean },
+	): Promise<void> {
+		const silent = options?.silent ?? false;
+
+		let runResult;
+		try {
+			runResult = await this.runner.run({
+				cwd: folder.uri.fsPath,
+				args: ["check", "--json"],
+				resource: folder.uri,
+			});
+		} catch (error) {
+			this.output.appendLine(
+				`[diagnostics] Failed to run ezpm check --json: ${String(error)}`,
+			);
+			if (!silent) {
+				void vscode.window.showErrorMessage(
+					"Failed to run `ezpm check --json`. See the 'ezpm' output channel for details.",
+				);
+			}
+			return;
+		}
 
 		const raw = runResult.stdout.trim();
 		if (!raw) {
@@ -26,9 +45,11 @@ export class EzpmDiagnosticsProvider implements vscode.Disposable {
 			);
 			this.collection.clear();
 			if (runResult.exitCode !== 0) {
-				void vscode.window.showWarningMessage(
-					"ezpm check failed and did not return JSON diagnostics.",
-				);
+				if (!silent) {
+					void vscode.window.showWarningMessage(
+						"ezpm check failed and did not return JSON diagnostics.",
+					);
+				}
 			}
 			return;
 		}
@@ -39,6 +60,10 @@ export class EzpmDiagnosticsProvider implements vscode.Disposable {
 			this.collection.clear();
 			for (const [uri, diagnostics] of byFile.entries()) {
 				this.collection.set(vscode.Uri.parse(uri), diagnostics);
+			}
+
+			if (silent) {
+				return;
 			}
 
 			if (runResult.exitCode === 0) {
@@ -55,9 +80,11 @@ export class EzpmDiagnosticsProvider implements vscode.Disposable {
 				`[diagnostics] Failed to parse check JSON: ${String(error)}`,
 			);
 			this.collection.clear();
-			void vscode.window.showErrorMessage(
-				"Failed to parse output from `ezpm check --json`. Diagnostics cleared.",
-			);
+			if (!silent) {
+				void vscode.window.showErrorMessage(
+					"Failed to parse output from `ezpm check --json`. Diagnostics cleared.",
+				);
+			}
 		}
 	}
 

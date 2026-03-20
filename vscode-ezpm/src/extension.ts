@@ -23,6 +23,14 @@ export function activate(context: vscode.ExtensionContext): void {
 	registerCommands(context, runner, serveManager, diagnosticsProvider);
 
 	const pendingTimers = new Map<string, ReturnType<typeof setTimeout>>();
+	context.subscriptions.push(
+		new vscode.Disposable(() => {
+			for (const timer of pendingTimers.values()) {
+				clearTimeout(timer);
+			}
+			pendingTimers.clear();
+		}),
+	);
 
 	context.subscriptions.push(
 		vscode.workspace.onDidSaveTextDocument((document) => {
@@ -54,7 +62,7 @@ export function activate(context: vscode.ExtensionContext): void {
 				key,
 				setTimeout(() => {
 					pendingTimers.delete(key);
-					void diagnosticsProvider.refresh(folder);
+					void diagnosticsProvider.refresh(folder, { silent: true });
 				}, DIAGNOSTICS_DEBOUNCE_MS),
 			);
 		}),

@@ -1,9 +1,9 @@
 import * as path from "node:path";
 import * as vscode from "vscode";
 
-export function resolveEzpmBinary(): string {
+export function resolveEzpmBinary(resource?: vscode.Uri): string {
 	const configuredPath = vscode.workspace
-		.getConfiguration("ezpm")
+		.getConfiguration("ezpm", resource)
 		.get<string>("binaryPath", "")
 		.trim();
 	if (!configuredPath) {

@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { resolveEzpmBinary } from "../core/binaryResolver";
 import { EzpmRunner } from "../core/runner";
+import { quoteForShell } from "../core/shellQuote";
 import { ServeManager } from "../core/serveManager";
 import { pickWorkspaceFolder } from "../core/workspace";
 import { EzpmDiagnosticsProvider } from "../diagnostics/provider";
@@ -8,42 +9,51 @@ import { COMMAND_SPECS } from "./commandSpecs";
 
 async function runCommandAndReport(
 	runner: EzpmRunner,
+	folder: vscode.WorkspaceFolder,
 	commandArgs: string[],
-	successMessage: string,
+	successMessage?: string,
 ): Promise<void> {
-	const folder = await pickWorkspaceFolder();
-	if (!folder) {
-		return;
+	try {
+		const result = await runner.run({
+			cwd: folder.uri.fsPath,
+			args: commandArgs,
+			resource: folder.uri,
+		});
+
+		if (result.exitCode === 0) {
+			if (successMessage) {
+				void vscode.window.showInformationMessage(successMessage);
+			}
+			return;
+		}
+
+		void vscode.window.showErrorMessage(
+			`ezpm ${commandArgs.join(" ")} failed with exit code ${result.exitCode ?? "null"}. See 'ezpm' output for details.`,
+		);
+	} catch (error) {
+		void vscode.window.showErrorMessage(
+			`Failed to run ezpm ${commandArgs.join(" ")}: ${error instanceof Error ? error.message : String(error)}`,
+		);
 	}
-
-	const result = await runner.run({
-		cwd: folder.uri.fsPath,
-		args: commandArgs,
-	});
-
-	if (result.exitCode === 0) {
-		void vscode.window.showInformationMessage(successMessage);
-		return;
-	}
-
-	void vscode.window.showErrorMessage(
-		`ezpm ${commandArgs.join(" ")} failed with exit code ${result.exitCode ?? "null"}. See 'ezpm' output for details.`,
-	);
 }
 
-async function runInteractiveInTerminal(commandArgs: string[]): Promise<void> {
-	const folder = await pickWorkspaceFolder();
-	if (!folder) {
-		return;
-	}
-
-	const binary = resolveEzpmBinary();
+function runInTerminal(
+	folder: vscode.WorkspaceFolder,
+	commandArgs: string[],
+): void {
+	const binary = resolveEzpmBinary(folder.uri);
 	const terminal = vscode.window.createTerminal({
 		name: `ezpm ${commandArgs[0]}`,
 		cwd: folder.uri.fsPath,
 	});
 	terminal.show(true);
-	terminal.sendText(`${binary} ${commandArgs.join(" ")}`, true);
+	terminal.sendText(
+		[
+			quoteForShell(binary),
+			...commandArgs.map((arg) => quoteForShell(arg)),
+		].join(" "),
+		true,
+	);
 }
 
 export function registerCommands(
@@ -52,6 +62,17 @@ export function registerCommands(
 	serveManager: ServeManager,
 	diagnosticsProvider: EzpmDiagnosticsProvider,
 ): void {
+	const withFolder = async (
+		callback: (folder: vscode.WorkspaceFolder) => Promise<void> | void,
+	): Promise<void> => {
+		const folder = await pickWorkspaceFolder();
+		if (!folder) {
+			return;
+		}
+
+		await callback(folder);
+	};
+
 	const register = (
 		command: string,
 		callback: (...args: unknown[]) => unknown,
@@ -62,54 +83,43 @@ export function registerCommands(
 	};
 
 	for (const spec of COMMAND_SPECS) {
-		if (spec.interactive) {
+		if (spec.execution === "terminal") {
 			register(spec.commandId, async () => {
-				await runInteractiveInTerminal(spec.args);
+				await withFolder((folder) => {
+					runInTerminal(folder, spec.args);
+				});
 			});
 			continue;
 		}
 
 		register(spec.commandId, async () => {
-			await runCommandAndReport(runner, spec.args, spec.successMessage);
+			await withFolder((folder) =>
+				runCommandAndReport(runner, folder, spec.args, spec.successMessage),
+			);
 		});
 	}
 
 	register("ezpm.diagnostics.refresh", async () => {
-		const folder = await pickWorkspaceFolder();
-		if (!folder) {
-			return;
-		}
-		await diagnosticsProvider.refresh(folder);
+		await withFolder((folder) => diagnosticsProvider.refresh(folder));
 	});
 
 	register("ezpm.serve.start", async () => {
-		const folder = await pickWorkspaceFolder();
-		if (!folder) {
-			return;
-		}
-
-		const port = vscode.workspace
-			.getConfiguration("ezpm", folder.uri)
-			.get<number>("servePort", 0);
-		await serveManager.start(folder, port);
+		await withFolder(async (folder) => {
+			const port = vscode.workspace
+				.getConfiguration("ezpm", folder.uri)
+				.get<number>("servePort", 0);
+			await serveManager.start(folder, port);
+		});
 	});
 
 	register("ezpm.serve.stop", async () => {
-		const folder = await pickWorkspaceFolder();
-		if (!folder) {
-			return;
-		}
-
-		await serveManager.stop(folder);
+		await withFolder((folder) => serveManager.stop(folder));
 	});
 
 	register("ezpm.serve.status", async () => {
-		const folder = await pickWorkspaceFolder();
-		if (!folder) {
-			return;
-		}
-
-		const status = serveManager.status(folder);
-		void vscode.window.showInformationMessage(status);
+		await withFolder((folder) => {
+			const status = serveManager.status(folder);
+			void vscode.window.showInformationMessage(status);
+		});
 	});
 }

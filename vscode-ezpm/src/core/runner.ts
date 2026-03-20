@@ -7,7 +7,7 @@ export class EzpmRunner {
 	public constructor(private readonly output: vscode.OutputChannel) {}
 
 	public async run(options: EzpmRunOptions): Promise<EzpmRunResult> {
-		const binary = resolveEzpmBinary();
+		const binary = resolveEzpmBinary(options.resource);
 		const startedAt = Date.now();
 
 		this.output.appendLine(

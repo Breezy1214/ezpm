@@ -11,7 +11,26 @@
 	"categories": [
 		"Other"
 	],
-	"main": "./out/extension.js",
+	"keywords": [
+		"roblox",
+		"luau",
+		"rojo",
+		"wally",
+		"ezpm",
+		"package manager",
+		"pesde",
+		"lune",
+		"lute"
+	],
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/Breezy1214/ezpm.git"
+	},
+	"bugs": {
+		"url": "https://github.com/Breezy1214/ezpm/issues"
+	},
+	"homepage": "https://github.com/Breezy1214/ezpm/tree/main/vscode-ezpm",
+	"main": "./out/src/extension.js",
 	"activationEvents": [
 		"onStartupFinished"
 	],
@@ -100,7 +119,9 @@
 		"compile": "tsc -p ./",
 		"watch": "tsc -watch -p ./",
 		"lint": "tsc --noEmit -p ./",
-		"test": "npm run compile && mocha \"out/test/**/*.test.js\""
+		"test": "npm run compile && mocha \"out/test/**/*.test.js\"",
+		"package": "npm run compile && npm_config_cache=.npm-cache npx @vscode/vsce package --no-dependencies",
+		"publish:vsce": "npm run compile && npm_config_cache=.npm-cache npx @vscode/vsce publish --no-dependencies"
 	},
 	"devDependencies": {
 		"@types/mocha": "^10.0.10",

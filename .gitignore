@@ -18,3 +18,4 @@ node_modules/
 out/
 .vscode-test/
 vscode-ezpm/.npm-cache
+vscode-ezpm/*.vsix

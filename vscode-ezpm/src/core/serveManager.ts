@@ -27,7 +27,7 @@ export class ServeManager implements vscode.Disposable {
 			return;
 		}
 
-		const binary = resolveEzpmBinary();
+		const binary = resolveEzpmBinary(folder.uri);
 		const args = buildServeArgs(configuredPort);
 
 		this.output.appendLine(

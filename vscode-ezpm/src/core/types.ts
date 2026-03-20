@@ -1,3 +1,5 @@
+import * as vscode from "vscode";
+
 export interface EzpmRunResult {
 	exitCode: number | null;
 	signal: NodeJS.Signals | null;
@@ -9,4 +11,5 @@ export interface EzpmRunResult {
 export interface EzpmRunOptions {
 	cwd: string;
 	args: string[];
+	resource?: vscode.Uri;
 }
