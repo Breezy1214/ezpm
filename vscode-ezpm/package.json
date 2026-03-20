@@ -1,0 +1,133 @@
+{
+	"name": "vscode-ezpm",
+	"displayName": "ezpm",
+	"description": "VS Code integration for ezpm CLI workflows.",
+	"version": "0.1.0",
+	"publisher": "DevBreezy",
+	"license": "MIT",
+	"engines": {
+		"vscode": "^1.95.0"
+	},
+	"categories": [
+		"Other"
+	],
+	"keywords": [
+		"roblox",
+		"luau",
+		"rojo",
+		"wally",
+		"ezpm",
+		"package manager",
+		"pesde",
+		"lune",
+		"lute"
+	],
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/Breezy1214/ezpm.git"
+	},
+	"bugs": {
+		"url": "https://github.com/Breezy1214/ezpm/issues"
+	},
+	"homepage": "https://github.com/Breezy1214/ezpm/tree/main/vscode-ezpm",
+	"main": "./out/src/extension.js",
+	"activationEvents": [
+		"onStartupFinished"
+	],
+	"contributes": {
+		"commands": [
+			{
+				"command": "ezpm.serve.start",
+				"title": "ezpm: Start Serve"
+			},
+			{
+				"command": "ezpm.serve.stop",
+				"title": "ezpm: Stop Serve"
+			},
+			{
+				"command": "ezpm.serve.status",
+				"title": "ezpm: Serve Status"
+			},
+			{
+				"command": "ezpm.check",
+				"title": "ezpm: Check"
+			},
+			{
+				"command": "ezpm.fixRequires",
+				"title": "ezpm: Fix Requires"
+			},
+			{
+				"command": "ezpm.install",
+				"title": "ezpm: Install"
+			},
+			{
+				"command": "ezpm.lint",
+				"title": "ezpm: Lint"
+			},
+			{
+				"command": "ezpm.format",
+				"title": "ezpm: Format"
+			},
+			{
+				"command": "ezpm.formatCheck",
+				"title": "ezpm: Format (Check Only)"
+			},
+			{
+				"command": "ezpm.setupWallyPackages",
+				"title": "ezpm: Setup Wally Packages"
+			},
+			{
+				"command": "ezpm.docs",
+				"title": "ezpm: Docs"
+			},
+			{
+				"command": "ezpm.init",
+				"title": "ezpm: Init (Terminal)"
+			},
+			{
+				"command": "ezpm.alias",
+				"title": "ezpm: Alias (Terminal)"
+			},
+			{
+				"command": "ezpm.diagnostics.refresh",
+				"title": "ezpm: Refresh Diagnostics"
+			}
+		],
+		"configuration": {
+			"title": "ezpm",
+			"properties": {
+				"ezpm.binaryPath": {
+					"type": "string",
+					"default": "",
+					"description": "Absolute path to ezpm binary. When empty, extension falls back to PATH resolution."
+				},
+				"ezpm.servePort": {
+					"type": "number",
+					"default": 0,
+					"minimum": 0,
+					"description": "Optional default port for `ezpm serve`. 0 means no `-p` override."
+				},
+				"ezpm.autoRefreshDiagnostics": {
+					"type": "boolean",
+					"default": true,
+					"description": "Automatically run `ezpm check --json` when Lua/Luau files are saved."
+				}
+			}
+		}
+	},
+	"scripts": {
+		"compile": "tsc -p ./",
+		"watch": "tsc -watch -p ./",
+		"lint": "tsc --noEmit -p ./",
+		"test": "npm run compile && mocha \"out/test/**/*.test.js\"",
+		"package": "npm run compile && npm_config_cache=.npm-cache npx @vscode/vsce package --no-dependencies",
+		"publish:vsce": "npm run compile && npm_config_cache=.npm-cache npx @vscode/vsce publish --no-dependencies"
+	},
+	"devDependencies": {
+		"@types/mocha": "^10.0.10",
+		"@types/node": "^20.17.50",
+		"@types/vscode": "^1.95.0",
+		"mocha": "^10.8.2",
+		"typescript": "^5.8.3"
+	}
+}

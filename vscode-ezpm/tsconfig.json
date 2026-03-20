@@ -1,0 +1,16 @@
+{
+	"compilerOptions": {
+		"module": "commonjs",
+		"moduleResolution": "node",
+		"target": "ES2022",
+		"outDir": "out",
+		"lib": ["ES2022"],
+		"sourceMap": true,
+		"rootDir": ".",
+		"strict": true,
+		"esModuleInterop": true,
+		"types": ["node", "mocha", "vscode"],
+		"skipLibCheck": true
+	},
+	"include": ["src/**/*.ts", "test/**/*.ts"]
+}
