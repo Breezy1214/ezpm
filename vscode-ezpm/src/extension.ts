@@ -11,6 +11,7 @@ const DIAGNOSTICS_DEBOUNCE_MS = 1000;
 export function activate(context: vscode.ExtensionContext): void {
 	const output = vscode.window.createOutputChannel("ezpm", { log: true });
 	context.subscriptions.push(output);
+	output.appendLine("[activate] ezpm extension activated");
 
 	const runner = new EzpmRunner(output);
 	const serveManager = new ServeManager(output);
