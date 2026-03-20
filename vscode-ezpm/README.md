@@ -26,7 +26,7 @@ This extension wraps the `ezpm` CLI and preserves CLI behavior. It does not reim
 - `ezpm: Format` -> `ezpm format`
 - `ezpm: Format (Check Only)` -> `ezpm format --check`
 - `ezpm: Setup Wally Packages` -> `ezpm setup-wally-packages`
-- `ezpm: Docs` -> `ezpm docs`
+- `ezpm: Docs` -> runs `ezpm docs` in an integrated terminal because the docs server is long-running
 - `ezpm: Init (Terminal)` -> runs `ezpm init` in integrated terminal
 - `ezpm: Alias (Terminal)` -> runs `ezpm alias` in integrated terminal
 
@@ -38,6 +38,8 @@ Diagnostics come from `ezpm check --json`.
 - Architecture rule violations: Error diagnostics
 - Unused modules: Warning diagnostics
 
+Manual refresh shows a notification. Save-triggered auto-refresh updates diagnostics silently so normal editing is not interrupted.
+
 When JSON output is malformed or missing, diagnostics are cleared and an error is shown.
 
 ## Development
@@ -47,6 +49,7 @@ cd vscode-ezpm
 npm install
 npm run compile
 npm test
+npm run package
 ```
 
 Press `F5` in VS Code to launch an Extension Development Host.
