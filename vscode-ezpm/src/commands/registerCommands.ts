@@ -5,7 +5,7 @@ import { quoteForShell } from "../core/shellQuote";
 import { ServeManager } from "../core/serveManager";
 import { pickWorkspaceFolder } from "../core/workspace";
 import { EzpmDiagnosticsProvider } from "../diagnostics/provider";
-import { COMMAND_SPECS } from "./commandSpecs";
+import { COMMAND_SPECS, QUICK_PICK_ITEMS } from "./commandSpecs";
 
 async function runCommandAndReport(
 	runner: EzpmRunner,
@@ -122,4 +122,23 @@ export function registerCommands(
 			void vscode.window.showInformationMessage(status);
 		});
 	});
+
+	register("ezpm.showCommands", async () => {
+		const picked = await vscode.window.showQuickPick(QUICK_PICK_ITEMS, {
+			placeHolder: "Select an ezpm command",
+		});
+		if (picked) {
+			await vscode.commands.executeCommand(picked.commandId);
+		}
+	});
+
+	const statusBarItem = vscode.window.createStatusBarItem(
+		vscode.StatusBarAlignment.Left,
+		100,
+	);
+	statusBarItem.text = "$(package) ezpm";
+	statusBarItem.tooltip = "ezpm Commands";
+	statusBarItem.command = "ezpm.showCommands";
+	statusBarItem.show();
+	context.subscriptions.push(statusBarItem);
 }

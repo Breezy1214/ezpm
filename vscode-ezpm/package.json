@@ -91,6 +91,10 @@
 			{
 				"command": "ezpm.diagnostics.refresh",
 				"title": "ezpm: Refresh Diagnostics"
+			},
+			{
+				"command": "ezpm.showCommands",
+				"title": "ezpm: Commands"
 			}
 		],
 		"configuration": {
