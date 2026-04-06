@@ -2,7 +2,7 @@
 	"name": "vscode-ezpm",
 	"displayName": "ezpm",
 	"description": "VS Code integration for ezpm CLI workflows.",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"publisher": "DevBreezy",
 	"license": "MIT",
 	"engines": {
