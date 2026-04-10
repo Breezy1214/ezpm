@@ -4,6 +4,7 @@
 // so Cargo does NOT compile this as an independent test suite — it appears as
 // a module included by each test file via `mod common;`.
 
+use ezpm::services::toolchain;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -67,17 +68,10 @@ Packages = "Packages/"
     // rokit.toml — required so that rokit shims (stylua, selene, rojo, darklua,
     // wally) resolve to the correct installed binary when the ezpm subprocess
     // runs in this TempDir. Rokit shims walk up from cwd to find rokit.toml.
-    // Versions must match what is actually installed in ~/.rokit/tool-storage/.
+    // Versions come from the shared embedded toolchain manifest.
     fs::write(
         p.join("rokit.toml"),
-        "[tools]\n\
-         stylua = \"JohnnyMorganz/StyLua@2.3.1\"\n\
-         selene = \"Kampfkarren/selene@0.30.0\"\n\
-         rojo = \"rojo-rbx/rojo@7.6.1\"\n\
-         darklua = \"seaofvoices/darklua@0.17.3\"\n\
-         wally = \"UpliftGames/wally@0.3.2\"\n\
-         wally-package-types = \"JohnnyMorganz/wally-package-types@1.6.2\"\n\
-         lune = \"lune-org/lune@0.10.4\"\n",
+        toolchain::render_default_rokit_toml(None),
     )
     .expect("write rokit.toml");
 
@@ -109,8 +103,7 @@ where
     V: AsRef<std::ffi::OsStr>,
 {
     let mut cmd = Command::new(ezpm_bin());
-    cmd
-        .args(args)
+    cmd.args(args)
         .current_dir(project_dir)
         .env("EZPM_NO_UPDATE_CHECK", "1");
 

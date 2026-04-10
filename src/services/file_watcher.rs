@@ -7,7 +7,9 @@ use std::time::Duration;
 use anyhow::Result;
 use notify_debouncer_full::notify::event::{CreateKind, EventKind, ModifyKind, RemoveKind};
 use notify_debouncer_full::notify::{RecommendedWatcher, RecursiveMode};
-use notify_debouncer_full::{new_debouncer, DebounceEventResult, Debouncer, DebouncedEvent, RecommendedCache};
+use notify_debouncer_full::{
+    new_debouncer, DebounceEventResult, DebouncedEvent, Debouncer, RecommendedCache,
+};
 use tokio::sync::mpsc;
 
 use crate::output;
@@ -50,7 +52,10 @@ pub struct FileWatcher {
 }
 
 impl FileWatcher {
-    pub fn new(watch_dir: &Path, extra_ignores: &[String]) -> Result<(FileWatcher, mpsc::Receiver<WatchEvent>)> {
+    pub fn new(
+        watch_dir: &Path,
+        extra_ignores: &[String],
+    ) -> Result<(FileWatcher, mpsc::Receiver<WatchEvent>)> {
         let (tx, rx) = mpsc::channel::<WatchEvent>(64);
 
         // Build the full ignore list (hardcoded + configurable extra ignores).
@@ -98,7 +103,12 @@ impl FileWatcher {
             watch_dir.display()
         ));
 
-        Ok((FileWatcher { _debouncer: debouncer }, rx))
+        Ok((
+            FileWatcher {
+                _debouncer: debouncer,
+            },
+            rx,
+        ))
     }
 }
 
@@ -198,12 +208,20 @@ fn classify_events(events: &[DebouncedEvent], ignore_patterns: &[String]) -> Vec
                     }
                 }
                 EventKind::Modify(_) => {
-                    if is_relevant(path) { classify_modify(path) } else { None }
+                    if is_relevant(path) {
+                        classify_modify(path)
+                    } else {
+                        None
+                    }
                 }
                 // Pitfall 3: kqueue on macOS emits EventKind::Any instead of
                 // specific Modify variants. Treat Any as a possible modify.
                 EventKind::Any => {
-                    if is_relevant(path) { classify_modify(path) } else { None }
+                    if is_relevant(path) {
+                        classify_modify(path)
+                    } else {
+                        None
+                    }
                 }
                 // Access and Other events are not actionable for our use case.
                 EventKind::Access(_) | EventKind::Other => None,
@@ -230,10 +248,7 @@ fn classify_events(events: &[DebouncedEvent], ignore_patterns: &[String]) -> Vec
 
     if !deleted_paths.is_empty() {
         // Partition: paths that still exist on disk were replaced, not truly deleted.
-        let still_exists: HashSet<&PathBuf> = deleted_paths
-            .iter()
-            .filter(|p| p.exists())
-            .collect();
+        let still_exists: HashSet<&PathBuf> = deleted_paths.iter().filter(|p| p.exists()).collect();
 
         result.retain(|c| match c {
             // Drop delete events for paths that still exist (replaced, not deleted).
@@ -302,7 +317,9 @@ pub(crate) fn is_relevant(path: &Path) -> bool {
 pub(crate) fn should_ignore(path: &Path, ignore_patterns: &[String]) -> bool {
     path.components().any(|component| {
         let s = component.as_os_str().to_string_lossy();
-        ignore_patterns.iter().any(|pattern| s.as_ref() == pattern.as_str())
+        ignore_patterns
+            .iter()
+            .any(|pattern| s.as_ref() == pattern.as_str())
     })
 }
 
@@ -364,7 +381,10 @@ mod tests {
 
         // Hardcoded ignores.
         assert!(should_ignore(Path::new(".git/config"), &defaults));
-        assert!(should_ignore(Path::new("node_modules/pkg/index.js"), &defaults));
+        assert!(should_ignore(
+            Path::new("node_modules/pkg/index.js"),
+            &defaults
+        ));
         assert!(should_ignore(Path::new("Packages/lib.lua"), &defaults));
 
         // Non-ignored path.
@@ -529,7 +549,12 @@ mod tests {
 
         let result = classify_events(&events, &[]);
 
-        assert_eq!(result.len(), 1, "expected 1 event after dedup, got {:?}", result);
+        assert_eq!(
+            result.len(),
+            1,
+            "expected 1 event after dedup, got {:?}",
+            result
+        );
         assert!(
             matches!(&result[0], FileChange::FileDeleted(p) if p == Path::new("src/nonexistent_file.lua")),
             "expected FileDeleted when file is truly gone, got {:?}",
@@ -562,7 +587,12 @@ mod tests {
         let result = classify_events(&events, &[]);
 
         // File still exists on disk — the modify (LuaChange) should win, delete dropped.
-        assert_eq!(result.len(), 1, "expected 1 event after dedup, got {:?}", result);
+        assert_eq!(
+            result.len(),
+            1,
+            "expected 1 event after dedup, got {:?}",
+            result
+        );
         assert!(
             matches!(&result[0], FileChange::LuaChange(p) if p == &lua_file),
             "expected LuaChange when file still exists on disk, got {:?}",
@@ -589,7 +619,12 @@ mod tests {
         let result = classify_events(&events, &[]);
 
         // Delete dropped, synthetic LuaChange created since file exists.
-        assert_eq!(result.len(), 1, "expected 1 synthetic event, got {:?}", result);
+        assert_eq!(
+            result.len(),
+            1,
+            "expected 1 synthetic event, got {:?}",
+            result
+        );
         assert!(
             matches!(&result[0], FileChange::LuaChange(p) if p == &lua_file),
             "expected synthetic LuaChange for replaced file, got {:?}",
@@ -627,14 +662,23 @@ mod tests {
 
         let result = classify_events(&events, &[]);
 
-        assert_eq!(result.len(), 2, "expected 2 events for dir rename, got {:?}", result);
+        assert_eq!(
+            result.len(),
+            2,
+            "expected 2 events for dir rename, got {:?}",
+            result
+        );
         assert!(
-            result.iter().any(|c| matches!(c, FileChange::DirectoryRemoved(p) if p == &old_dir)),
+            result
+                .iter()
+                .any(|c| matches!(c, FileChange::DirectoryRemoved(p) if p == &old_dir)),
             "expected DirectoryRemoved for old path, got {:?}",
             result
         );
         assert!(
-            result.iter().any(|c| matches!(c, FileChange::DirectoryCreated(p) if p == &new_dir)),
+            result
+                .iter()
+                .any(|c| matches!(c, FileChange::DirectoryCreated(p) if p == &new_dir)),
             "expected DirectoryCreated for new path, got {:?}",
             result
         );
@@ -669,14 +713,23 @@ mod tests {
 
         let result = classify_events(&events, &[]);
 
-        assert_eq!(result.len(), 2, "expected 2 events for file rename, got {:?}", result);
+        assert_eq!(
+            result.len(),
+            2,
+            "expected 2 events for file rename, got {:?}",
+            result
+        );
         assert!(
-            result.iter().any(|c| matches!(c, FileChange::FileDeleted(p) if p == &old_file)),
+            result
+                .iter()
+                .any(|c| matches!(c, FileChange::FileDeleted(p) if p == &old_file)),
             "expected FileDeleted for old path, got {:?}",
             result
         );
         assert!(
-            result.iter().any(|c| matches!(c, FileChange::FileCreated(p) if p == &new_file)),
+            result
+                .iter()
+                .any(|c| matches!(c, FileChange::FileCreated(p) if p == &new_file)),
             "expected FileCreated for new path, got {:?}",
             result
         );

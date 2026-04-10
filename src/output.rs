@@ -32,7 +32,11 @@ pub fn init(verbose: bool, quiet: bool, color: ColorChoice) {
         ColorChoice::Never => owo_colors::set_override(false),
         ColorChoice::Auto => {} // owo-colors handles NO_COLOR, TTY, CI automatically
     }
-    let _ = OUTPUT_CONFIG.set(OutputConfig { verbose, quiet, color });
+    let _ = OUTPUT_CONFIG.set(OutputConfig {
+        verbose,
+        quiet,
+        color,
+    });
 }
 
 fn config() -> &'static OutputConfig {
@@ -83,16 +87,28 @@ pub fn error_block(error: &str, context: &str, fix: Option<&str>) {
     let mut label = String::new();
 
     label.clear();
-    let _ = write!(label, "{}", "Error:".if_supports_color(Stream::Stderr, |t| t.red()));
+    let _ = write!(
+        label,
+        "{}",
+        "Error:".if_supports_color(Stream::Stderr, |t| t.red())
+    );
     eprintln!("{} {}", label, error);
 
     label.clear();
-    let _ = write!(label, "{}", "Context:".if_supports_color(Stream::Stderr, |t| t.yellow()));
+    let _ = write!(
+        label,
+        "{}",
+        "Context:".if_supports_color(Stream::Stderr, |t| t.yellow())
+    );
     eprintln!("{} {}", label, context);
 
     if let Some(fix_msg) = fix {
         label.clear();
-        let _ = write!(label, "{}", "Fix:".if_supports_color(Stream::Stderr, |t| t.green()));
+        let _ = write!(
+            label,
+            "{}",
+            "Fix:".if_supports_color(Stream::Stderr, |t| t.green())
+        );
         eprintln!("{} {}", label, fix_msg);
     }
 }

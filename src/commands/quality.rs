@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use std::process::Command;
 
 use crate::output;
+use crate::services::toolchain;
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
@@ -28,10 +29,10 @@ pub fn lint(src_path: &str) -> Result<()> {
 
     // ── Announce availability ────────────────────────────────────────────────
     if !has_selene {
-        output::info("Skipping Selene (not installed)");
+        output::info("Skipping Selene (install Rokit and run `ezpm install`)");
     }
     if !has_stylua {
-        output::info("Skipping StyLua (not installed)");
+        output::info("Skipping StyLua (install Rokit and run `ezpm install`)");
     }
 
     // ── Graceful skip if no tools at all (QUAL-02) ───────────────────────────
@@ -48,7 +49,7 @@ pub fn lint(src_path: &str) -> Result<()> {
             let selene_status = Command::new("selene")
                 .arg(src_path)
                 .status()
-                .context("Failed to run selene")?;
+                .with_context(|| toolchain::missing_tool_context("selene"))?;
 
             if !selene_status.success() {
                 output::error_block(
@@ -62,7 +63,7 @@ pub fn lint(src_path: &str) -> Result<()> {
             let selene_out = Command::new("selene")
                 .arg(src_path)
                 .output()
-                .context("Failed to run selene")?;
+                .with_context(|| toolchain::missing_tool_context("selene"))?;
 
             if !selene_out.status.success() {
                 let stderr = String::from_utf8_lossy(&selene_out.stderr);
@@ -90,7 +91,7 @@ pub fn lint(src_path: &str) -> Result<()> {
                 .arg("--check")
                 .arg(src_path)
                 .status()
-                .context("Failed to run stylua")?;
+                .with_context(|| toolchain::missing_tool_context("stylua"))?;
 
             if !stylua_status.success() {
                 output::error_block(
@@ -105,7 +106,7 @@ pub fn lint(src_path: &str) -> Result<()> {
                 .arg("--check")
                 .arg(src_path)
                 .output()
-                .context("Failed to run stylua")?;
+                .with_context(|| toolchain::missing_tool_context("stylua"))?;
 
             if !stylua_out.status.success() {
                 let stderr = String::from_utf8_lossy(&stylua_out.stderr);
@@ -145,7 +146,7 @@ pub fn lint(src_path: &str) -> Result<()> {
 pub fn format_code(src_path: &str, check: bool) -> Result<()> {
     if !is_tool_available("stylua") {
         output::info("StyLua is not installed.");
-        output::hint("Install with: rokit add JohnnyMorganz/StyLua@2.3.1");
+        output::hint(&toolchain::tool_install_hint("stylua"));
         return Ok(());
     }
 
@@ -156,8 +157,9 @@ pub fn format_code(src_path: &str, check: bool) -> Result<()> {
     cmd.arg(src_path);
 
     if output::is_verbose() {
-        let stylua_status = cmd.status().context("Failed to run stylua")?;
-
+        let stylua_status = cmd
+            .status()
+            .with_context(|| toolchain::missing_tool_context("stylua"))?;
         if !stylua_status.success() {
             if check {
                 output::error_block(
@@ -174,7 +176,9 @@ pub fn format_code(src_path: &str, check: bool) -> Result<()> {
             }
         }
     } else {
-        let stylua_out = cmd.output().context("Failed to run stylua")?;
+        let stylua_out = cmd
+            .output()
+            .with_context(|| toolchain::missing_tool_context("stylua"))?;
 
         if !stylua_out.status.success() {
             if check {
@@ -225,7 +229,26 @@ pub fn docs(docs_enabled: bool) -> Result<()> {
     Command::new("moonwave")
         .arg("dev")
         .status()
-        .context("Failed to run moonwave. Is it installed? (rokit install)")?;
+        .context("Failed to run moonwave. Install it with Rokit, then try again.")?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stylua_install_hint_comes_from_shared_manifest() {
+        let stylua = toolchain::tool_spec_by_name("stylua").expect("stylua exists in toolchain");
+
+        assert_eq!(
+            toolchain::tool_install_hint("stylua"),
+            format!(
+                "Install Rokit, then run `rokit add {}` or `ezpm install`.",
+                stylua.spec
+            ),
+            "quality hints should always use the shared rokit manifest version"
+        );
+    }
 }

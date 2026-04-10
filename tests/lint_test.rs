@@ -11,12 +11,8 @@ use std::fs;
 fn lint_exits_zero_on_clean_code() {
     let dir = common::create_project();
 
-   
-    fs::write(
-        dir.path().join("src/client/init.luau"),
-        "return {}\n",
-    )
-    .expect("write clean init.luau");
+    fs::write(dir.path().join("src/client/init.luau"), "return {}\n")
+        .expect("write clean init.luau");
 
     let out = common::run_ezpm(dir.path(), &["lint"]);
     common::assert_success(&out);

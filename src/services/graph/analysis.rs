@@ -50,8 +50,7 @@ pub fn find_cycles(graph: &DepGraph) -> Vec<Cycle> {
                     stack.push(neighbor);
                     call_stack.push((neighbor, 0));
                 } else if on_stack[neighbor] {
-                    lowlinks[node] =
-                        lowlinks[node].min(indices[neighbor].unwrap());
+                    lowlinks[node] = lowlinks[node].min(indices[neighbor].unwrap());
                 }
             } else {
                 // Done with all neighbors — check if root of SCC
@@ -71,8 +70,7 @@ pub fn find_cycles(graph: &DepGraph) -> Vec<Cycle> {
                 // Pop this frame and propagate lowlink to parent
                 let (finished_node, _) = call_stack.pop().unwrap();
                 if let Some((parent, _)) = call_stack.last() {
-                    lowlinks[*parent] =
-                        lowlinks[*parent].min(lowlinks[finished_node]);
+                    lowlinks[*parent] = lowlinks[*parent].min(lowlinks[finished_node]);
                 }
             }
         }

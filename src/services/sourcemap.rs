@@ -3,6 +3,7 @@ use std::path::Path;
 use std::process::Command;
 
 use crate::services::darklua_runner::DarkluaResult;
+use crate::services::toolchain;
 
 // ─── Public functions ─────────────────────────────────────────────────────────
 pub fn generate_sourcemap(project_dir: &Path) -> Result<DarkluaResult> {
@@ -13,7 +14,7 @@ pub fn generate_sourcemap(project_dir: &Path) -> Result<DarkluaResult> {
         .arg("sourcemap.json")
         .current_dir(project_dir)
         .output()
-        .context("Failed to run rojo. Is it installed? (rokit install)")?;
+        .with_context(|| toolchain::missing_tool_context("rojo"))?;
 
     Ok(DarkluaResult {
         success: output.status.success(),
@@ -31,7 +32,7 @@ mod tests {
     use tempfile::TempDir;
 
     /// This test verifies that the generate_sourcemap function compiles
-    /// correctly and returns a Result<DarkluaResult>. 
+    /// correctly and returns a Result<DarkluaResult>.
     #[test]
     #[ignore = "requires rojo in PATH"]
     fn test_generate_sourcemap_requires_rojo() {

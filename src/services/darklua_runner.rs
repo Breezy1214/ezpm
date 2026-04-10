@@ -2,6 +2,8 @@ use anyhow::{Context, Result};
 use std::path::Path;
 use std::process::Command;
 
+use crate::services::toolchain;
+
 // ─── Public types ─────────────────────────────────────────────────────────────
 
 /// Result of running a darklua or rojo subprocess.
@@ -24,7 +26,7 @@ pub fn process_tree(src: &Path, build: &Path) -> Result<DarkluaResult> {
         .arg(src)
         .arg(build)
         .output()
-        .context("Failed to run darklua. Is it installed? (rokit install)")?;
+        .with_context(|| toolchain::missing_tool_context("darklua"))?;
 
     Ok(DarkluaResult {
         success: output.status.success(),
@@ -43,7 +45,7 @@ pub fn process_file(src_file: &Path, build_file: &Path) -> Result<DarkluaResult>
         .arg(src_file)
         .arg(build_file)
         .output()
-        .context("Failed to run darklua. Is it installed? (rokit install)")?;
+        .with_context(|| toolchain::missing_tool_context("darklua"))?;
 
     Ok(DarkluaResult {
         success: output.status.success(),
@@ -93,17 +95,14 @@ mod tests {
 
         // Create build dir with a file inside
         std::fs::create_dir_all(&build).expect("create build dir");
-        std::fs::write(build.join("artifact.lua"), b"-- old artifact")
-            .expect("write artifact");
+        std::fs::write(build.join("artifact.lua"), b"-- old artifact").expect("write artifact");
 
         // Clean it
         clean_build_dir(&build).expect("clean_build_dir must succeed");
 
         // Dir must exist but be empty
         assert!(build.exists(), "build dir must still exist after clean");
-        let entries: Vec<_> = std::fs::read_dir(&build)
-            .expect("read build dir")
-            .collect();
+        let entries: Vec<_> = std::fs::read_dir(&build).expect("read build dir").collect();
         assert!(
             entries.is_empty(),
             "build dir must be empty after clean, found {} entries",
@@ -121,7 +120,10 @@ mod tests {
 
         clean_build_dir(&build).expect("clean_build_dir must succeed on nonexistent dir");
 
-        assert!(build.exists(), "build dir must be created by clean_build_dir");
+        assert!(
+            build.exists(),
+            "build dir must be created by clean_build_dir"
+        );
         assert!(build.is_dir(), "build path must be a directory");
     }
 }

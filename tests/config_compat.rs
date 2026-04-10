@@ -20,7 +20,11 @@ fn luau_format_ezpm_toml_loads_without_error() {
 
     let (config, warnings) = load_config_from_str(&contents).expect("should parse without error");
 
-    assert!(warnings.is_empty(), "valid config should produce no warnings, got: {:?}", warnings);
+    assert!(
+        warnings.is_empty(),
+        "valid config should produce no warnings, got: {:?}",
+        warnings
+    );
 
     let project = config.project.expect("project section should be present");
     assert_eq!(
@@ -52,11 +56,23 @@ unknown_field = "value"
 fn missing_toml_falls_back_to_defaults() {
     let (config, warnings) = load_config_from_str("").expect("empty string should succeed");
 
-    assert!(warnings.is_empty(), "empty input should produce no warnings");
-    assert!(config.project.is_none(), "project should be None by default");
+    assert!(
+        warnings.is_empty(),
+        "empty input should produce no warnings"
+    );
+    assert!(
+        config.project.is_none(),
+        "project should be None by default"
+    );
     assert!(config.paths.is_none(), "paths should be None by default");
-    assert!(config.display.is_none(), "display should be None by default");
-    assert!(config.aliases.is_none(), "aliases should be None by default");
+    assert!(
+        config.display.is_none(),
+        "display should be None by default"
+    );
+    assert!(
+        config.aliases.is_none(),
+        "aliases should be None by default"
+    );
     assert!(config.serve.is_none(), "serve should be None by default");
 }
 
@@ -119,8 +135,14 @@ Client = "src/client/"
 "#;
 
     let (config, warnings) = load_config_from_str(toml).expect("should parse without serve");
-    assert!(warnings.is_empty(), "no warnings for missing optional serve section");
-    assert!(config.serve.is_none(), "serve should be None when not specified");
+    assert!(
+        warnings.is_empty(),
+        "no warnings for missing optional serve section"
+    );
+    assert!(
+        config.serve.is_none(),
+        "serve should be None when not specified"
+    );
 }
 
 #[test]

@@ -109,10 +109,7 @@ impl ProcessManager {
 
     /// Shut down a single `ManagedProcess` using the SIGTERM → SIGKILL protocol.
     async fn shutdown_one(&self, proc: &mut ManagedProcess) {
-        output::verbose_line(&format!(
-            "Stopping {} (PGID {})...",
-            proc.name, proc.pgid
-        ));
+        output::verbose_line(&format!("Stopping {} (PGID {})...", proc.name, proc.pgid));
 
         #[cfg(unix)]
         {

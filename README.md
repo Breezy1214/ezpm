@@ -129,6 +129,8 @@ ezpm check --json   # pipe into CI
 
 Scans every file and rewrites `require()` calls to use your `@alias/` paths. No more `require(game.ReplicatedStorage.Shared.Utils.Signal)` — just `require("@Shared/Utils/Signal")`.
 
+If `luau-lsp` 1.65.0+ inserts `@game/...` string requires during auto-import, `ezpm fix-requires` and the require-fixing step inside `ezpm serve` normalize alias-equivalent paths back to your configured `@alias/...` form. Unmatched or intentional `@game` requires are left alone.
+
 ### Everything else
 
 ```

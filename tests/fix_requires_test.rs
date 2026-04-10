@@ -50,8 +50,7 @@ fn fix_requires_exits_zero_on_empty_src() {
     let dir = common::create_project();
 
     // Remove all .luau files from src/ so there is nothing to fix
-    fs::remove_file(dir.path().join("src/client/init.luau"))
-        .expect("remove init.luau");
+    fs::remove_file(dir.path().join("src/client/init.luau")).expect("remove init.luau");
 
     let out = common::run_ezpm(dir.path(), &["fix-requires"]);
     common::assert_success(&out);

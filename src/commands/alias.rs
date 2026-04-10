@@ -35,9 +35,7 @@ pub fn alias_menu() -> Result<()> {
                 }
             }
             "List Aliases" => {
-                let aliases = config::load_config()
-                    .ok()
-                    .and_then(|(c, _)| c.aliases);
+                let aliases = config::load_config().ok().and_then(|(c, _)| c.aliases);
                 if let Err(e) = alias_list(&aliases) {
                     output::error(&format!("{}", e));
                 }
@@ -55,7 +53,6 @@ pub fn alias_menu() -> Result<()> {
 
     Ok(())
 }
-
 
 pub fn alias_add() -> Result<()> {
     let name = Text::new("Alias name (e.g., Client):").prompt()?;
@@ -78,9 +75,7 @@ pub fn alias_add() -> Result<()> {
 
     let (cfg, _warnings) = config::load_config()?;
 
-    let mut aliases: HashMap<String, String> = cfg
-        .aliases
-        .unwrap_or_default();
+    let mut aliases: HashMap<String, String> = cfg.aliases.unwrap_or_default();
 
     aliases.insert(name.clone(), path.clone());
 
@@ -228,7 +223,12 @@ pub fn alias_list(aliases: &Option<HashMap<String, String>>) -> Result<()> {
     let max_len = sorted_names.iter().map(|n| n.len()).max().unwrap_or(0);
 
     for name in &sorted_names {
-        output::print_line(&format!("@{:<width$} -> {}", name, aliases[*name], width = max_len));
+        output::print_line(&format!(
+            "@{:<width$} -> {}",
+            name,
+            aliases[*name],
+            width = max_len
+        ));
     }
 
     output::print_line(&format!("\n{} alias(es) configured.", aliases.len()));

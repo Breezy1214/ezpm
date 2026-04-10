@@ -56,7 +56,11 @@ fn patch_require_signature(contents: &str) -> String {
         return contents.to_string();
     }
 
-    let newline = if contents.contains("\r\n") { "\r\n" } else { "\n" };
+    let newline = if contents.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
     let replacement = format!(
         "  require:{nl}    args:{nl}    - type: number{nl}  require:{nl}    args:{nl}    - type: string",
         nl = newline

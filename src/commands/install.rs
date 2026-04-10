@@ -4,20 +4,15 @@ use std::path::Path;
 use std::process::Command;
 
 use crate::output;
-use crate::services::sourcemap;
-
-const REQUIRED_TOOLS: &[(&str, &str)] = &[
-    ("lune", "lune-org/lune@0.10.4"),
-    ("rojo", "rojo-rbx/rojo@7.6.1"),
-    ("darklua", "seaofvoices/darklua@0.17.3"),
-    ("wally", "UpliftGames/wally@0.3.2"),
-    ("wally-package-types", "JohnnyMorganz/wally-package-types@1.6.2"),
-];
+use crate::services::{sourcemap, toolchain};
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
 /// Derive package directories from aliases by filtering out paths under src/
-pub fn get_package_dirs(aliases: Option<&HashMap<String, String>>, src_prefix: &str) -> Vec<String> {
+pub fn get_package_dirs(
+    aliases: Option<&HashMap<String, String>>,
+    src_prefix: &str,
+) -> Vec<String> {
     let aliases = match aliases {
         Some(a) if !a.is_empty() => a,
         _ => return vec!["Packages".to_string(), "ServerPackages".to_string()],
@@ -53,30 +48,34 @@ fn ensure_required_tools() -> Result<()> {
         return Ok(());
     }
 
-    let contents = std::fs::read_to_string("rokit.toml")
-        .context("Failed to read rokit.toml")?;
+    let contents = std::fs::read_to_string("rokit.toml").context("Failed to read rokit.toml")?;
+    let installed_tools =
+        toolchain::parse_tool_specs(&contents).context("Failed to parse rokit.toml")?;
 
-    for &(tool_name, spec) in REQUIRED_TOOLS {
-        // Check if the tool name appears as a key (e.g. "lune =")
-        let has_tool = contents.lines().any(|line| {
-            let trimmed = line.trim();
-            trimmed.starts_with(tool_name)
-                && trimmed[tool_name.len()..].trim_start().starts_with('=')
-        });
+    for tool in toolchain::required_runtime_tool_specs() {
+        let has_tool = installed_tools
+            .iter()
+            .any(|existing| existing.name == tool.name);
 
         if !has_tool {
-            output::info(&format!("Adding {} to rokit.toml...", tool_name));
+            output::info(&format!("Adding {} to rokit.toml...", tool.name));
             let result = Command::new("rokit")
                 .arg("add")
-                .arg(spec)
+                .arg(tool.spec.as_str())
                 .output()
-                .with_context(|| format!("Failed to run rokit add {}", spec))?;
+                .with_context(|| {
+                    format!(
+                        "Failed to run `rokit add {}`. {}",
+                        tool.spec,
+                        toolchain::rokit_bootstrap_hint()
+                    )
+                })?;
 
             if result.status.success() {
-                output::success(&format!("Added {}", tool_name));
+                output::success(&format!("Added {}", tool.name));
             } else {
                 let stderr = String::from_utf8_lossy(&result.stderr);
-                output::warn(&format!("Failed to add {}: {}", tool_name, stderr.trim()));
+                output::warn(&format!("Failed to add {}: {}", tool.name, stderr.trim()));
             }
         }
     }
@@ -108,7 +107,7 @@ pub fn install_tools(src_prefix: &str, aliases: Option<&HashMap<String, String>>
         let rokit_status = Command::new("rokit")
             .arg("install")
             .status()
-            .context("Failed to run rokit. Is it installed?")?;
+            .with_context(|| toolchain::missing_tool_context("rokit"))?;
 
         if !rokit_status.success() {
             pb.finish_and_clear();
@@ -121,7 +120,7 @@ pub fn install_tools(src_prefix: &str, aliases: Option<&HashMap<String, String>>
         let rokit_out = Command::new("rokit")
             .arg("install")
             .output()
-            .context("Failed to run rokit. Is it installed?")?;
+            .with_context(|| toolchain::missing_tool_context("rokit"))?;
 
         if !rokit_out.status.success() {
             pb.finish_and_clear();
@@ -144,7 +143,10 @@ pub fn install_tools(src_prefix: &str, aliases: Option<&HashMap<String, String>>
 }
 
 /// Clean and re-install Wally packages from scratch
-pub fn setup_wally_packages(src_prefix: &str, aliases: Option<&HashMap<String, String>>) -> Result<()> {
+pub fn setup_wally_packages(
+    src_prefix: &str,
+    aliases: Option<&HashMap<String, String>>,
+) -> Result<()> {
     if !Path::new("wally.toml").exists() {
         output::info("No wally.toml found, skipping.");
         return Ok(());
@@ -157,13 +159,11 @@ pub fn setup_wally_packages(src_prefix: &str, aliases: Option<&HashMap<String, S
 
     // ── Remove stale artefacts ───────────────────────────────────────────────
     if Path::new("sourcemap.json").exists() {
-        std::fs::remove_file("sourcemap.json")
-            .context("Failed to remove sourcemap.json")?;
+        std::fs::remove_file("sourcemap.json").context("Failed to remove sourcemap.json")?;
     }
 
     if Path::new("wally.lock").exists() {
-        std::fs::remove_file("wally.lock")
-            .context("Failed to remove wally.lock")?;
+        std::fs::remove_file("wally.lock").context("Failed to remove wally.lock")?;
     }
 
     for pkg_dir in &package_dirs {
@@ -181,7 +181,7 @@ pub fn setup_wally_packages(src_prefix: &str, aliases: Option<&HashMap<String, S
         let wally_status = Command::new("wally")
             .arg("install")
             .status()
-            .context("Failed to run wally. Is it installed? (rokit install)")?;
+            .with_context(|| toolchain::missing_tool_context("wally"))?;
 
         if !wally_status.success() {
             pb.finish_and_clear();
@@ -194,7 +194,7 @@ pub fn setup_wally_packages(src_prefix: &str, aliases: Option<&HashMap<String, S
         let wally_out = Command::new("wally")
             .arg("install")
             .output()
-            .context("Failed to run wally. Is it installed? (rokit install)")?;
+            .with_context(|| toolchain::missing_tool_context("wally"))?;
 
         if !wally_out.status.success() {
             pb.finish_and_clear();
@@ -208,13 +208,16 @@ pub fn setup_wally_packages(src_prefix: &str, aliases: Option<&HashMap<String, S
     // ── First sourcemap pass ─────────────────────────────────────────────────
     pb.set_message("Generating source map...");
 
-    let cwd =
-        std::env::current_dir().context("Failed to determine current directory")?;
-    let sm_result = sourcemap::generate_sourcemap(&cwd)
-        .context("Failed to generate sourcemap")?;
+    let cwd = std::env::current_dir().context("Failed to determine current directory")?;
+    let sm_result = sourcemap::generate_sourcemap(&cwd).context("Failed to generate sourcemap")?;
 
     if !sm_result.success {
-        pb.suspend(|| output::warn(&format!("Warning: sourcemap generation failed: {}", sm_result.stderr)));
+        pb.suspend(|| {
+            output::warn(&format!(
+                "Warning: sourcemap generation failed: {}",
+                sm_result.stderr
+            ))
+        });
     }
 
     // ── wally-package-types for each package directory ───────────────────────
@@ -229,12 +232,14 @@ pub fn setup_wally_packages(src_prefix: &str, aliases: Option<&HashMap<String, S
                     .arg("sourcemap.json")
                     .arg(pkg_dir.as_str())
                     .status()
-                    .context("Failed to run wally-package-types")?;
+                    .with_context(|| toolchain::missing_tool_context("wally-package-types"))?;
 
                 if !wpt_status.success() {
-                    pb.suspend(|| output::warn(&format!(
-                        "wally-package-types failed for {pkg_dir} (types may be incomplete)"
-                    )));
+                    pb.suspend(|| {
+                        output::warn(&format!(
+                            "wally-package-types failed for {pkg_dir} (types may be incomplete)"
+                        ))
+                    });
                 }
             } else {
                 let wpt_out = Command::new("wally-package-types")
@@ -242,30 +247,56 @@ pub fn setup_wally_packages(src_prefix: &str, aliases: Option<&HashMap<String, S
                     .arg("sourcemap.json")
                     .arg(pkg_dir.as_str())
                     .output()
-                    .context("Failed to run wally-package-types")?;
+                    .with_context(|| toolchain::missing_tool_context("wally-package-types"))?;
 
                 if !wpt_out.status.success() {
-                    pb.suspend(|| output::warn(&format!(
-                        "wally-package-types failed for {pkg_dir} (types may be incomplete)"
-                    )));
+                    pb.suspend(|| {
+                        output::warn(&format!(
+                            "wally-package-types failed for {pkg_dir} (types may be incomplete)"
+                        ))
+                    });
                 }
             }
         }
     }
 
-
     pb.set_message("Finalizing...");
-    let sm_result2 = sourcemap::generate_sourcemap(&cwd)
-        .context("Failed to generate final sourcemap")?;
+    let sm_result2 =
+        sourcemap::generate_sourcemap(&cwd).context("Failed to generate final sourcemap")?;
 
     if !sm_result2.success {
-        pb.suspend(|| output::warn(&format!(
-            "Warning: final sourcemap generation failed: {}",
-            sm_result2.stderr
-        )));
+        pb.suspend(|| {
+            output::warn(&format!(
+                "Warning: final sourcemap generation failed: {}",
+                sm_result2.stderr
+            ))
+        });
     }
 
     pb.finish_and_clear();
     output::success("Wally packages set up!");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::services::toolchain;
+
+    #[test]
+    fn required_runtime_toolchain_excludes_optional_lune() {
+        let names: Vec<&str> = toolchain::required_runtime_tool_specs()
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect();
+
+        assert!(
+            !names.contains(&"lune"),
+            "install should not require lune in the default runtime toolchain"
+        );
+        assert!(
+            names.contains(&"wally"),
+            "install should still require wally"
+        );
+        assert!(names.contains(&"rojo"), "install should still require rojo");
+    }
 }

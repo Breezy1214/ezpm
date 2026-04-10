@@ -26,16 +26,13 @@ pub fn copy_meta_files(src: &Path, build: &Path) -> Result<usize> {
         }
 
         // Compute relative path from src root
-        let rel_path = entry
-            .path()
-            .strip_prefix(src)
-            .with_context(|| {
-                format!(
-                    "Failed to strip prefix '{}' from '{}'",
-                    src.display(),
-                    entry.path().display()
-                )
-            })?;
+        let rel_path = entry.path().strip_prefix(src).with_context(|| {
+            format!(
+                "Failed to strip prefix '{}' from '{}'",
+                src.display(),
+                entry.path().display()
+            )
+        })?;
 
         // Compute destination path in build directory
         let dest = build.join(rel_path);
@@ -95,7 +92,8 @@ mod tests {
         ]);
         let build = TempDir::new().expect("failed to create build temp dir");
 
-        let count = copy_meta_files(src.path(), build.path()).expect("copy_meta_files must succeed");
+        let count =
+            copy_meta_files(src.path(), build.path()).expect("copy_meta_files must succeed");
 
         assert_eq!(count, 2, "must copy exactly 2 init.meta.json files");
         assert!(
@@ -116,7 +114,8 @@ mod tests {
         ]);
         let build = TempDir::new().expect("failed to create build temp dir");
 
-        let count = copy_meta_files(src.path(), build.path()).expect("copy_meta_files must succeed");
+        let count =
+            copy_meta_files(src.path(), build.path()).expect("copy_meta_files must succeed");
 
         assert_eq!(count, 0, "must return 0 when no init.meta.json files exist");
     }
@@ -146,9 +145,13 @@ mod tests {
         ]);
         let build = TempDir::new().expect("failed to create build temp dir");
 
-        let count = copy_meta_files(src.path(), build.path()).expect("copy_meta_files must succeed");
+        let count =
+            copy_meta_files(src.path(), build.path()).expect("copy_meta_files must succeed");
 
-        assert_eq!(count, 1, "only init.meta.json must be copied, not other.meta.json or init.json");
+        assert_eq!(
+            count, 1,
+            "only init.meta.json must be copied, not other.meta.json or init.json"
+        );
         assert!(
             !build.path().join("other.meta.json").exists(),
             "other.meta.json must NOT be copied"
@@ -174,7 +177,11 @@ mod tests {
         copy_meta_files(src.path(), build.path()).expect("copy_meta_files must succeed");
 
         let dest = build.path().join("deeply/nested/path/init.meta.json");
-        assert!(dest.exists(), "deeply nested init.meta.json must be created at {}", dest.display());
+        assert!(
+            dest.exists(),
+            "deeply nested init.meta.json must be created at {}",
+            dest.display()
+        );
         assert!(
             dest.parent().expect("parent must exist").is_dir(),
             "parent directories must have been created"
