@@ -12,7 +12,7 @@ use crate::{
         file_watcher::{FileChange, FileWatcher, WatchEvent},
         meta_copier,
         process_manager::{ProcessEvent, ProcessManager},
-        require_fixer, sourcemap,
+        require_fixer, sourcemap, toolchain,
     },
 };
 use anyhow::Context;
@@ -34,6 +34,80 @@ fn generate_build_project(src: &str, build: &str) -> anyhow::Result<()> {
     let output = content.replace(&format!("{src}/"), &format!("{build}/"));
     std::fs::write("build.project.json", output).context("Failed to write build.project.json")?;
     Ok(())
+}
+
+// ─── Toolchain version sync ─────────────────────────────────────────────────────
+
+/// Bump any `rokit.toml` tool pinned older than ezpm's bundled version
+fn sync_toolchain_versions(project_dir: &Path) -> anyhow::Result<()> {
+    let rokit_path = project_dir.join("rokit.toml");
+    if !rokit_path.exists() {
+        return Ok(());
+    }
+
+    let contents = match std::fs::read_to_string(&rokit_path) {
+        Ok(c) => c,
+        Err(e) => {
+            output::warn(&format!(
+                "Skipping toolchain sync — could not read rokit.toml: {}",
+                e
+            ));
+            return Ok(());
+        }
+    };
+
+    let updates = match toolchain::outdated_tools(&contents) {
+        Ok(u) => u,
+        Err(e) => {
+            output::warn(&format!("Skipping toolchain sync — {}", e));
+            return Ok(());
+        }
+    };
+
+    if updates.is_empty() {
+        return Ok(());
+    }
+
+    std::fs::write(
+        &rokit_path,
+        toolchain::apply_tool_updates(&contents, &updates),
+    )
+    .context("Failed to write updated rokit.toml")?;
+
+    for u in &updates {
+        let from = toolchain::spec_version(&u.old_spec).unwrap_or(u.old_spec.as_str());
+        let to = toolchain::spec_version(&u.new_spec).unwrap_or(u.new_spec.as_str());
+        output::info(&format!("Updated {} {} \u{2192} {}", u.name, from, to));
+    }
+
+    let pb = output::start_spinner("Installing updated tools (rokit install)...");
+    let result = std::process::Command::new("rokit").arg("install").output();
+    pb.finish_and_clear();
+
+    match result {
+        Ok(out) if out.status.success() => {
+            output::success(&format!(
+                "Toolchain updated ({} {} refreshed)",
+                updates.len(),
+                if updates.len() == 1 { "tool" } else { "tools" }
+            ));
+            Ok(())
+        }
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            output::error(&format!("rokit install failed: {}", stderr.trim()));
+            Err(anyhow::anyhow!(
+                "rokit install failed after updating tool versions"
+            ))
+        }
+        Err(e) => {
+            output::error(&format!("Failed to run rokit install: {}", e));
+            Err(anyhow::anyhow!(
+                "{}",
+                toolchain::missing_tool_context("rokit")
+            ))
+        }
+    }
 }
 
 // ─── Watch loop helpers ────────────────────────────────────────────────────────
@@ -815,6 +889,8 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
     let project_dir = std::env::current_dir().context("could not determine current directory")?;
     let src_path = project_dir.join(&src);
     let build_path = project_dir.join(&build);
+
+    sync_toolchain_versions(&project_dir)?;
 
     // ── Step 1: Generate build.project.json ──────────────────────────────────
     {

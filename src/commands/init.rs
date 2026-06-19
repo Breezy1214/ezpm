@@ -175,7 +175,7 @@ pub fn run_init() -> Result<()> {
 
     // ── Step 11: Regenerate .darklua.json and .luaurc ────────────────────────
     if !aliases.is_empty() {
-        config_gen::write_config_files(Path::new("."), &aliases)?;
+        config_gen::write_config_files(Path::new("."), &aliases, None)?;
         output::success("Generated .darklua.json");
         output::success("Generated .luaurc");
     }

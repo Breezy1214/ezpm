@@ -2,42 +2,55 @@ use anyhow::Result;
 use serde_json::json;
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::OnceLock;
 
+use crate::output;
 use crate::services::toolchain;
+
+pub const DEFAULT_DARKLUA_TOML: &str = r#"process = [
+    { rule = "convert_require", current = { name = "luau" }, target = { name = "roblox", rojo_sourcemap = "sourcemap.json", indexing_style = "find_first_child" } },
+    "make_assignment_local",
+    "compute_expression",
+    "remove_unused_if_branch",
+    "remove_unused_while",
+    "filter_after_early_return",
+    "remove_nil_declaration",
+    "remove_empty_do",
+]
+"#;
 
 // ─── Public functions ─────────────────────────────────────────────────────────
 
-/// Generate the `.darklua.json` configuration file content.
-pub fn generate_darklua_json() -> String {
-    static DARKLUA_JSON: OnceLock<String> = OnceLock::new();
-    DARKLUA_JSON
-        .get_or_init(|| {
-            let config = json!({
-                "process": [
-                    {
-                        "rule": "convert_require",
-                        "current": { "name": "luau" },
-                        "target": {
-                            "name": "roblox",
-                            "rojo_sourcemap": "sourcemap.json",
-                            "indexing_style": "find_first_child"
-                        }
-                    },
-                    "compute_expression",
-                    "remove_unused_if_branch",
-                    "remove_unused_while",
-                    "filter_after_early_return",
-                    "remove_nil_declaration",
-                    "remove_empty_do"
-                ]
-            });
+pub fn default_darklua_table() -> toml::value::Table {
+    toml::from_str(DEFAULT_DARKLUA_TOML)
+        .expect("DEFAULT_DARKLUA_TOML must be a valid darklua table")
+}
 
-            let mut output = serde_json::to_string_pretty(&config).unwrap();
-            output.push('\n');
-            output
+pub fn generate_darklua_json(darklua: Option<&toml::value::Table>) -> String {
+    let default = default_darklua_table();
+    let table = darklua.unwrap_or(&default);
+
+    let json: serde_json::Value =
+        serde_json::to_value(table).expect("darklua table must convert to JSON");
+
+    let mut output = serde_json::to_string_pretty(&json).unwrap();
+    output.push('\n');
+    output
+}
+
+fn has_convert_require(table: &toml::value::Table) -> bool {
+    table
+        .get("process")
+        .and_then(|process| process.as_array())
+        .map(|rules| {
+            rules.iter().any(|rule| match rule {
+                toml::Value::String(name) => name == "convert_require",
+                toml::Value::Table(t) => {
+                    t.get("rule").and_then(|v| v.as_str()) == Some("convert_require")
+                }
+                _ => false,
+            })
         })
-        .clone()
+        .unwrap_or(false)
 }
 
 /// Read the lune version from supplied `rokit.toml` contents if present.
@@ -108,8 +121,20 @@ fn generate_luaurc_with_lune_version(
 }
 
 /// generate and write both `.darklua.json` and `.luaurc`
-pub fn write_config_files(dir: &Path, aliases: &HashMap<String, String>) -> Result<()> {
-    let darklua_json = generate_darklua_json();
+pub fn write_config_files(
+    dir: &Path,
+    aliases: &HashMap<String, String>,
+    darklua: Option<&toml::value::Table>,
+) -> Result<()> {
+    if let Some(table) = darklua {
+        if !has_convert_require(table) {
+            output::warn(
+                "[darklua] has no `convert_require` rule — `@alias/...` requires will not be rewritten to Roblox paths.",
+            );
+        }
+    }
+
+    let darklua_json = generate_darklua_json(darklua);
     let luaurc = generate_luaurc_for_dir(aliases, dir);
 
     std::fs::write(dir.join(".darklua.json"), darklua_json)?;
@@ -128,7 +153,7 @@ mod tests {
 
     #[test]
     fn test_darklua_json_has_convert_require_rule() {
-        let output = generate_darklua_json();
+        let output = generate_darklua_json(None);
         assert!(
             output.contains(r#""rule": "convert_require""#),
             "output must contain convert_require rule: {output}"
@@ -141,7 +166,7 @@ mod tests {
 
     #[test]
     fn test_darklua_json_has_no_aliases() {
-        let output = generate_darklua_json();
+        let output = generate_darklua_json(None);
         assert!(
             !output.contains("\"aliases\""),
             "output must NOT contain 'aliases' key — DarkLua reads them from .luaurc: {output}"
@@ -150,7 +175,7 @@ mod tests {
 
     #[test]
     fn test_darklua_json_has_optimization_rules() {
-        let output = generate_darklua_json();
+        let output = generate_darklua_json(None);
         let expected_rules = [
             "compute_expression",
             "remove_unused_if_branch",
@@ -168,8 +193,24 @@ mod tests {
     }
 
     #[test]
+    fn test_darklua_json_has_make_assignment_local() {
+        let output = generate_darklua_json(None);
+        let make_local = output.find("make_assignment_local");
+        let compute = output.find("compute_expression");
+
+        assert!(
+            make_local.is_some(),
+            "output must contain the make_assignment_local rule to convert `const` to `local`: {output}"
+        );
+        assert!(
+            matches!((make_local, compute), (Some(m), Some(c)) if m < c),
+            "make_assignment_local must run before optimization rules: {output}"
+        );
+    }
+
+    #[test]
     fn test_darklua_json_has_rojo_sourcemap() {
-        let output = generate_darklua_json();
+        let output = generate_darklua_json(None);
         assert!(
             output.contains(r#""rojo_sourcemap": "sourcemap.json""#),
             "output must contain rojo_sourcemap: {output}"
@@ -274,7 +315,7 @@ lune = "lune-org/lune@0.10.4"
         let dir = TempDir::new().expect("failed to create temp dir");
         let aliases = HashMap::new();
 
-        write_config_files(dir.path(), &aliases).expect("write_config_files must succeed");
+        write_config_files(dir.path(), &aliases, None).expect("write_config_files must succeed");
 
         assert!(
             dir.path().join(".darklua.json").exists(),
@@ -288,12 +329,72 @@ lune = "lune-org/lune@0.10.4"
 
     #[test]
     fn test_darklua_json_is_valid_json() {
-        let output = generate_darklua_json();
+        let output = generate_darklua_json(None);
         let result = serde_json::from_str::<serde_json::Value>(&output);
         assert!(
             result.is_ok(),
             "generate_darklua_json output must be valid JSON: {:?}",
             result.err()
         );
+    }
+
+    #[test]
+    fn test_default_darklua_table_parses() {
+        let table = default_darklua_table();
+        assert!(
+            has_convert_require(&table),
+            "default darklua config must include convert_require"
+        );
+        let process = table
+            .get("process")
+            .and_then(|p| p.as_array())
+            .expect("default must have a process array");
+        assert!(
+            process
+                .iter()
+                .any(|r| r.as_str() == Some("make_assignment_local")),
+            "default must include make_assignment_local"
+        );
+    }
+
+    #[test]
+    fn test_generate_darklua_json_passthrough() {
+        let custom: toml::value::Table = toml::from_str(
+            r#"process = [
+                { rule = "convert_require", current = { name = "luau" }, target = { name = "roblox", rojo_sourcemap = "sourcemap.json" } },
+                "rename_variables",
+            ]
+            "#,
+        )
+        .expect("custom darklua toml parses");
+
+        let output = generate_darklua_json(Some(&custom));
+        let json: serde_json::Value = serde_json::from_str(&output).expect("output is valid JSON");
+
+        let process = json["process"].as_array().expect("process array");
+        assert_eq!(process.len(), 2, "custom process length preserved");
+        assert_eq!(process[0]["rule"], "convert_require");
+        assert_eq!(process[1], "rename_variables", "bare string rule preserved");
+        assert!(
+            !output.contains("compute_expression"),
+            "custom config must replace the default, not merge with it: {output}"
+        );
+    }
+
+    #[test]
+    fn test_has_convert_require_detects_both_forms() {
+        let bare: toml::value::Table =
+            toml::from_str(r#"process = [ "convert_require", "compute_expression" ]"#)
+                .expect("parse bare form");
+        assert!(has_convert_require(&bare), "bare-string form detected");
+
+        let table_form: toml::value::Table =
+            toml::from_str(r#"process = [ { rule = "convert_require" } ]"#)
+                .expect("parse table form");
+        assert!(has_convert_require(&table_form), "table form detected");
+
+        let without: toml::value::Table =
+            toml::from_str(r#"process = [ "compute_expression" ]"#).expect("parse");
+        assert!(!has_convert_require(&without), "absence detected");
     }
 }

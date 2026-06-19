@@ -191,6 +191,31 @@ Set `EZPM_NO_UPDATE_CHECK=1` to disable GitHub release checks.
 - **`hybrid`** — Single-file fix on edits, full-tree fix on deletes/renames. Best default.
 - **`fast`** — Single-file fix only. Maximum speed for large projects.
 
+### DarkLua rules (optional)
+
+Add an optional `[darklua]` section to `ezpm.toml` to control the DarkLua pipeline. It maps **verbatim** to the generated `.darklua.json`. Omit it and ezpm uses the built-in defaults shown below:
+
+```toml
+[darklua]
+process = [
+    { rule = "convert_require", current = { name = "luau" }, target = { name = "roblox", rojo_sourcemap = "sourcemap.json", indexing_style = "find_first_child" } },
+    "make_assignment_local",
+    "compute_expression",
+    "remove_unused_if_branch",
+    "remove_unused_while",
+    "filter_after_early_return",
+    "remove_nil_declaration",
+    "remove_empty_do",
+]
+```
+
+See the [DarkLua rules reference](https://darklua.com/docs/rules/).
+
+- **`convert_require`** rewrites your `@alias/...` requires into Roblox paths — keep it, or alias requires won't resolve (ezpm warns if it's missing).
+- **`make_assignment_local`** lowers the Luau [`const`](https://rfcs.luau.org/const-keyword.html) keyword to `local` so the build runs on Roblox.
+
+The `[darklua]` section is **optional**: omit it to use the defaults above, or add it to take full control — when present, it is the source of truth and is written verbatim (your rules replace the defaults, not merge with them). After editing, run `ezpm alias sync` to regenerate `.darklua.json`.
+
 ### Architecture rules (optional)
 
 Use `[check]` to control `ezpm check` behavior:

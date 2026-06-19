@@ -59,6 +59,28 @@ fn alias_sync_with_no_config_exits_zero() {
     common::assert_success(&out);
 }
 
+/// `alias sync` succeeds when ezpm.toml has aliases but no `[darklua]` section,
+/// falling back to the built-in default rules (the section is optional).
+#[test]
+fn alias_sync_without_darklua_uses_default() {
+    let dir = TempDir::new().expect("TempDir::new");
+    fs::write(
+        dir.path().join("ezpm.toml"),
+        "[project]\nname = \"test-project\"\n\n[aliases]\nClient = \"src/client/\"\n",
+    )
+    .expect("write ezpm.toml with aliases but no [darklua]");
+
+    let out = common::run_ezpm(dir.path(), &["alias", "sync"]);
+    common::assert_success(&out);
+
+    let darklua_json = fs::read_to_string(dir.path().join(".darklua.json"))
+        .expect(".darklua.json should be generated from defaults");
+    assert!(
+        darklua_json.contains("make_assignment_local"),
+        "default rules should be used when [darklua] is absent: {darklua_json}"
+    );
+}
+
 /// `alias sync` exits 0 when ezpm.toml has no aliases — nothing to sync is
 /// still a success (no-op path).
 #[test]
