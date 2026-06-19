@@ -66,6 +66,61 @@ fn serve_starts_and_shuts_down() {
     );
 }
 
+/// Verify that `ezpm serve` upgrades an outdated tool pin in `rokit.toml` to the
+/// version ezpm bundles.
+#[test]
+fn serve_bumps_outdated_rokit_tool() {
+    use ezpm::services::toolchain;
+
+    let dir = common::create_project();
+    let rokit_path = dir.path().join("rokit.toml");
+
+    let bundled_rojo = toolchain::tool_spec_by_name("rojo")
+        .expect("rojo is in the bundled manifest")
+        .spec
+        .clone();
+    let original = std::fs::read_to_string(&rokit_path).expect("read rokit.toml");
+    let downgraded = original.replace(&bundled_rojo, "rojo-rbx/rojo@7.0.0");
+    assert_ne!(
+        downgraded, original,
+        "test setup should have downgraded the rojo pin"
+    );
+    std::fs::write(&rokit_path, &downgraded).expect("write downgraded rokit.toml");
+
+    let mut child = Command::new(common::ezpm_bin())
+        .arg("serve")
+        .arg("--port")
+        .arg("44873") // distinct from serve_starts_and_shuts_down's port
+        .current_dir(dir.path())
+        .env("EZPM_NO_UPDATE_CHECK", "1")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn ezpm serve");
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut bumped = false;
+    while Instant::now() < deadline {
+        if let Ok(contents) = std::fs::read_to_string(&rokit_path) {
+            if contents.contains(&bundled_rojo) && !contents.contains("rojo-rbx/rojo@7.0.0") {
+                bumped = true;
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    let _ = child.kill();
+    let _ = child.wait();
+    drop(dir);
+
+    assert!(
+        bumped,
+        "serve should rewrite the outdated rojo pin to the bundled version ({})",
+        bundled_rojo
+    );
+}
+
 /// Verify that `ezpm serve` exits with a non-zero code when no project config
 /// exists. This tests the startup validation — serve should fail fast without
 /// hanging if there is nothing to serve.

@@ -11,6 +11,14 @@ pub struct ToolSpec {
     pub spec: String,
 }
 
+/// A tool whose project-pinned spec is older than ezpm's bundled spec.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolUpdate {
+    pub name: String,
+    pub old_spec: String,
+    pub new_spec: String,
+}
+
 pub fn embedded_rokit_toml() -> &'static str {
     EMBEDDED_ROKIT_TOML
 }
@@ -74,6 +82,65 @@ pub fn find_tool_spec_in_contents(contents: &str, name: &str) -> Option<String> 
 pub fn find_tool_spec_in_path(path: &Path, name: &str) -> Option<String> {
     let contents = std::fs::read_to_string(path).ok()?;
     find_tool_spec_in_contents(&contents, name)
+}
+
+pub fn spec_version(spec: &str) -> Option<&str> {
+    spec.rsplit_once('@').map(|(_, version)| version)
+}
+
+pub fn outdated_tools(user_contents: &str) -> Result<Vec<ToolUpdate>> {
+    let user_tools = parse_tool_specs(user_contents)?;
+    let mut updates = Vec::new();
+
+    for bundled in default_tool_specs() {
+        if let Some(user_tool) = user_tools.iter().find(|t| t.name == bundled.name) {
+            if let (Some(user_version), Some(bundled_version)) =
+                (spec_version(&user_tool.spec), spec_version(&bundled.spec))
+            {
+                if crate::services::version::is_newer(user_version, bundled_version) {
+                    updates.push(ToolUpdate {
+                        name: bundled.name.clone(),
+                        old_spec: user_tool.spec.clone(),
+                        new_spec: bundled.spec.clone(),
+                    });
+                }
+            }
+        }
+    }
+
+    Ok(updates)
+}
+
+pub fn apply_tool_updates(contents: &str, updates: &[ToolUpdate]) -> String {
+    if updates.is_empty() {
+        return contents.to_string();
+    }
+
+    let mut in_tools = false;
+
+    contents
+        .split('\n')
+        .map(|line| {
+            let trimmed = line.trim();
+
+            if trimmed.starts_with('[') && trimmed.ends_with(']') {
+                in_tools = trimmed == "[tools]";
+                return line.to_string();
+            }
+
+            if in_tools && !trimmed.is_empty() && !trimmed.starts_with('#') {
+                if let Some((name_part, _)) = trimmed.split_once('=') {
+                    let name = name_part.trim();
+                    if let Some(update) = updates.iter().find(|u| u.name == name) {
+                        return line.replace(&update.old_spec, &update.new_spec);
+                    }
+                }
+            }
+
+            line.to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 pub fn render_rokit_toml<'a, I>(tools: I, header: Option<&str>) -> String
@@ -219,5 +286,116 @@ darklua = "seaofvoices/darklua@0.18.0"
             vec!["rojo", "stylua", "darklua"],
             "tool order should follow the source manifest"
         );
+    }
+
+    #[test]
+    fn spec_version_extracts_version_suffix() {
+        assert_eq!(spec_version("rojo-rbx/rojo@7.6.1"), Some("7.6.1"));
+        assert_eq!(spec_version("owner/repo"), None);
+    }
+
+    #[test]
+    fn outdated_tools_flags_older_pinned_version() {
+        let rojo = tool_spec_by_name("rojo").expect("rojo is in the bundled manifest");
+        let user = "[tools]\nrojo = \"rojo-rbx/rojo@0.0.1\"\n";
+
+        let updates = outdated_tools(user).expect("user rokit.toml parses");
+
+        assert_eq!(updates.len(), 1, "only the outdated rojo should be flagged");
+        assert_eq!(updates[0].name, "rojo");
+        assert_eq!(updates[0].old_spec, "rojo-rbx/rojo@0.0.1");
+        assert_eq!(
+            updates[0].new_spec, rojo.spec,
+            "the update target should be ezpm's bundled spec"
+        );
+    }
+
+    #[test]
+    fn outdated_tools_ignores_equal_and_ahead_versions() {
+        let rojo = tool_spec_by_name("rojo").expect("rojo is in the bundled manifest");
+
+        let equal = format!("[tools]\nrojo = \"{}\"\n", rojo.spec);
+        assert!(
+            outdated_tools(&equal).expect("parses").is_empty(),
+            "a version equal to the bundled spec must not be flagged"
+        );
+
+        let ahead = "[tools]\nrojo = \"rojo-rbx/rojo@999.0.0\"\n";
+        assert!(
+            outdated_tools(ahead).expect("parses").is_empty(),
+            "a version newer than the bundled spec must not be downgraded"
+        );
+    }
+
+    #[test]
+    fn outdated_tools_ignores_project_only_tools() {
+        let user = "[tools]\nmytool = \"acme/mytool@0.0.1\"\n";
+        assert!(
+            outdated_tools(user).expect("parses").is_empty(),
+            "tools absent from the bundled manifest must be left untouched"
+        );
+    }
+
+    #[test]
+    fn apply_tool_updates_rewrites_only_targeted_specs() {
+        let contents = "\
+# leading comment
+[tools]
+rojo = \"rojo-rbx/rojo@7.0.0\"
+wally = \"UpliftGames/wally@0.3.2\"
+# trailing comment
+";
+        let updates = vec![ToolUpdate {
+            name: "rojo".to_string(),
+            old_spec: "rojo-rbx/rojo@7.0.0".to_string(),
+            new_spec: "rojo-rbx/rojo@7.6.1".to_string(),
+        }];
+
+        let result = apply_tool_updates(contents, &updates);
+
+        assert!(result.contains("rojo = \"rojo-rbx/rojo@7.6.1\""));
+        assert!(!result.contains("7.0.0"), "old spec must be gone");
+        assert!(
+            result.contains("wally = \"UpliftGames/wally@0.3.2\""),
+            "untouched tools must be preserved"
+        );
+        assert!(result.contains("# leading comment"));
+        assert!(result.contains("# trailing comment"));
+        assert!(result.ends_with('\n'), "trailing newline must be preserved");
+    }
+
+    #[test]
+    fn apply_tool_updates_only_touches_tools_table() {
+        let contents = "\
+[other]
+rojo = \"rojo-rbx/rojo@7.0.0\"
+
+[tools]
+rojo = \"rojo-rbx/rojo@7.0.0\"
+";
+        let updates = vec![ToolUpdate {
+            name: "rojo".to_string(),
+            old_spec: "rojo-rbx/rojo@7.0.0".to_string(),
+            new_spec: "rojo-rbx/rojo@7.6.1".to_string(),
+        }];
+
+        let result = apply_tool_updates(contents, &updates);
+
+        assert_eq!(
+            result.matches("7.0.0").count(),
+            1,
+            "the look-alike entry outside [tools] must be left untouched"
+        );
+        assert_eq!(
+            result.matches("7.6.1").count(),
+            1,
+            "only the [tools] entry should be bumped"
+        );
+    }
+
+    #[test]
+    fn apply_tool_updates_is_noop_without_updates() {
+        let contents = "[tools]\nrojo = \"rojo-rbx/rojo@7.6.1\"\n";
+        assert_eq!(apply_tool_updates(contents, &[]), contents);
     }
 }

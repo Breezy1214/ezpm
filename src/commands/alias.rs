@@ -107,7 +107,7 @@ pub fn alias_add() -> Result<()> {
     )?;
 
     // Auto-regenerate .darklua.json and .luaurc
-    config_gen::write_config_files(Path::new("."), &aliases)?;
+    config_gen::write_config_files(Path::new("."), &aliases, cfg.darklua.as_ref())?;
 
     // Optionally create the directory if it doesn't exist
     let path_no_slash = path.trim_end_matches('/');
@@ -197,7 +197,7 @@ pub fn alias_remove() -> Result<()> {
     )?;
 
     // Auto-regenerate .darklua.json and .luaurc
-    config_gen::write_config_files(Path::new("."), &aliases)?;
+    config_gen::write_config_files(Path::new("."), &aliases, cfg.darklua.as_ref())?;
 
     output::success(&format!("Removed {} alias(es).", names_to_remove.len()));
     for name in &names_to_remove {
@@ -247,7 +247,7 @@ pub fn alias_sync() -> Result<()> {
         }
     };
 
-    config_gen::write_config_files(Path::new("."), aliases)?;
+    config_gen::write_config_files(Path::new("."), aliases, cfg.darklua.as_ref())?;
 
     output::success(&format!("Synced {} aliases from ezpm.toml", aliases.len()));
     output::info("Regenerated .darklua.json and .luaurc");

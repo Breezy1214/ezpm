@@ -27,6 +27,7 @@ pub struct EzpmConfig {
     pub aliases: Option<HashMap<String, String>>,
     pub serve: Option<ServeConfig>,
     pub check: Option<CheckConfig>,
+    pub darklua: Option<toml::value::Table>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Default)]
@@ -364,6 +365,48 @@ require_fix_mode = "fast"
         assert_eq!(
             config.serve.as_ref().and_then(|s| s.require_fix_mode),
             Some(RequireFixMode::Fast)
+        );
+    }
+
+    #[test]
+    fn test_darklua_section_parses_without_warning() {
+        let input = r#"
+[project]
+name = "demo"
+
+[darklua]
+process = [
+    { rule = "convert_require", current = { name = "luau" }, target = { name = "roblox", rojo_sourcemap = "sourcemap.json" } },
+    "make_assignment_local",
+    "compute_expression",
+]
+"#;
+        let (config, warnings) = load_config_from_str(input).expect("must parse");
+        assert!(
+            warnings.is_empty(),
+            "[darklua] must be a recognized section, got warnings: {warnings:?}"
+        );
+        let darklua = config.darklua.expect("darklua section parsed");
+        let process = darklua
+            .get("process")
+            .and_then(|p| p.as_array())
+            .expect("process array");
+        assert_eq!(process.len(), 3, "all process entries parsed");
+    }
+
+    #[test]
+    fn test_save_ezpm_toml_omits_darklua_section() {
+        let dir = TempDir::new().expect("temp dir");
+        let aliases = HashMap::new();
+
+        save_ezpm_toml(dir.path(), "demo", "src", "darklua_build", &aliases)
+            .expect("save must succeed");
+
+        let contents =
+            std::fs::read_to_string(dir.path().join("ezpm.toml")).expect("read ezpm.toml");
+        assert!(
+            !contents.contains("[darklua]"),
+            "ezpm.toml must not scaffold [darklua]; it is optional and defaults apply when absent: {contents}"
         );
     }
 }
