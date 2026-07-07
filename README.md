@@ -207,12 +207,16 @@ process = [
     "remove_nil_declaration",
     "remove_empty_do",
 ]
+
+[darklua.loaders]
+"**/*.model.json" = "copy"
 ```
 
 See the [DarkLua rules reference](https://darklua.com/docs/rules/).
 
 - **`convert_require`** rewrites your `@alias/...` requires into Roblox paths — keep it, or alias requires won't resolve (ezpm warns if it's missing).
 - **`make_assignment_local`** lowers the Luau [`const`](https://rfcs.luau.org/const-keyword.html) keyword to `local` so the build runs on Roblox.
+- The `loaders` entry for `**/*.model.json` copies Rojo model files unchanged so DarkLua 0.19 does not convert them into Lua modules.
 
 The `[darklua]` section is **optional**: omit it to use the defaults above, or add it to take full control — when present, it is the source of truth and is written verbatim (your rules replace the defaults, not merge with them). After editing, run `ezpm alias sync` to regenerate `.darklua.json`.
 

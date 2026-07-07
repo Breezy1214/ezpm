@@ -7,7 +7,7 @@
 use ezpm::services::toolchain;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use tempfile::TempDir;
 
 // ─── Binary path ──────────────────────────────────────────────────────────────
@@ -105,6 +105,7 @@ where
     let mut cmd = Command::new(ezpm_bin());
     cmd.args(args)
         .current_dir(project_dir)
+        .stdin(Stdio::null())
         .env("EZPM_NO_UPDATE_CHECK", "1");
 
     for (key, value) in extra_env {
