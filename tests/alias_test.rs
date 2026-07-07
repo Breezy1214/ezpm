@@ -79,6 +79,13 @@ fn alias_sync_without_darklua_uses_default() {
         darklua_json.contains("make_assignment_local"),
         "default rules should be used when [darklua] is absent: {darklua_json}"
     );
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(&darklua_json).expect(".darklua.json must be valid JSON");
+    assert_eq!(
+        parsed["loaders"]["**/*.model.json"], "copy",
+        "default alias sync output should copy Rojo model files: {darklua_json}"
+    );
 }
 
 /// `alias sync` exits 0 when ezpm.toml has no aliases — nothing to sync is

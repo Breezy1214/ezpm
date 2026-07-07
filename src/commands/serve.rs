@@ -1106,7 +1106,7 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
     output::print_line("");
     output::info(&format!("Rojo serving on port {}", port));
     output::info(&format!(
-        "Watching {}/ for changes (.lua, .luau, init.meta.json)",
+        "Watching {}/ for changes (.lua, .luau, init.meta.json, *.model.json)",
         src
     ));
     output::info(&format!("Require-fix mode: {:?}", require_fix_mode).to_lowercase());

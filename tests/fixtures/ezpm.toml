@@ -1,0 +1,23 @@
+[project]
+name = "ez-project-manager"
+
+[paths]
+src = "src"
+darklua_build = "darklua_build"
+
+[display]
+file_changes = true
+docs_enabled = false
+logs_enabled = true
+check_updates = false
+
+[aliases]
+Client = "src/client/"
+Server = "src/server/"
+Shared = "src/shared/"
+Packages = "Packages/"
+ServerPackages = "ServerPackages/"
+
+[serve]
+port = 34872
+require_fix_mode = "hybrid"

@@ -16,6 +16,9 @@ pub const DEFAULT_DARKLUA_TOML: &str = r#"process = [
     "remove_nil_declaration",
     "remove_empty_do",
 ]
+
+[loaders]
+"**/*.model.json" = "copy"
 "#;
 
 // ─── Public functions ─────────────────────────────────────────────────────────
@@ -218,6 +221,17 @@ mod tests {
     }
 
     #[test]
+    fn test_darklua_json_copies_rojo_model_files() {
+        let output = generate_darklua_json(None);
+        let json: serde_json::Value = serde_json::from_str(&output).expect("output is valid JSON");
+
+        assert_eq!(
+            json["loaders"]["**/*.model.json"], "copy",
+            "Rojo model files must be copied so darklua 0.19 does not convert them to Lua modules: {output}"
+        );
+    }
+
+    #[test]
     fn test_luaurc_contains_aliases() {
         let mut aliases = HashMap::new();
         aliases.insert("Client".to_string(), "src/client/".to_string());
@@ -354,6 +368,15 @@ lune = "lune-org/lune@0.10.4"
                 .iter()
                 .any(|r| r.as_str() == Some("make_assignment_local")),
             "default must include make_assignment_local"
+        );
+        assert_eq!(
+            table
+                .get("loaders")
+                .and_then(|loaders| loaders.as_table())
+                .and_then(|loaders| loaders.get("**/*.model.json"))
+                .and_then(|loader| loader.as_str()),
+            Some("copy"),
+            "default darklua config must copy Rojo model files"
         );
     }
 

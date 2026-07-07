@@ -99,7 +99,7 @@ impl FileWatcher {
         debouncer.watch(watch_dir, RecursiveMode::Recursive)?;
 
         output::verbose_line(&format!(
-            "Watching {} recursively for .lua, .luau, init.meta.json",
+            "Watching {} recursively for .lua, .luau, init.meta.json, *.model.json",
             watch_dir.display()
         ));
 
@@ -138,8 +138,8 @@ fn classify_events(events: &[DebouncedEvent], ignore_patterns: &[String]) -> Vec
                             if path.is_dir() {
                                 Some(FileChange::DirectoryCreated(path.clone()))
                             } else if is_relevant(path) {
-                                // init.meta.json may arrive as Create on macOS (atomic save = delete + create).
-                                if path.file_name().is_some_and(|n| n == "init.meta.json") {
+                                // Copied metadata may arrive as Create on macOS (atomic save = delete + create).
+                                if is_copied_metadata_file(path) {
                                     classify_modify(path)
                                 } else {
                                     Some(FileChange::FileCreated(path.clone()))
@@ -152,7 +152,7 @@ fn classify_events(events: &[DebouncedEvent], ignore_patterns: &[String]) -> Vec
                             // CreateKind::File or other file-specific variants.
                             if !is_relevant(path) {
                                 None
-                            } else if path.file_name().is_some_and(|n| n == "init.meta.json") {
+                            } else if is_copied_metadata_file(path) {
                                 classify_modify(path)
                             } else {
                                 Some(FileChange::FileCreated(path.clone()))
@@ -295,7 +295,7 @@ fn classify_events(events: &[DebouncedEvent], ignore_patterns: &[String]) -> Vec
 
 /// Classify a modify event by path extension.
 fn classify_modify(path: &Path) -> Option<FileChange> {
-    if path.file_name().is_some_and(|n| n == "init.meta.json") {
+    if is_copied_metadata_file(path) {
         Some(FileChange::MetaChange(path.to_path_buf()))
     } else {
         match path.extension().and_then(|e| e.to_str()) {
@@ -310,7 +310,14 @@ pub(crate) fn is_relevant(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|e| e.to_str()),
         Some("lua") | Some("luau")
-    ) || path.file_name().is_some_and(|n| n == "init.meta.json")
+    ) || is_copied_metadata_file(path)
+}
+
+fn is_copied_metadata_file(path: &Path) -> bool {
+    path.file_name().is_some_and(|name| {
+        let name = name.to_string_lossy();
+        name == "init.meta.json" || name.ends_with(".model.json")
+    })
 }
 
 /// Returns true if any component of the path matches an ignored directory name.
@@ -360,6 +367,7 @@ mod tests {
         assert!(is_relevant(Path::new("src/foo.lua")));
         assert!(is_relevant(Path::new("src/bar.luau")));
         assert!(is_relevant(Path::new("src/thing/init.meta.json")));
+        assert!(is_relevant(Path::new("src/tree/MyModel.model.json")));
 
         assert!(!is_relevant(Path::new("src/foo.rs")));
         assert!(!is_relevant(Path::new("src/foo.txt")));
@@ -525,6 +533,44 @@ mod tests {
         assert!(
             matches!(&result[0], FileChange::MetaChange(p) if p == Path::new("src/MyModule/init.meta.json")),
             "Create event for init.meta.json must produce MetaChange, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_classify_events_model_json_create_becomes_meta_change() {
+        init_output();
+
+        let events = vec![make_debounced_event(
+            EventKind::Create(notify_debouncer_full::notify::event::CreateKind::File),
+            vec![PathBuf::from("src/Map/Tree.model.json")],
+        )];
+
+        let result = classify_events(&events, &[]);
+
+        assert_eq!(result.len(), 1);
+        assert!(
+            matches!(&result[0], FileChange::MetaChange(p) if p == Path::new("src/Map/Tree.model.json")),
+            "Create event for .model.json must produce MetaChange, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_classify_events_model_json_modify_becomes_meta_change() {
+        init_output();
+
+        let events = vec![make_debounced_event(
+            EventKind::Modify(ModifyKind::Data(DataChange::Any)),
+            vec![PathBuf::from("src/Map/Tree.model.json")],
+        )];
+
+        let result = classify_events(&events, &[]);
+
+        assert_eq!(result.len(), 1);
+        assert!(
+            matches!(&result[0], FileChange::MetaChange(p) if p == Path::new("src/Map/Tree.model.json")),
+            "Modify event for .model.json must produce MetaChange, got {:?}",
             result
         );
     }

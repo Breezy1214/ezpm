@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use inquire::{Confirm, MultiSelect, Select, Text};
 use std::collections::HashMap;
+use std::io::IsTerminal;
 use std::path::Path;
 
 use crate::config;
@@ -16,6 +17,10 @@ use crate::services::toolchain;
 /// config files (ezpm.toml, .darklua.json, .luaurc, rokit.toml,
 /// default.project.json).
 pub fn run_init() -> Result<()> {
+    if !std::io::stdin().is_terminal() {
+        anyhow::bail!("ezpm init requires an interactive terminal");
+    }
+
     // ── Step 1: Detect existing files ────────────────────────────────────────
     let has_ezpm = Path::new("ezpm.toml").exists();
     let has_darklua = Path::new(".darklua.json").exists();
