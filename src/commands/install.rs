@@ -75,14 +75,19 @@ fn path_is_under_src(path: &str, src_prefix: &str) -> bool {
     path == src || path.starts_with(&format!("{src}/"))
 }
 
-fn removable_package_dir_path(
-    project_root: &Path,
-    src_prefix: &str,
-    pkg_dir: &str,
-) -> Result<PathBuf> {
+fn safe_package_dir_path(project_root: &Path, src_prefix: &str, pkg_dir: &str) -> Result<PathBuf> {
     let pkg_dir = safe_top_level_package_dir(pkg_dir, src_prefix)
-        .with_context(|| format!("Refusing to remove unsafe package directory '{pkg_dir}'"))?;
+        .with_context(|| format!("Refusing to clear unsafe package directory '{pkg_dir}'"))?;
     let target = project_root.join(&pkg_dir);
+
+    let target_metadata = std::fs::symlink_metadata(&target)
+        .with_context(|| format!("Failed to inspect package directory '{}'", target.display()))?;
+    if target_metadata.file_type().is_symlink() || !target_metadata.is_dir() {
+        anyhow::bail!(
+            "Refusing to clear package path that is not a real directory: '{}'",
+            target.display()
+        );
+    }
 
     let canonical_root = project_root.canonicalize().with_context(|| {
         format!(
@@ -99,12 +104,47 @@ fn removable_package_dir_path(
         || canonical_target.parent() != Some(canonical_root.as_path())
     {
         anyhow::bail!(
-            "Refusing to remove unsafe package directory '{}'",
+            "Refusing to clear unsafe package directory '{}'",
             target.display()
         );
     }
 
     Ok(target)
+}
+
+fn clear_package_dir(project_root: &Path, src_prefix: &str, pkg_dir: &str) -> Result<()> {
+    let target = project_root.join(pkg_dir);
+
+    if !target.exists() {
+        let safe_name = safe_top_level_package_dir(pkg_dir, src_prefix)
+            .with_context(|| format!("Refusing to clear unsafe package directory '{pkg_dir}'"))?;
+        let target = project_root.join(safe_name);
+        std::fs::create_dir(&target).with_context(|| {
+            format!("Failed to create package directory '{}'", target.display())
+        })?;
+        return Ok(());
+    }
+
+    let target = safe_package_dir_path(project_root, src_prefix, pkg_dir)?;
+    for entry in std::fs::read_dir(&target)
+        .with_context(|| format!("Failed to read package directory '{}'", target.display()))?
+    {
+        let path = entry
+            .with_context(|| format!("Failed to read an entry in '{}'", target.display()))?
+            .path();
+        let metadata = std::fs::symlink_metadata(&path)
+            .with_context(|| format!("Failed to inspect package entry '{}'", path.display()))?;
+
+        if metadata.file_type().is_dir() {
+            std::fs::remove_dir_all(&path)
+                .with_context(|| format!("Failed to remove package entry '{}'", path.display()))?;
+        } else {
+            std::fs::remove_file(&path)
+                .with_context(|| format!("Failed to remove package entry '{}'", path.display()))?;
+        }
+    }
+
+    Ok(())
 }
 
 /// Check `rokit.toml` for missing required tools and run `rokit add` for each.
@@ -234,12 +274,8 @@ pub fn setup_wally_packages(
     let cwd = std::env::current_dir().context("Failed to determine current directory")?;
 
     for pkg_dir in &package_dirs {
-        let pkg_path = cwd.join(pkg_dir);
-        if pkg_path.exists() {
-            let removable = removable_package_dir_path(&cwd, src_prefix, pkg_dir)?;
-            std::fs::remove_dir_all(&removable)
-                .with_context(|| format!("Failed to remove {pkg_dir}/"))?;
-        }
+        clear_package_dir(&cwd, src_prefix, pkg_dir)
+            .with_context(|| format!("Failed to clear {pkg_dir}/"))?;
     }
 
     // ── Wally install ────────────────────────────────────────────────────────
@@ -464,18 +500,18 @@ mod tests {
     }
 
     #[test]
-    fn package_removal_guard_accepts_only_existing_top_level_children() {
+    fn package_directory_guard_accepts_only_existing_top_level_children() {
         let dir = TempDir::new().expect("TempDir::new");
         std::fs::create_dir_all(dir.path().join("Packages")).expect("create Packages");
 
-        let safe = removable_package_dir_path(dir.path(), "src", "Packages")
+        let safe = safe_package_dir_path(dir.path(), "src", "Packages")
             .expect("Packages should be removable");
 
         assert_eq!(safe, dir.path().join("Packages"));
     }
 
     #[test]
-    fn package_removal_guard_rejects_root_parent_absolute_nested_and_src() {
+    fn package_directory_guard_rejects_root_parent_absolute_nested_and_src() {
         let dir = TempDir::new().expect("TempDir::new");
         std::fs::create_dir_all(dir.path().join("src")).expect("create src");
         std::fs::create_dir_all(dir.path().join("Packages").join("Nested"))
@@ -492,10 +528,10 @@ mod tests {
             "Packages/Nested",
             "src",
         ] {
-            let result = removable_package_dir_path(dir.path(), "src", candidate);
+            let result = safe_package_dir_path(dir.path(), "src", candidate);
             assert!(
                 result.is_err(),
-                "{candidate:?} must be rejected as an unsafe package removal target"
+                "{candidate:?} must be rejected as an unsafe package cleanup target"
             );
         }
     }
