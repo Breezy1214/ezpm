@@ -1,5 +1,3 @@
-//! FileWatcher — OS-native file watching with debouncing and categorized events.
-
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -14,40 +12,44 @@ use tokio::sync::mpsc;
 
 use crate::output;
 
-// ─── Public types ─────────────────────────────────────────────────────────────
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum FileChange {
-    /// A `.lua` or `.luau` file was modified.
     LuaChange(PathBuf),
-    /// An `init.meta.json` file was modified.
     MetaChange(PathBuf),
-    /// A new file was created (any relevant type).
     FileCreated(PathBuf),
-    /// A file was deleted (any relevant type).
     FileDeleted(PathBuf),
-    /// A directory was created.
     DirectoryCreated(PathBuf),
-    /// A directory was removed.
     DirectoryRemoved(PathBuf),
+    RojoProjectChange(PathBuf),
+    ConfigChange(PathBuf),
 }
 
-/// Top-level event type delivered over the mpsc channel.
+#[derive(Debug, Clone)]
+pub struct WatchTargets {
+    pub source_root: PathBuf,
+    pub project_files: Vec<PathBuf>,
+    pub config_file: Option<PathBuf>,
+    pub generated_roots: Vec<PathBuf>,
+}
+
+impl WatchTargets {
+    pub fn source_only(source_root: impl Into<PathBuf>) -> Self {
+        Self {
+            source_root: source_root.into(),
+            project_files: Vec::new(),
+            config_file: None,
+            generated_roots: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum WatchEvent {
-    /// A batch of file changes debounced into one event.
-    ///
-    /// Multiple changes within the 300ms window are batched together. Mixed
-    /// event types stay combined — one batch, caller iterates.
     Changes(Vec<FileChange>),
-    /// The watcher encountered an error and stopped.
-    ///
-    /// Per locked decision: fail-fast, no recovery attempts.
     Error(String),
 }
 
-// ─── FileWatcher ──────────────────────────────────────────────────────────────
 pub struct FileWatcher {
-    /// Holds the debouncer alive. Dropping this stops the watcher.
     _debouncer: Debouncer<RecommendedWatcher, RecommendedCache>,
 }
 
@@ -56,51 +58,73 @@ impl FileWatcher {
         watch_dir: &Path,
         extra_ignores: &[String],
     ) -> Result<(FileWatcher, mpsc::Receiver<WatchEvent>)> {
+        Self::with_targets(
+            WatchTargets::source_only(watch_dir.to_path_buf()),
+            extra_ignores,
+        )
+    }
+
+    pub fn with_targets(
+        targets: WatchTargets,
+        extra_ignores: &[String],
+    ) -> Result<(FileWatcher, mpsc::Receiver<WatchEvent>)> {
         let (tx, rx) = mpsc::channel::<WatchEvent>(64);
 
-        // Build the full ignore list (hardcoded + configurable extra ignores).
         let mut ignore_patterns: Vec<String> = vec![
             ".git".to_string(),
             "node_modules".to_string(),
             "Packages".to_string(),
         ];
         ignore_patterns.extend_from_slice(extra_ignores);
+        let rules = ClassificationRules::new(&targets);
 
-        // Clone tx into the closure — the original tx is consumed by ownership.
         let tx_clone = tx.clone();
 
-        // Build the debouncer callback. This closure runs on notify's OS-managed
-        // thread — `blocking_send` is the only safe bridge to tokio here.
-        let callback = move |result: DebounceEventResult| {
-            match result {
-                Ok(events) => {
-                    let changes = classify_events(&events, &ignore_patterns);
-                    if !changes.is_empty() {
-                        // Safe: notify callback runs on OS thread, not tokio worker.
-                        // blocking_send would panic if called from an async context.
-                        let _ = tx_clone.blocking_send(WatchEvent::Changes(changes));
-                    }
+        let callback = move |result: DebounceEventResult| match result {
+            Ok(events) => {
+                let changes = classify_events_with_rules(&events, &ignore_patterns, &rules);
+                if !changes.is_empty() {
+                    let _ = tx_clone.blocking_send(WatchEvent::Changes(changes));
                 }
-                Err(errors) => {
-                    let msg = errors
-                        .iter()
-                        .map(|e| format!("{e}"))
-                        .collect::<Vec<_>>()
-                        .join("; ");
-                    // Per locked decision: error event and stop — fail-fast.
-                    let _ = tx_clone.blocking_send(WatchEvent::Error(msg));
-                }
+            }
+            Err(errors) => {
+                let msg = errors
+                    .iter()
+                    .map(|e| format!("{e}"))
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                let _ = tx_clone.blocking_send(WatchEvent::Error(msg));
             }
         };
 
         let mut debouncer = new_debouncer(Duration::from_millis(100), None, callback)?;
 
-        // Watch the directory recursively via OS-native events.
-        debouncer.watch(watch_dir, RecursiveMode::Recursive)?;
+        debouncer.watch(&targets.source_root, RecursiveMode::Recursive)?;
+
+        let mut watched_parents = HashSet::new();
+        for control_file in targets
+            .project_files
+            .iter()
+            .chain(targets.config_file.iter())
+        {
+            if control_file.starts_with(&targets.source_root) {
+                continue;
+            }
+            if let Some(parent) = control_file.parent() {
+                let parent = if parent.as_os_str().is_empty() {
+                    Path::new(".")
+                } else {
+                    parent
+                };
+                if watched_parents.insert(parent.to_path_buf()) {
+                    debouncer.watch(parent, RecursiveMode::NonRecursive)?;
+                }
+            }
+        }
 
         output::verbose_line(&format!(
             "Watching {} recursively for .lua, .luau, init.meta.json, *.model.json",
-            watch_dir.display()
+            targets.source_root.display()
         ));
 
         Ok((
@@ -112,82 +136,174 @@ impl FileWatcher {
     }
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+#[cfg(test)]
 fn classify_events(events: &[DebouncedEvent], ignore_patterns: &[String]) -> Vec<FileChange> {
+    classify_events_with_rules(events, ignore_patterns, &ClassificationRules::unscoped())
+}
+
+#[derive(Debug, Clone)]
+struct ClassificationRules {
+    source_root: Option<PathBuf>,
+    project_files: std::collections::HashMap<PathBuf, PathBuf>,
+    config_file: Option<(PathBuf, PathBuf)>,
+    generated_roots: Vec<PathBuf>,
+}
+
+impl ClassificationRules {
+    fn new(targets: &WatchTargets) -> Self {
+        Self {
+            source_root: Some(clean_path(&targets.source_root)),
+            project_files: targets
+                .project_files
+                .iter()
+                .map(|p| (clean_path(p), p.clone()))
+                .collect(),
+            config_file: targets
+                .config_file
+                .as_ref()
+                .map(|p| (clean_path(p), p.clone())),
+            generated_roots: targets
+                .generated_roots
+                .iter()
+                .map(|p| clean_path(p))
+                .collect(),
+        }
+    }
+
+    #[cfg(test)]
+    fn unscoped() -> Self {
+        Self {
+            source_root: None,
+            project_files: std::collections::HashMap::new(),
+            config_file: None,
+            generated_roots: Vec::new(),
+        }
+    }
+
+    fn control_change(&self, path: &Path) -> Option<FileChange> {
+        if let Some((_, original)) = self
+            .config_file
+            .as_ref()
+            .filter(|(normalized, _)| normalized == path)
+        {
+            Some(FileChange::ConfigChange(original.clone()))
+        } else {
+            self.project_files
+                .get(path)
+                .map(|original| FileChange::RojoProjectChange(original.clone()))
+        }
+    }
+
+    fn is_generated(&self, path: &Path) -> bool {
+        self.generated_roots
+            .iter()
+            .any(|root| path.starts_with(root))
+    }
+
+    fn is_in_source(&self, path: &Path) -> bool {
+        self.source_root
+            .as_ref()
+            .is_none_or(|root| path.starts_with(root))
+    }
+}
+
+fn clean_path(path: &Path) -> PathBuf {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(path)
+    };
+
+    absolute.canonicalize().unwrap_or_else(|_| {
+        absolute
+            .parent()
+            .and_then(|parent| parent.canonicalize().ok())
+            .and_then(|parent| absolute.file_name().map(|name| parent.join(name)))
+            .unwrap_or(absolute)
+    })
+}
+
+fn classify_events_with_rules(
+    events: &[DebouncedEvent],
+    ignore_patterns: &[String],
+    rules: &ClassificationRules,
+) -> Vec<FileChange> {
     let mut seen: HashSet<FileChange> = HashSet::new();
     let mut result: Vec<FileChange> = Vec::new();
 
     for debounced in events {
-        // DebouncedEvent derefs to Event, which has `paths: Vec<PathBuf>` and `kind: EventKind`.
         let kind = &debounced.event.kind;
 
         for path in &debounced.event.paths {
-            // Filter: ignored directory component.
+            let normalized_path = clean_path(path);
+
+            if rules.is_generated(&normalized_path) {
+                continue;
+            }
+
+            if let Some(change) = rules.control_change(&normalized_path) {
+                if seen.insert(change.clone()) {
+                    result.push(change);
+                }
+                continue;
+            }
+
+            if !rules.is_in_source(&normalized_path) {
+                continue;
+            }
+
             if should_ignore(path, ignore_patterns) {
                 continue;
             }
 
-            // Note: is_relevant() is checked per-arm below so that directory
-            // events (which have no extension) are not filtered out.
             let change = match kind {
-                EventKind::Create(create_kind) => {
-                    match create_kind {
-                        CreateKind::Folder => Some(FileChange::DirectoryCreated(path.clone())),
-                        CreateKind::Any => {
-                            // Ambiguous — use filesystem check to disambiguate.
-                            if path.is_dir() {
-                                Some(FileChange::DirectoryCreated(path.clone()))
-                            } else if is_relevant(path) {
-                                // Copied metadata may arrive as Create on macOS (atomic save = delete + create).
-                                if is_copied_metadata_file(path) {
-                                    classify_modify(path)
-                                } else {
-                                    Some(FileChange::FileCreated(path.clone()))
-                                }
-                            } else {
-                                None
-                            }
-                        }
-                        _ => {
-                            // CreateKind::File or other file-specific variants.
-                            if !is_relevant(path) {
-                                None
-                            } else if is_copied_metadata_file(path) {
+                EventKind::Create(create_kind) => match create_kind {
+                    CreateKind::Folder => Some(FileChange::DirectoryCreated(path.clone())),
+                    CreateKind::Any => {
+                        if path.is_dir() {
+                            Some(FileChange::DirectoryCreated(path.clone()))
+                        } else if is_relevant(path) {
+                            if is_copied_metadata_file(path) {
                                 classify_modify(path)
                             } else {
                                 Some(FileChange::FileCreated(path.clone()))
                             }
+                        } else {
+                            None
                         }
                     }
-                }
-                EventKind::Remove(remove_kind) => {
-                    match remove_kind {
-                        RemoveKind::Folder => Some(FileChange::DirectoryRemoved(path.clone())),
-                        RemoveKind::Any => {
-                            // Ambiguous — the path is already gone so we can't stat it.
-                            // If it has a relevant extension treat as file, otherwise directory.
-                            if is_relevant(path) {
-                                Some(FileChange::FileDeleted(path.clone()))
-                            } else if path.extension().is_none() {
-                                // No extension → likely a directory.
-                                Some(FileChange::DirectoryRemoved(path.clone()))
-                            } else {
-                                None
-                            }
-                        }
-                        _ => {
-                            // RemoveKind::File or other file-specific variants.
-                            if is_relevant(path) {
-                                Some(FileChange::FileDeleted(path.clone()))
-                            } else {
-                                None
-                            }
+                    _ => {
+                        if !is_relevant(path) {
+                            None
+                        } else if is_copied_metadata_file(path) {
+                            classify_modify(path)
+                        } else {
+                            Some(FileChange::FileCreated(path.clone()))
                         }
                     }
-                }
+                },
+                EventKind::Remove(remove_kind) => match remove_kind {
+                    RemoveKind::Folder => Some(FileChange::DirectoryRemoved(path.clone())),
+                    RemoveKind::Any => {
+                        if is_relevant(path) {
+                            Some(FileChange::FileDeleted(path.clone()))
+                        } else if path.extension().is_none() {
+                            Some(FileChange::DirectoryRemoved(path.clone()))
+                        } else {
+                            None
+                        }
+                    }
+                    _ => {
+                        if is_relevant(path) {
+                            Some(FileChange::FileDeleted(path.clone()))
+                        } else {
+                            None
+                        }
+                    }
+                },
                 EventKind::Modify(ModifyKind::Name(_)) => {
-                    // Rename/move: check the filesystem to classify correctly.
-                    // The old path no longer exists; the new path does.
                     if path.is_dir() {
                         Some(FileChange::DirectoryCreated(path.clone()))
                     } else if path.exists() {
@@ -196,15 +312,12 @@ fn classify_events(events: &[DebouncedEvent], ignore_patterns: &[String]) -> Vec
                         } else {
                             None
                         }
+                    } else if is_relevant(path) {
+                        Some(FileChange::FileDeleted(path.clone()))
+                    } else if path.extension().is_none() {
+                        Some(FileChange::DirectoryRemoved(path.clone()))
                     } else {
-                        // Path is gone — it was renamed/moved away from here.
-                        if is_relevant(path) {
-                            Some(FileChange::FileDeleted(path.clone()))
-                        } else if path.extension().is_none() {
-                            Some(FileChange::DirectoryRemoved(path.clone()))
-                        } else {
-                            None
-                        }
+                        None
                     }
                 }
                 EventKind::Modify(_) => {
@@ -214,8 +327,6 @@ fn classify_events(events: &[DebouncedEvent], ignore_patterns: &[String]) -> Vec
                         None
                     }
                 }
-                // Pitfall 3: kqueue on macOS emits EventKind::Any instead of
-                // specific Modify variants. Treat Any as a possible modify.
                 EventKind::Any => {
                     if is_relevant(path) {
                         classify_modify(path)
@@ -223,7 +334,6 @@ fn classify_events(events: &[DebouncedEvent], ignore_patterns: &[String]) -> Vec
                         None
                     }
                 }
-                // Access and Other events are not actionable for our use case.
                 EventKind::Access(_) | EventKind::Other => None,
             };
 
@@ -235,9 +345,6 @@ fn classify_events(events: &[DebouncedEvent], ignore_patterns: &[String]) -> Vec
         }
     }
 
-    // Filesystem-aware conflict resolution: when a debounce batch contains both a
-    // delete and a non-delete event for the same path (e.g., git discard replaces a
-    // file), check whether the path still exists on disk to decide the correct event.
     let deleted_paths: HashSet<PathBuf> = result
         .iter()
         .filter_map(|c| match c {
@@ -247,32 +354,29 @@ fn classify_events(events: &[DebouncedEvent], ignore_patterns: &[String]) -> Vec
         .collect();
 
     if !deleted_paths.is_empty() {
-        // Partition: paths that still exist on disk were replaced, not truly deleted.
         let still_exists: HashSet<&PathBuf> = deleted_paths.iter().filter(|p| p.exists()).collect();
 
         result.retain(|c| match c {
-            // Drop delete events for paths that still exist (replaced, not deleted).
             FileChange::FileDeleted(p) | FileChange::DirectoryRemoved(p) => {
                 !still_exists.contains(p)
             }
-            // Drop non-delete events only for paths that are truly gone.
             FileChange::LuaChange(p)
             | FileChange::MetaChange(p)
             | FileChange::FileCreated(p)
-            | FileChange::DirectoryCreated(p) => {
-                !deleted_paths.contains(p) || still_exists.contains(p)
-            }
+            | FileChange::DirectoryCreated(p)
+            | FileChange::RojoProjectChange(p)
+            | FileChange::ConfigChange(p) => !deleted_paths.contains(p) || still_exists.contains(p),
         });
 
-        // For paths that still exist but had no non-delete event in the batch,
-        // synthesize an appropriate event so the build stays in sync.
         for path in &still_exists {
             let has_non_delete = result.iter().any(|c| {
                 let p = match c {
                     FileChange::LuaChange(p)
                     | FileChange::MetaChange(p)
                     | FileChange::FileCreated(p)
-                    | FileChange::DirectoryCreated(p) => p,
+                    | FileChange::DirectoryCreated(p)
+                    | FileChange::RojoProjectChange(p)
+                    | FileChange::ConfigChange(p) => p,
                     _ => return false,
                 };
                 p == *path
@@ -293,7 +397,6 @@ fn classify_events(events: &[DebouncedEvent], ignore_patterns: &[String]) -> Vec
     result
 }
 
-/// Classify a modify event by path extension.
 fn classify_modify(path: &Path) -> Option<FileChange> {
     if is_copied_metadata_file(path) {
         Some(FileChange::MetaChange(path.to_path_buf()))
@@ -305,7 +408,6 @@ fn classify_modify(path: &Path) -> Option<FileChange> {
     }
 }
 
-/// Returns true if the file should be watched.
 pub(crate) fn is_relevant(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|e| e.to_str()),
@@ -320,7 +422,6 @@ fn is_copied_metadata_file(path: &Path) -> bool {
     })
 }
 
-/// Returns true if any component of the path matches an ignored directory name.
 pub(crate) fn should_ignore(path: &Path, ignore_patterns: &[String]) -> bool {
     path.components().any(|component| {
         let s = component.as_os_str().to_string_lossy();
@@ -329,8 +430,6 @@ pub(crate) fn should_ignore(path: &Path, ignore_patterns: &[String]) -> bool {
             .any(|pattern| s.as_ref() == pattern.as_str())
     })
 }
-
-// ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -345,7 +444,6 @@ mod tests {
     use super::*;
 
     fn init_output() {
-        // ok() silently ignores double-init across tests (OnceLock pattern).
         output::init(false, false, output::ColorChoice::Auto);
     }
 
@@ -357,8 +455,6 @@ mod tests {
         };
         DebouncedEvent::new(event, std::time::Instant::now())
     }
-
-    // ── Test 1: is_relevant ────────────────────────────────────────────────
 
     #[test]
     fn test_is_relevant() {
@@ -375,8 +471,6 @@ mod tests {
         assert!(!is_relevant(Path::new("README.md")));
     }
 
-    // ── Test 2: should_ignore ──────────────────────────────────────────────
-
     #[test]
     fn test_should_ignore() {
         init_output();
@@ -387,7 +481,6 @@ mod tests {
             "Packages".to_string(),
         ];
 
-        // Hardcoded ignores.
         assert!(should_ignore(Path::new(".git/config"), &defaults));
         assert!(should_ignore(
             Path::new("node_modules/pkg/index.js"),
@@ -395,17 +488,13 @@ mod tests {
         ));
         assert!(should_ignore(Path::new("Packages/lib.lua"), &defaults));
 
-        // Non-ignored path.
         assert!(!should_ignore(Path::new("src/foo.lua"), &defaults));
 
-        // Extra ignores from ezpm.toml.
         let mut with_extra = defaults.clone();
         with_extra.push("build".to_string());
         assert!(should_ignore(Path::new("build/output.lua"), &with_extra));
         assert!(!should_ignore(Path::new("src/foo.lua"), &with_extra));
     }
-
-    // ── Test 3: classify_events — lua change ──────────────────────────────
 
     #[test]
     fn test_classify_events_lua_change() {
@@ -422,8 +511,6 @@ mod tests {
         assert!(matches!(&result[0], FileChange::LuaChange(p) if p == Path::new("src/foo.lua")));
     }
 
-    // ── Test 4: classify_events — irrelevant files filtered ───────────────
-
     #[test]
     fn test_classify_events_filters_irrelevant() {
         init_output();
@@ -438,13 +525,10 @@ mod tests {
         assert!(result.is_empty(), "non-Lua files must be filtered out");
     }
 
-    // ── Test 5: classify_events — EventKind::Any treated as modify ────────
-
     #[test]
     fn test_classify_events_any_kind_treated_as_modify() {
         init_output();
 
-        // Pitfall 3: kqueue on macOS emits EventKind::Any — must be treated as modify.
         let events = vec![make_debounced_event(
             EventKind::Any,
             vec![PathBuf::from("src/module.luau")],
@@ -459,8 +543,6 @@ mod tests {
         );
     }
 
-    // ── Test 6: integration — watcher detects real file change ────────────
-
     #[tokio::test]
     async fn test_watcher_detects_file_change() {
         init_output();
@@ -474,13 +556,10 @@ mod tests {
 
         let (watcher, mut rx) = FileWatcher::new(&src_dir, &[]).expect("FileWatcher::new failed");
 
-        // Allow the OS watcher to initialize before triggering a change.
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        // Modify the file to trigger a change event.
         std::fs::write(&lua_file, b"-- modified").expect("failed to write modified file");
 
-        // Wait up to 2 seconds for the debounced event (300ms debounce + margin).
         let received = timeout(Duration::from_secs(2), rx.recv())
             .await
             .expect("timed out waiting for WatchEvent — no event arrived within 2s")
@@ -492,10 +571,6 @@ mod tests {
                     !changes.is_empty(),
                     "expected at least one FileChange in the batch"
                 );
-                // On macOS kqueue, overwriting a watched file after the watcher starts
-                // may be reported as FileCreated rather than LuaChange (platform difference).
-                // We accept both — the important thing is that the path is test.lua and
-                // the event type is relevant (either a change or a create counts).
                 let has_relevant_change = changes.iter().any(|c| {
                     let p = match c {
                         FileChange::LuaChange(p) | FileChange::FileCreated(p) => p,
@@ -512,11 +587,8 @@ mod tests {
             WatchEvent::Error(e) => panic!("unexpected watcher error: {e}"),
         }
 
-        // Explicit drop to stop the watcher (documents intent).
         drop(watcher);
     }
-
-    // ── Test 6b: classify_events — init.meta.json Create becomes MetaChange ──
 
     #[test]
     fn test_classify_events_meta_create_becomes_meta_change() {
@@ -575,13 +647,10 @@ mod tests {
         );
     }
 
-    // ── Test 8b: classify_events — truly deleted file (not on disk) ─────
-
     #[test]
     fn test_classify_events_delete_wins_when_file_truly_gone() {
         init_output();
 
-        // Path does not exist on disk — delete should win over modify.
         let events = vec![
             make_debounced_event(
                 EventKind::Modify(ModifyKind::Data(DataChange::Any)),
@@ -608,13 +677,10 @@ mod tests {
         );
     }
 
-    // ── Test 8c: classify_events — replaced file (still on disk) ─────────
-
     #[test]
     fn test_classify_events_modify_wins_when_file_still_exists() {
         init_output();
 
-        // Create a real temp file so exists() returns true.
         let tmp = tempfile::TempDir::new().expect("failed to create tempdir");
         let lua_file = tmp.path().join("replaced.lua");
         std::fs::write(&lua_file, b"-- content").expect("failed to write file");
@@ -632,7 +698,6 @@ mod tests {
 
         let result = classify_events(&events, &[]);
 
-        // File still exists on disk — the modify (LuaChange) should win, delete dropped.
         assert_eq!(
             result.len(),
             1,
@@ -646,13 +711,10 @@ mod tests {
         );
     }
 
-    // ── Test 8d: classify_events — delete-only but file replaced (synthesize) ──
-
     #[test]
     fn test_classify_events_synthesize_event_for_replaced_file() {
         init_output();
 
-        // File has only a delete event, but still exists (e.g., git checkout replaced it).
         let tmp = tempfile::TempDir::new().expect("failed to create tempdir");
         let lua_file = tmp.path().join("checkout.lua");
         std::fs::write(&lua_file, b"-- restored").expect("failed to write file");
@@ -664,7 +726,6 @@ mod tests {
 
         let result = classify_events(&events, &[]);
 
-        // Delete dropped, synthetic LuaChange created since file exists.
         assert_eq!(
             result.len(),
             1,
@@ -678,18 +739,15 @@ mod tests {
         );
     }
 
-    // ── Test 9a: classify_events — directory rename emits remove + create ──
-
     #[test]
     fn test_classify_events_directory_rename() {
         init_output();
 
-        // Simulate a directory move: old path gone, new path exists.
         let tmp = tempfile::TempDir::new().expect("failed to create tempdir");
         let new_dir = tmp.path().join("NewFolder");
         std::fs::create_dir_all(&new_dir).expect("failed to create dir");
 
-        let old_dir = tmp.path().join("OldFolder"); // does not exist on disk
+        let old_dir = tmp.path().join("OldFolder");
 
         let events = vec![
             make_debounced_event(
@@ -730,8 +788,6 @@ mod tests {
         );
     }
 
-    // ── Test 9b: classify_events — lua file rename emits delete + create ──
-
     #[test]
     fn test_classify_events_lua_file_rename() {
         init_output();
@@ -740,7 +796,7 @@ mod tests {
         let new_file = tmp.path().join("new_name.lua");
         std::fs::write(&new_file, b"-- moved").expect("failed to write file");
 
-        let old_file = tmp.path().join("old_name.lua"); // does not exist on disk
+        let old_file = tmp.path().join("old_name.lua");
 
         let events = vec![
             make_debounced_event(
@@ -781,8 +837,6 @@ mod tests {
         );
     }
 
-    // ── Test 7: integration — non-Lua files do not trigger events ─────────
-
     #[tokio::test]
     async fn test_watcher_ignores_non_lua_files() {
         init_output();
@@ -793,19 +847,147 @@ mod tests {
 
         let (_watcher, mut rx) = FileWatcher::new(&src_dir, &[]).expect("FileWatcher::new failed");
 
-        // Allow the OS watcher to initialize.
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        // Write a non-Lua file — must be silently ignored.
         let txt_file = src_dir.join("test.txt");
         std::fs::write(&txt_file, b"not lua").expect("failed to write .txt file");
 
-        // Wait with a short timeout — no event should arrive.
         let result = timeout(Duration::from_millis(800), rx.recv()).await;
 
         assert!(
             result.is_err(),
             "expected timeout (no event for .txt file), but got an event"
         );
+    }
+
+    fn scoped_rules(tmp: &tempfile::TempDir) -> ClassificationRules {
+        ClassificationRules::new(&WatchTargets {
+            source_root: tmp.path().join("src"),
+            project_files: vec![tmp.path().join("default.project.json")],
+            config_file: Some(tmp.path().join("ezpm.toml")),
+            generated_roots: vec![tmp.path().join("darklua_build")],
+        })
+    }
+
+    #[test]
+    fn test_control_file_modifications_are_distinct() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let project = tmp.path().join("default.project.json");
+        let config = tmp.path().join("ezpm.toml");
+        let events = vec![make_debounced_event(
+            EventKind::Modify(ModifyKind::Data(DataChange::Any)),
+            vec![project.clone(), config.clone()],
+        )];
+
+        let result = classify_events_with_rules(&events, &[], &scoped_rules(&tmp));
+        assert!(result.contains(&FileChange::RojoProjectChange(project)));
+        assert!(result.contains(&FileChange::ConfigChange(config)));
+    }
+
+    #[test]
+    fn test_atomic_project_replacement_is_deduplicated() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let project = tmp.path().join("default.project.json");
+        let events = vec![
+            make_debounced_event(EventKind::Remove(RemoveKind::File), vec![project.clone()]),
+            make_debounced_event(
+                EventKind::Modify(ModifyKind::Name(
+                    notify_debouncer_full::notify::event::RenameMode::To,
+                )),
+                vec![project.clone()],
+            ),
+            make_debounced_event(EventKind::Create(CreateKind::File), vec![project.clone()]),
+        ];
+
+        let result = classify_events_with_rules(&events, &[], &scoped_rules(&tmp));
+        assert_eq!(result, vec![FileChange::RojoProjectChange(project)]);
+    }
+
+    #[test]
+    fn test_source_directory_move_surfaces_topology_changes() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir_all(src.join("new_feature")).unwrap();
+        let old = src.join("old_feature");
+        let new = src.join("new_feature");
+        let events = vec![
+            make_debounced_event(
+                EventKind::Modify(ModifyKind::Name(
+                    notify_debouncer_full::notify::event::RenameMode::From,
+                )),
+                vec![old.clone()],
+            ),
+            make_debounced_event(
+                EventKind::Modify(ModifyKind::Name(
+                    notify_debouncer_full::notify::event::RenameMode::To,
+                )),
+                vec![new.clone()],
+            ),
+        ];
+
+        let result = classify_events_with_rules(&events, &[], &scoped_rules(&tmp));
+        assert!(result.contains(&FileChange::DirectoryRemoved(old)));
+        assert!(result.contains(&FileChange::DirectoryCreated(new)));
+    }
+
+    #[test]
+    fn test_generated_output_and_parent_siblings_do_not_loop() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let generated = tmp.path().join("darklua_build/generated.luau");
+        let unrelated = tmp.path().join("README.md");
+        let events = vec![make_debounced_event(
+            EventKind::Create(CreateKind::File),
+            vec![generated, unrelated],
+        )];
+
+        let result = classify_events_with_rules(&events, &[], &scoped_rules(&tmp));
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_duplicate_topology_events_are_collapsed() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().join("src/feature");
+        std::fs::create_dir_all(&dir).unwrap();
+        let events = vec![
+            make_debounced_event(EventKind::Create(CreateKind::Folder), vec![dir.clone()]),
+            make_debounced_event(EventKind::Create(CreateKind::Folder), vec![dir.clone()]),
+        ];
+
+        let result = classify_events_with_rules(&events, &[], &scoped_rules(&tmp));
+        assert_eq!(result, vec![FileChange::DirectoryCreated(dir)]);
+    }
+
+    #[tokio::test]
+    async fn test_watcher_detects_atomic_control_file_replacement() {
+        init_output();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        let project = tmp.path().join("default.project.json");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(&project, b"{}").unwrap();
+
+        let targets = WatchTargets {
+            source_root: src,
+            project_files: vec![project.clone()],
+            config_file: Some(tmp.path().join("ezpm.toml")),
+            generated_roots: vec![tmp.path().join("darklua_build")],
+        };
+        let (_watcher, mut rx) = FileWatcher::with_targets(targets, &[]).unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let replacement = tmp.path().join(".default.project.json.tmp");
+        std::fs::write(&replacement, br#"{"name":"changed"}"#).unwrap();
+        std::fs::rename(replacement, &project).unwrap();
+
+        let received = timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("timed out waiting for atomic project replacement")
+            .expect("watch channel closed");
+        assert!(matches!(
+            received,
+            WatchEvent::Changes(ref changes)
+                if changes == &vec![FileChange::RojoProjectChange(project)]
+        ));
     }
 }

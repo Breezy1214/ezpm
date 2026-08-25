@@ -6,9 +6,6 @@ use std::process::Command;
 use crate::output;
 use crate::services::{sourcemap, toolchain};
 
-// ─── Internal helpers ─────────────────────────────────────────────────────────
-
-/// Derive package directories from the Wally aliases.
 pub fn get_package_dirs(
     aliases: Option<&HashMap<String, String>>,
     src_prefix: &str,
@@ -147,7 +144,6 @@ fn clear_package_dir(project_root: &Path, src_prefix: &str, pkg_dir: &str) -> Re
     Ok(())
 }
 
-/// Check `rokit.toml` for missing required tools and run `rokit add` for each.
 fn ensure_required_tools() -> Result<()> {
     if !Path::new("rokit.toml").exists() {
         return Ok(());
@@ -188,7 +184,6 @@ fn ensure_required_tools() -> Result<()> {
     Ok(())
 }
 
-/// Check whether a tool binary is available in PATH by invoking `--version`
 #[allow(dead_code)]
 fn is_tool_available(tool: &str) -> bool {
     Command::new(tool)
@@ -198,15 +193,11 @@ fn is_tool_available(tool: &str) -> bool {
         .unwrap_or(false)
 }
 
-// ─── Public functions ─────────────────────────────────────────────────────────
-
-/// Run `rokit install`, then delegate to `setup_wally_packages`
 pub fn install_tools(src_prefix: &str, aliases: Option<&HashMap<String, String>>) -> Result<()> {
     ensure_required_tools()?;
 
     let pb = output::start_spinner("Installing development tools...");
 
-    // ── 1. Rokit install ────────────────────────────────────────────────────
     if output::is_verbose() {
         pb.suspend(|| {});
         let rokit_status = Command::new("rokit")
@@ -247,7 +238,6 @@ pub fn install_tools(src_prefix: &str, aliases: Option<&HashMap<String, String>>
     Ok(())
 }
 
-/// Clean and re-install Wally packages from scratch
 pub fn setup_wally_packages(
     src_prefix: &str,
     aliases: Option<&HashMap<String, String>>,
@@ -262,7 +252,6 @@ pub fn setup_wally_packages(
     let pb = output::start_spinner("Setting up Wally packages...");
     pb.set_message("Clearing current systems...");
 
-    // ── Remove stale artefacts ───────────────────────────────────────────────
     if Path::new("sourcemap.json").exists() {
         std::fs::remove_file("sourcemap.json").context("Failed to remove sourcemap.json")?;
     }
@@ -278,7 +267,6 @@ pub fn setup_wally_packages(
             .with_context(|| format!("Failed to clear {pkg_dir}/"))?;
     }
 
-    // ── Wally install ────────────────────────────────────────────────────────
     pb.set_message("Installing Wally packages...");
 
     if output::is_verbose() {
@@ -310,7 +298,6 @@ pub fn setup_wally_packages(
         }
     }
 
-    // ── First sourcemap pass ─────────────────────────────────────────────────
     pb.set_message("Generating source map...");
 
     let sm_result = sourcemap::generate_sourcemap(&cwd).context("Failed to generate sourcemap")?;
@@ -324,7 +311,6 @@ pub fn setup_wally_packages(
         });
     }
 
-    // ── wally-package-types for each package directory ───────────────────────
     for pkg_dir in &package_dirs {
         if Path::new(pkg_dir).exists() {
             pb.set_message(format!("Setting up types for {pkg_dir}..."));

@@ -11,7 +11,6 @@ pub struct ToolSpec {
     pub spec: String,
 }
 
-/// A tool whose project-pinned spec is older than ezpm's bundled spec.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolUpdate {
     pub name: String,

@@ -10,7 +10,6 @@ use crate::services::graph::{
     types::CheckResult,
 };
 
-/// Run dependency analysis: cycle detection, architecture rules, unused module detection.
 pub fn run_check(config: Option<&EzpmConfig>, json_output: bool) -> Result<()> {
     let default_config = EzpmConfig::default();
     let cfg = config.unwrap_or(&default_config);
@@ -46,14 +45,11 @@ pub fn run_check(config: Option<&EzpmConfig>, json_output: bool) -> Result<()> {
         sp.finish_and_clear();
     }
 
-    // Extract check config
     let check_config = cfg.check.clone().unwrap_or_default();
 
-    // Build layers list for rule validation
     let layers = build_layers(&check_config, src_prefix);
     let rules = build_rules(&check_config);
 
-    // Determine entry points
     let entry_point_ids = resolve_entry_points(&graph, &check_config, src_prefix);
 
     let result = analysis::run_all_checks(&graph, &layers, &rules, &entry_point_ids);
@@ -71,7 +67,6 @@ pub fn run_check(config: Option<&EzpmConfig>, json_output: bool) -> Result<()> {
     Ok(())
 }
 
-/// Build the layers mapping from config.
 fn build_layers(check_config: &CheckConfig, src_prefix: &str) -> Vec<(String, String)> {
     match &check_config.layers {
         Some(layers) => layers
@@ -79,7 +74,6 @@ fn build_layers(check_config: &CheckConfig, src_prefix: &str) -> Vec<(String, St
             .map(|(name, prefix)| (name.clone(), prefix.clone()))
             .collect(),
         None => {
-            // Auto-detect standard Roblox layers if source dirs exist
             let mut layers = Vec::new();
             for name in &["client", "server", "shared"] {
                 let prefix = format!("{}/{}/", src_prefix, name);
@@ -92,7 +86,6 @@ fn build_layers(check_config: &CheckConfig, src_prefix: &str) -> Vec<(String, St
     }
 }
 
-/// Convert config ForbidRules to analysis ForbidRules.
 fn build_rules(check_config: &CheckConfig) -> Vec<ForbidRule> {
     match &check_config.forbid {
         Some(rules) => rules
@@ -107,8 +100,6 @@ fn build_rules(check_config: &CheckConfig) -> Vec<ForbidRule> {
     }
 }
 
-/// Resolve entry points to graph node IDs.
-/// Uses configured entry points or auto-detects init files.
 fn resolve_entry_points(
     graph: &crate::services::graph::types::DepGraph,
     check_config: &CheckConfig,
@@ -131,7 +122,6 @@ fn resolve_entry_points(
             .collect();
     }
 
-    // Auto-detect: any init.luau/init.lua directly under src/<layer>/
     let mut entry_points = Vec::new();
     for i in 0..n {
         let path = graph.interner.resolve(i);
@@ -140,17 +130,14 @@ fn resolve_entry_points(
             continue;
         }
 
-        // Check it's a direct child of src/<layer>/ (depth = 2 segments after src/)
         let after_prefix = path.strip_prefix(src_prefix).unwrap_or(path);
         let after_prefix = after_prefix.strip_prefix('/').unwrap_or(after_prefix);
         let segments: Vec<&str> = after_prefix.split('/').collect();
-        // e.g. "client/init.luau" → ["client", "init.luau"] (depth 2)
         if segments.len() == 2 {
             entry_points.push(i);
         }
     }
 
-    // If no init files found, treat all nodes as reachable (skip unused detection)
     if entry_points.is_empty() {
         (0..n).collect()
     } else {
@@ -174,14 +161,12 @@ fn print_human(result: &CheckResult, build_time: std::time::Duration) {
     ));
     output::print_line("");
 
-    // Cycles
     if result.cycles.is_empty() {
         output::success("No circular dependencies found");
     } else {
         output::error(&format!("Circular dependencies ({})", result.cycles.len()));
         for cycle in &result.cycles {
             let chain = cycle.modules.join(" \u{2192} ");
-            // Close the cycle by repeating the first module
             let display = if let Some(first) = cycle.modules.first() {
                 format!("  {} \u{2192} {}", chain, first)
             } else {
@@ -192,7 +177,6 @@ fn print_human(result: &CheckResult, build_time: std::time::Duration) {
     }
     output::print_line("");
 
-    // Rule violations
     if !result.rule_violations.is_empty() {
         output::error(&format!(
             "Architecture violations ({})",
@@ -213,7 +197,6 @@ fn print_human(result: &CheckResult, build_time: std::time::Duration) {
         output::print_line("");
     }
 
-    // Unused modules
     if !result.unused_modules.is_empty() {
         output::warn(&format!("Unused modules ({})", result.unused_modules.len()));
         for m in &result.unused_modules {
@@ -222,7 +205,6 @@ fn print_human(result: &CheckResult, build_time: std::time::Duration) {
         output::print_line("");
     }
 
-    // Summary
     if result.pass {
         output::success("All checks passed");
     }

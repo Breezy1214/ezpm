@@ -1,9 +1,7 @@
 use serde::Serialize;
 use std::collections::HashMap;
 
-// ─── String Interner ─────────────────────────────────────────────────────────
-
-/// Maps file path strings to compact `usize` IDs for O(1) graph operations.
+#[derive(Default)]
 pub struct Interner {
     map: HashMap<String, usize>,
     strings: Vec<String>,
@@ -17,7 +15,6 @@ impl Interner {
         }
     }
 
-    /// Insert or get an existing ID for the given string.
     pub fn intern(&mut self, s: &str) -> usize {
         if let Some(&id) = self.map.get(s) {
             return id;
@@ -28,7 +25,6 @@ impl Interner {
         id
     }
 
-    /// Resolve an ID back to its string.
     pub fn resolve(&self, id: usize) -> &str {
         &self.strings[id]
     }
@@ -36,14 +32,15 @@ impl Interner {
     pub fn len(&self) -> usize {
         self.strings.len()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.strings.is_empty()
+    }
 }
 
-// ─── Dependency Graph ────────────────────────────────────────────────────────
-
-/// Adjacency-list dependency graph with interned string IDs.
+#[derive(Default)]
 pub struct DepGraph {
     pub interner: Interner,
-    /// node_id → [(target_id, require_path)]
     edges: Vec<Vec<(usize, String)>>,
 }
 
@@ -55,7 +52,6 @@ impl DepGraph {
         }
     }
 
-    /// Add a node (file path) to the graph, returning its ID.
     pub fn add_node(&mut self, path: &str) -> usize {
         let id = self.interner.intern(path);
         while self.edges.len() <= id {
@@ -64,12 +60,10 @@ impl DepGraph {
         id
     }
 
-    /// Add a directed edge from one node to another with the require path.
     pub fn add_edge(&mut self, from: usize, to: usize, require_path: String) {
         self.edges[from].push((to, require_path));
     }
 
-    /// Get neighbors (outgoing edges) for a node.
     pub fn neighbors(&self, node: usize) -> &[(usize, String)] {
         if node < self.edges.len() {
             &self.edges[node]
@@ -78,26 +72,20 @@ impl DepGraph {
         }
     }
 
-    /// Total number of nodes.
     pub fn node_count(&self) -> usize {
         self.interner.len()
     }
 
-    /// Total number of edges.
     pub fn edge_count(&self) -> usize {
         self.edges.iter().map(|e| e.len()).sum()
     }
 }
 
-// ─── Result Types ────────────────────────────────────────────────────────────
-
-/// A circular dependency cycle (list of file paths forming the cycle).
 #[derive(Debug, Clone, Serialize)]
 pub struct Cycle {
     pub modules: Vec<String>,
 }
 
-/// A rule violation (forbidden cross-layer import).
 #[derive(Debug, Clone, Serialize)]
 pub struct RuleViolation {
     pub from_module: String,
@@ -107,7 +95,6 @@ pub struct RuleViolation {
     pub reason: Option<String>,
 }
 
-/// Aggregated result of all checks.
 #[derive(Debug, Serialize)]
 pub struct CheckResult {
     pub total_modules: usize,

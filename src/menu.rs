@@ -3,8 +3,6 @@ use owo_colors::{OwoColorize, Stream};
 
 use crate::output;
 
-// ─── Menu items ───────────────────────────────────────────────────────────────
-
 const MENU_ITEMS: &[(&str, &str, &str)] = &[
     ("init", "Create a new EZPM project", "init"),
     ("serve", "Start file watcher + DarkLua + Rojo", "serve"),
@@ -48,7 +46,6 @@ fn build_menu_options() -> Vec<(String, &'static str)> {
         .collect()
 }
 
-// ─── ASCII logo ───────────────────────────────────────────────────────────────
 fn print_logo(version: &str, update_notice: Option<&str>) {
     println!();
     println!(
@@ -64,7 +61,6 @@ fn print_logo(version: &str, update_notice: Option<&str>) {
     println!();
 }
 
-// ─── Interactive menu ─────────────────────────────────────────────────────────
 pub fn run_interactive_menu(update_notice: Option<&str>) {
     let version = env!("CARGO_PKG_VERSION");
     let mut menu_update_notice = update_notice;
@@ -80,14 +76,12 @@ pub fn run_interactive_menu(update_notice: Option<&str>) {
 
         match result {
             Ok(selection) => {
-                // Find the command key for the selected label
                 let cmd = options
                     .iter()
                     .find(|(label, _)| label.as_str() == selection)
                     .map(|(_, cmd)| *cmd)
                     .unwrap_or("");
 
-                // Category header selected — loop back (Pitfall 1)
                 if cmd.is_empty() {
                     continue;
                 }
@@ -97,25 +91,20 @@ pub fn run_interactive_menu(update_notice: Option<&str>) {
                     std::process::exit(0);
                 }
 
-                // Execute the selected command and show any errors
                 if let Err(e) = run_command(cmd) {
                     output::error(&format!("Error: {}", e));
                 }
 
-                // After command completes, pause briefly then loop back to menu
                 output::print_line("");
             }
             Err(_) => {
-                // User pressed Ctrl-C or Escape
                 std::process::exit(0);
             }
         }
     }
 }
 
-// ─── Command dispatch ─────────────────────────────────────────────────────────
 fn run_command(cmd: &str) -> Result<()> {
-    // Load fresh config for each command so alias changes are picked up
     let loaded = crate::config::load_config();
     let (cfg, warnings) = match loaded {
         Ok(pair) => pair,
@@ -136,7 +125,7 @@ fn run_command(cmd: &str) -> Result<()> {
         .unwrap_or("src");
 
     match cmd {
-        "init" => crate::commands::init::run_init(),
+        "init" => crate::commands::init::run_init(false),
         "install" => crate::commands::install::install_tools(src, cfg.aliases.as_ref()),
         "setup-wally-packages" => {
             crate::commands::install::setup_wally_packages(src, cfg.aliases.as_ref())

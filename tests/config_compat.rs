@@ -1,11 +1,7 @@
-// Integration tests for backward-compatible config parsing (CFG-01).
-// All tests use the public ezpm::config::load_config_from_str() API.
-
 use ezpm::config::{import_aliases_from_dir, load_config_from_str};
 use std::fs;
 use tempfile::TempDir;
 
-// Helper to create a temp directory with specified files
 fn make_temp_dir(files: &[(&str, &str)]) -> TempDir {
     let dir = TempDir::new().expect("failed to create temp dir");
     for (name, content) in files {
@@ -18,7 +14,7 @@ fn make_temp_dir(files: &[(&str, &str)]) -> TempDir {
 fn luau_format_ezpm_toml_loads_without_error() {
     let contents = include_str!("fixtures/ezpm.toml");
 
-    let (config, warnings) = load_config_from_str(&contents).expect("should parse without error");
+    let (config, warnings) = load_config_from_str(contents).expect("should parse without error");
 
     assert!(
         warnings.is_empty(),
@@ -146,6 +142,36 @@ Client = "src/client/"
 }
 
 #[test]
+fn rojo_section_and_path_maps_parse_without_warnings() {
+    let toml = r#"
+[rojo]
+project = "config/game.project.json"
+generated_project = "build/game.project.json"
+
+[[rojo.path_maps]]
+source = "src"
+build = "darklua_build"
+
+[[rojo.path_maps]]
+source = "common"
+build = "darklua_build/common"
+"#;
+
+    let (config, warnings) = load_config_from_str(toml).expect("rojo config should parse");
+    assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+    let rojo = config.rojo.expect("rojo section");
+    assert_eq!(rojo.project.as_deref(), Some("config/game.project.json"));
+    assert_eq!(
+        rojo.generated_project.as_deref(),
+        Some("build/game.project.json")
+    );
+    let maps = rojo.path_maps.expect("path maps");
+    assert_eq!(maps.len(), 2);
+    assert_eq!(maps[1].source, "common");
+    assert_eq!(maps[1].build, "darklua_build/common");
+}
+
+#[test]
 fn aliases_section_parses_as_hashmap() {
     let toml = r#"
 [aliases]
@@ -241,11 +267,11 @@ fn luaurc_alias_import_preferred_over_darklua() {
         "Client alias from .luaurc"
     );
     assert!(
-        aliases.get("lune").is_none(),
+        !aliases.contains_key("lune"),
         "lune typedef path should be skipped"
     );
     assert!(
-        aliases.get("Server").is_none(),
+        !aliases.contains_key("Server"),
         ".darklua.json should not be used when .luaurc exists"
     );
 }

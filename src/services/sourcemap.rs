@@ -5,11 +5,14 @@ use std::process::Command;
 use crate::services::darklua_runner::DarkluaResult;
 use crate::services::toolchain;
 
-// ─── Public functions ─────────────────────────────────────────────────────────
 pub fn generate_sourcemap(project_dir: &Path) -> Result<DarkluaResult> {
+    generate_sourcemap_for_project(project_dir, Path::new("build.project.json"))
+}
+
+pub fn generate_sourcemap_for_project(project_dir: &Path, project: &Path) -> Result<DarkluaResult> {
     let output = Command::new("rojo")
         .arg("sourcemap")
-        .arg(".")
+        .arg(project)
         .arg("-o")
         .arg("sourcemap.json")
         .current_dir(project_dir)
@@ -24,29 +27,20 @@ pub fn generate_sourcemap(project_dir: &Path) -> Result<DarkluaResult> {
     })
 }
 
-// ─── Tests ────────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    /// This test verifies that the generate_sourcemap function compiles
-    /// correctly and returns a Result<DarkluaResult>.
     #[test]
     #[ignore = "requires rojo in PATH"]
     fn test_generate_sourcemap_requires_rojo() {
         let dir = TempDir::new().expect("failed to create temp dir");
-        // This would only succeed if rojo is installed and project files exist
         let _result = generate_sourcemap(dir.path());
     }
 
-    /// Verify the function signature compiles and the DarkluaResult type is
-    /// reused correctly across both sourcemap and darklua_runner modules.
     #[test]
     fn test_darkluaresult_type_reused() {
-        // Construct a DarkluaResult directly to verify the type is accessible
-        // and has the expected fields — this ensures API consistency.
         let result = DarkluaResult {
             success: true,
             stdout: "output".to_string(),

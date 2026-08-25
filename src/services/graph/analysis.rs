@@ -1,9 +1,5 @@
 use super::types::{CheckResult, Cycle, DepGraph, RuleViolation};
 
-// ─── Tarjan's SCC (iterative) ────────────────────────────────────────────────
-
-/// Find all strongly connected components of size > 1 (cycles).
-/// Uses iterative Tarjan's algorithm to avoid stack overflow on large graphs.
 pub fn find_cycles(graph: &DepGraph) -> Vec<Cycle> {
     let n = graph.node_count();
     if n == 0 {
@@ -17,8 +13,6 @@ pub fn find_cycles(graph: &DepGraph) -> Vec<Cycle> {
     let mut stack: Vec<usize> = Vec::new();
     let mut sccs: Vec<Vec<usize>> = Vec::new();
 
-    // Iterative DFS using an explicit call stack.
-    // Each frame: (node, neighbor_index)
     for start in 0..n {
         if indices[start].is_some() {
             continue;
@@ -26,7 +20,6 @@ pub fn find_cycles(graph: &DepGraph) -> Vec<Cycle> {
 
         let mut call_stack: Vec<(usize, usize)> = vec![(start, 0)];
 
-        // Initialize start node
         indices[start] = Some(index_counter);
         lowlinks[start] = index_counter;
         index_counter += 1;
@@ -42,7 +35,6 @@ pub fn find_cycles(graph: &DepGraph) -> Vec<Cycle> {
                 *ni += 1;
 
                 if indices[neighbor].is_none() {
-                    // Not yet visited — push onto call stack
                     indices[neighbor] = Some(index_counter);
                     lowlinks[neighbor] = index_counter;
                     index_counter += 1;
@@ -53,7 +45,6 @@ pub fn find_cycles(graph: &DepGraph) -> Vec<Cycle> {
                     lowlinks[node] = lowlinks[node].min(indices[neighbor].unwrap());
                 }
             } else {
-                // Done with all neighbors — check if root of SCC
                 if lowlinks[node] == indices[node].unwrap() {
                     let mut scc = Vec::new();
                     loop {
@@ -67,7 +58,6 @@ pub fn find_cycles(graph: &DepGraph) -> Vec<Cycle> {
                     sccs.push(scc);
                 }
 
-                // Pop this frame and propagate lowlink to parent
                 let (finished_node, _) = call_stack.pop().unwrap();
                 if let Some((parent, _)) = call_stack.last() {
                     lowlinks[*parent] = lowlinks[*parent].min(lowlinks[finished_node]);
@@ -76,11 +66,9 @@ pub fn find_cycles(graph: &DepGraph) -> Vec<Cycle> {
         }
     }
 
-    // Convert SCCs of size > 1 to Cycle structs
     sccs.into_iter()
         .filter(|scc| scc.len() > 1)
         .map(|mut scc| {
-            // Reverse so the cycle reads in traversal order
             scc.reverse();
             Cycle {
                 modules: scc
@@ -92,19 +80,12 @@ pub fn find_cycles(graph: &DepGraph) -> Vec<Cycle> {
         .collect()
 }
 
-// ─── Architecture Rule Validation ────────────────────────────────────────────
-
-/// A forbidden cross-layer import rule.
 pub struct ForbidRule {
     pub from: String,
     pub to: String,
     pub reason: Option<String>,
 }
 
-/// Validate edges against architecture rules.
-///
-/// `layers` maps layer name → path prefix (e.g. "client" → "src/client/").
-/// `rules` is a list of forbidden from→to layer pairs.
 pub fn validate_rules(
     graph: &DepGraph,
     layers: &[(String, String)],
@@ -147,7 +128,6 @@ pub fn validate_rules(
     violations
 }
 
-/// Classify a file path into a layer based on path prefix matching.
 fn classify_layer(path: &str, layers: &[(String, String)]) -> Option<String> {
     for (name, prefix) in layers {
         if path.starts_with(prefix.as_str()) {
@@ -157,9 +137,6 @@ fn classify_layer(path: &str, layers: &[(String, String)]) -> Option<String> {
     None
 }
 
-// ─── Unused Module Detection ─────────────────────────────────────────────────
-
-/// Find modules that are unreachable from any entry point via BFS.
 pub fn find_unused(graph: &DepGraph, entry_points: &[usize]) -> Vec<String> {
     let n = graph.node_count();
     if n == 0 {
@@ -191,9 +168,6 @@ pub fn find_unused(graph: &DepGraph, entry_points: &[usize]) -> Vec<String> {
         .collect()
 }
 
-// ─── Orchestrator ────────────────────────────────────────────────────────────
-
-/// Run all checks and return an aggregated result.
 pub fn run_all_checks(
     graph: &DepGraph,
     layers: &[(String, String)],
@@ -221,7 +195,6 @@ mod tests {
     use super::*;
 
     fn make_dag() -> DepGraph {
-        // A → B → C (no cycle)
         let mut g = DepGraph::new();
         let a = g.add_node("a.luau");
         let b = g.add_node("b.luau");
@@ -232,7 +205,6 @@ mod tests {
     }
 
     fn make_simple_cycle() -> DepGraph {
-        // A → B → A
         let mut g = DepGraph::new();
         let a = g.add_node("a.luau");
         let b = g.add_node("b.luau");
@@ -263,10 +235,8 @@ mod tests {
         let b = g.add_node("b.luau");
         let c = g.add_node("c.luau");
         let d = g.add_node("d.luau");
-        // Cycle 1: A ↔ B
         g.add_edge(a, b, "b".to_string());
         g.add_edge(b, a, "a".to_string());
-        // Cycle 2: C ↔ D
         g.add_edge(c, d, "d".to_string());
         g.add_edge(d, c, "c".to_string());
 
@@ -276,7 +246,6 @@ mod tests {
 
     #[test]
     fn detects_large_scc() {
-        // A → B → C → A (3-node cycle)
         let mut g = DepGraph::new();
         let a = g.add_node("a.luau");
         let b = g.add_node("b.luau");
@@ -342,7 +311,7 @@ mod tests {
         let b = g.add_node("src/shared/util.luau");
         let orphan = g.add_node("src/shared/orphan.luau");
         g.add_edge(a, b, "@Shared/util".to_string());
-        let _ = orphan; // unused, but in graph
+        let _ = orphan;
 
         let unused = find_unused(&g, &[a]);
         assert_eq!(unused.len(), 1);

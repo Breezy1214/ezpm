@@ -1,4 +1,3 @@
-// Command handlers — one file per command group.
 pub mod alias;
 pub mod check;
 pub mod init;

@@ -7,7 +7,6 @@ use crate::config;
 use crate::output;
 use crate::services::config_gen;
 
-/// Interactive alias management submenu.
 pub fn alias_menu() -> Result<()> {
     let options = vec![
         "Add Alias",
@@ -20,7 +19,7 @@ pub fn alias_menu() -> Result<()> {
     loop {
         let selection = match Select::new("Alias Management:", options.clone()).prompt() {
             Ok(s) => s,
-            Err(_) => break, // Ctrl-C / Escape
+            Err(_) => break,
         };
 
         match selection {
@@ -106,10 +105,8 @@ pub fn alias_add() -> Result<()> {
         &aliases,
     )?;
 
-    // Auto-regenerate .darklua.json and .luaurc
     config_gen::write_config_files(Path::new("."), &aliases, cfg.darklua.as_ref())?;
 
-    // Optionally create the directory if it doesn't exist
     let path_no_slash = path.trim_end_matches('/');
     if !Path::new(path_no_slash).exists() {
         let create = Confirm::new(&format!("Create directory '{}'?", path_no_slash))
@@ -124,7 +121,6 @@ pub fn alias_add() -> Result<()> {
     Ok(())
 }
 
-/// Present a multi-select checklist of all aliases and remove selected ones.
 pub fn alias_remove() -> Result<()> {
     let (cfg, _warnings) = config::load_config()?;
 
@@ -135,7 +131,6 @@ pub fn alias_remove() -> Result<()> {
         return Ok(());
     }
 
-    // Build sorted label list for display
     let mut sorted_names: Vec<String> = aliases.keys().cloned().collect();
     sorted_names.sort();
 
@@ -159,7 +154,6 @@ pub fn alias_remove() -> Result<()> {
         return Ok(());
     }
 
-    // Extract alias names from selected labels (split on " -> ", take first part)
     let names_to_remove: Vec<String> = selected
         .iter()
         .map(|label| label.split(" -> ").next().unwrap_or("").to_string())
@@ -196,7 +190,6 @@ pub fn alias_remove() -> Result<()> {
         &aliases,
     )?;
 
-    // Auto-regenerate .darklua.json and .luaurc
     config_gen::write_config_files(Path::new("."), &aliases, cfg.darklua.as_ref())?;
 
     output::success(&format!("Removed {} alias(es).", names_to_remove.len()));
@@ -207,7 +200,6 @@ pub fn alias_remove() -> Result<()> {
     Ok(())
 }
 
-/// Display all aliases in an aligned table, sorted alphabetically.
 pub fn alias_list(aliases: &Option<HashMap<String, String>>) -> Result<()> {
     let aliases = match aliases {
         Some(m) if !m.is_empty() => m,
@@ -235,7 +227,6 @@ pub fn alias_list(aliases: &Option<HashMap<String, String>>) -> Result<()> {
     Ok(())
 }
 
-/// Reload ezpm.toml from disk and regenerate .darklua.json and .luaurc.
 pub fn alias_sync() -> Result<()> {
     let (cfg, _warnings) = config::load_config()?;
 
