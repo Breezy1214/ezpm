@@ -7,10 +7,8 @@ fn check_clean_project_exits_zero() {
     let dir = common::create_project();
     let p = dir.path();
 
-    // Create shared/util.luau so the require resolves
     fs::write(p.join("src/shared/util.luau"), "return {}\n").expect("write util.luau");
 
-    // Write a clean client init that uses an alias require
     fs::write(
         p.join("src/client/init.luau"),
         "local util = require(\"@Shared/util\")\nreturn util\n",
@@ -28,7 +26,6 @@ fn check_circular_dependency_exits_nonzero() {
     let dir = common::create_project();
     let p = dir.path();
 
-    // Create a circular dependency: A requires B, B requires A
     fs::write(
         p.join("src/shared/a.luau"),
         "local b = require(\"@Shared/b\")\nreturn {}\n",
@@ -41,7 +38,6 @@ fn check_circular_dependency_exits_nonzero() {
     )
     .expect("write b.luau");
 
-    // Entry points need to exist
     fs::write(
         p.join("src/client/init.luau"),
         "local a = require(\"@Shared/a\")\nreturn a\n",
@@ -57,7 +53,6 @@ fn check_architecture_violation_exits_nonzero() {
     let dir = common::create_project();
     let p = dir.path();
 
-    // Client importing from server (forbidden)
     fs::write(
         p.join("src/server/secret.luau"),
         "return { key = \"abc\" }\n",
@@ -70,7 +65,6 @@ fn check_architecture_violation_exits_nonzero() {
     )
     .expect("write client init");
 
-    // Add forbid rule to config
     fs::write(
         p.join("ezpm.toml"),
         r#"[project]
@@ -134,10 +128,8 @@ fn check_no_config_still_runs_basic_checks() {
     let dir = common::create_project();
     let p = dir.path();
 
-    // Remove the ezpm.toml entirely
     fs::remove_file(p.join("ezpm.toml")).expect("remove ezpm.toml");
 
-    // Create some basic files with no cycles
     fs::write(p.join("src/client/init.luau"), "return {}\n").expect("write init.luau");
     fs::write(p.join("src/shared/util.luau"), "return {}\n").expect("write util.luau");
 

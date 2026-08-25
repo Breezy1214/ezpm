@@ -31,6 +31,7 @@ owo-colors = { version = "4", features = ["supports-colors"] }
 indicatif = "0.18"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "signal", "time", "sync"] }
 notify-debouncer-full = "0.7"
+tempfile = "3"
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.31", features = ["signal"] }
@@ -39,13 +40,9 @@ nix = { version = "0.31", features = ["signal"] }
 name = "rust_bench"
 harness = false
 
-[dev-dependencies]
-tempfile = "3"
-
 [profile.release]
 opt-level = 3
 lto = "thin"
 codegen-units = 1
 strip = "symbols"
 panic = "abort"
-

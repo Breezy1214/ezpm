@@ -8,13 +8,6 @@ use crate::services::require_fixer::{is_lua_file, require_regex};
 
 use super::types::DepGraph;
 
-/// Build a dependency graph by scanning all Lua files under `project_root/src_prefix`.
-///
-/// Walks the source directory once, reads each file, parses `require()` calls,
-/// resolves paths against aliases, and adds edges to the graph.
-///
-/// All paths in the graph are relative to `project_root` (e.g. `src/client/init.luau`),
-/// matching the format used in aliases and require paths.
 pub fn build_graph(
     project_root: &Path,
     aliases: &HashMap<String, String>,
@@ -83,8 +76,6 @@ pub fn build_graph(
     Ok(graph)
 }
 
-/// Resolve a require path to a project-relative file path.
-/// Returns None for built-in/external aliases or unresolvable paths.
 fn resolve_require(
     require_path: &str,
     aliases: &HashMap<String, String>,
@@ -92,26 +83,21 @@ fn resolve_require(
     project_root: &Path,
     inverted: &[(String, String)],
 ) -> Option<String> {
-    // Skip built-in Roblox aliases
     if require_path.starts_with("@self") || require_path.starts_with("@game") {
         return None;
     }
 
-    // Skip relative paths
     if require_path.starts_with("./") || require_path.starts_with("../") {
         return None;
     }
 
-    // Try to expand @Alias/path notation
-    if require_path.starts_with('@') {
-        let without_at = &require_path[1..];
+    if let Some(without_at) = require_path.strip_prefix('@') {
         let (alias_name, remainder) = match without_at.find('/') {
             Some(idx) => (&without_at[..idx], &without_at[idx + 1..]),
             None => (without_at, ""),
         };
 
         if let Some(real_path) = aliases.get(alias_name) {
-            // Check if this alias points outside src/ (external package)
             let is_internal = real_path.starts_with(src_prefix)
                 || real_path.starts_with(&format!("{}/", src_prefix))
                 || real_path == src_prefix;
@@ -135,12 +121,10 @@ fn resolve_require(
         return None;
     }
 
-    // Bare path (e.g. "src/client/module") — try direct resolution
     if require_path.starts_with(src_prefix) {
         return try_resolve_file(require_path, project_root);
     }
 
-    // Try to match against inverted aliases (e.g. "Client/module" → "src/client/module")
     for (real_prefix, alias_name) in inverted {
         let alias_lower = alias_name.to_lowercase();
         let path_lower = require_path.to_lowercase();
@@ -158,15 +142,9 @@ fn resolve_require(
     None
 }
 
-/// Try to resolve a base path to an actual file using the Luau resolution chain:
-/// path.luau → path.lua → path/init.luau → path/init.lua
-///
-/// `base` is project-relative (e.g. "src/shared/util").
-/// `project_root` is the absolute project root for existence checks.
 fn try_resolve_file(base: &str, project_root: &Path) -> Option<String> {
     let base = base.trim_end_matches('/');
 
-    // Already has extension?
     if base.ends_with(".luau") || base.ends_with(".lua") {
         if project_root.join(base).exists() {
             return Some(normalize_str(base));
@@ -190,7 +168,6 @@ fn try_resolve_file(base: &str, project_root: &Path) -> Option<String> {
     None
 }
 
-/// Normalize a Path relative to project_root into a forward-slash string.
 fn normalize_path(path: &Path, project_root: &Path) -> String {
     let rel = path
         .strip_prefix(project_root)
@@ -254,8 +231,6 @@ mod tests {
     fn build_graph_creates_edges() {
         let dir = setup_project();
         let graph = build_graph(dir.path(), &test_aliases(), "src").unwrap();
-        // client/init.luau → shared/util.luau
-        // server/main.luau → shared/util.luau
         assert_eq!(graph.edge_count(), 2);
     }
 

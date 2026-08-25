@@ -4,11 +4,6 @@ use std::process::Command;
 use crate::output;
 use crate::services::toolchain;
 
-// ─── Internal helpers ─────────────────────────────────────────────────────────
-
-/// Check whether a tool binary is available in PATH by invoking `--version`
-/// silently with `.output()` (Pitfall 4 from RESEARCH.md — captured, not
-/// passed-through).
 fn is_tool_available(tool: &str) -> bool {
     Command::new(tool)
         .arg("--version")
@@ -17,17 +12,10 @@ fn is_tool_available(tool: &str) -> bool {
         .unwrap_or(false)
 }
 
-// ─── Public functions ─────────────────────────────────────────────────────────
-
-/// Run Selene and StyLua --check on the source directory (QUAL-01, QUAL-02).
-///
-/// Skips gracefully if either or both tools are not installed.
-/// Returns Err when any tool finds violations (exit code 1 for CI compatibility).
 pub fn lint(src_path: &str) -> Result<()> {
     let has_selene = is_tool_available("selene");
     let has_stylua = is_tool_available("stylua");
 
-    // ── Announce availability ────────────────────────────────────────────────
     if !has_selene {
         output::info("Skipping Selene (install Rokit and run `ezpm install`)");
     }
@@ -35,7 +23,6 @@ pub fn lint(src_path: &str) -> Result<()> {
         output::info("Skipping StyLua (install Rokit and run `ezpm install`)");
     }
 
-    // ── Graceful skip if no tools at all (QUAL-02) ───────────────────────────
     if !has_selene && !has_stylua {
         output::info("No linting tools installed.");
         return Ok(());
@@ -43,7 +30,6 @@ pub fn lint(src_path: &str) -> Result<()> {
 
     let mut issues_found = false;
 
-    // ── Selene ───────────────────────────────────────────────────────────────
     if has_selene {
         if output::is_verbose() {
             let selene_status = Command::new("selene")
@@ -84,7 +70,6 @@ pub fn lint(src_path: &str) -> Result<()> {
         }
     }
 
-    // ── StyLua --check ───────────────────────────────────────────────────────
     if has_stylua {
         if output::is_verbose() {
             let stylua_status = Command::new("stylua")
@@ -127,7 +112,6 @@ pub fn lint(src_path: &str) -> Result<()> {
         }
     }
 
-    // ── Summary ───────────────────────────────────────────────────────────────
     if issues_found {
         anyhow::bail!("lint found violations");
     }
@@ -135,14 +119,6 @@ pub fn lint(src_path: &str) -> Result<()> {
     Ok(())
 }
 
-/// Run StyLua on the source directory to apply formatting in-place (QUAL-03).
-///
-/// When `check` is true, passes `--check` to StyLua — exits non-zero if any
-/// files are unformatted, without writing changes (CI compatibility).
-/// When `check` is false, formats in-place and exits 0 even when files changed
-/// (rustfmt/prettier convention — reformatting is success, not failure).
-///
-/// Skips gracefully if StyLua is not installed, printing an installation hint.
 pub fn format_code(src_path: &str, check: bool) -> Result<()> {
     if !is_tool_available("stylua") {
         output::info("StyLua is not installed.");
@@ -213,11 +189,6 @@ pub fn format_code(src_path: &str, check: bool) -> Result<()> {
     Ok(())
 }
 
-/// Launch the Moonwave documentation server (QUAL-04).
-///
-/// Gated on `docs_enabled` from the `[display]` config section. When enabled,
-/// this is a **blocking** call — Moonwave runs as a long-lived server and the
-/// user exits with Ctrl-C.
 pub fn docs(docs_enabled: bool) -> Result<()> {
     if !docs_enabled {
         output::info("Documentation is not set up for this project.");
@@ -225,7 +196,6 @@ pub fn docs(docs_enabled: bool) -> Result<()> {
         return Ok(());
     }
 
-    // Blocking pass-through — moonwave dev is a long-running server.
     Command::new("moonwave")
         .arg("dev")
         .status()

@@ -1,8 +1,4 @@
-// Shared integration test helpers for ezpm CLI tests.
-//
-// Lives in tests/common/mod.rs (subdirectory pattern from Rust Book Ch 11-03)
-// so Cargo does NOT compile this as an independent test suite — it appears as
-// a module included by each test file via `mod common;`.
+#![allow(dead_code)]
 
 use ezpm::services::toolchain;
 use std::fs;
@@ -10,29 +6,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use tempfile::TempDir;
 
-// ─── Binary path ──────────────────────────────────────────────────────────────
-
-/// Returns the absolute path to the compiled `ezpm` binary.
-///
-/// Cargo sets `CARGO_BIN_EXE_ezpm` to the correct path during integration test
-/// builds — matches the `[[bin]] name = "ezpm"` entry in `Cargo.toml`.
 pub fn ezpm_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_ezpm"))
 }
 
-// ─── Project skeleton factory ─────────────────────────────────────────────────
-
-/// Create a minimal but realistic ezpm project skeleton in a fresh TempDir.
-///
-/// The skeleton includes:
-/// - `ezpm.toml` with `[project]`, `[paths]`, and `[aliases]` sections
-/// - `default.project.json` (minimal Rojo project)
-/// - Directory structure: `src/client/`, `src/server/`, `src/shared/`, `Packages/`
-/// - `src/client/init.luau` containing a `require("src/shared/util")` path
-///   that `fix-requires` can rewrite to `@Shared/util`
-///
-/// The caller must keep the returned `TempDir` alive until all assertions
-/// complete — dropping it deletes the directory.
 pub fn create_project() -> TempDir {
     let dir = TempDir::new().expect("TempDir::new failed");
     let p = dir.path();
@@ -65,10 +42,6 @@ Packages = "Packages/"
     )
     .expect("write default.project.json");
 
-    // rokit.toml — required so that rokit shims (stylua, selene, rojo, darklua,
-    // wally) resolve to the correct installed binary when the ezpm subprocess
-    // runs in this TempDir. Rokit shims walk up from cwd to find rokit.toml.
-    // Versions come from the shared embedded toolchain manifest.
     fs::write(
         p.join("rokit.toml"),
         toolchain::render_default_rokit_toml(None),
@@ -80,7 +53,6 @@ Packages = "Packages/"
     fs::create_dir_all(p.join("src/shared")).expect("create src/shared");
     fs::create_dir_all(p.join("Packages")).expect("create Packages");
 
-    // A require path that fix-requires should rewrite to @Shared/util
     fs::write(
         p.join("src/client/init.luau"),
         "local util = require(\"src/shared/util\")\n",
@@ -90,12 +62,10 @@ Packages = "Packages/"
     dir
 }
 
-// ─── Command runner ───────────────────────────────────────────────────────────
 pub fn run_ezpm(project_dir: &Path, args: &[&str]) -> Output {
     run_ezpm_with_env(project_dir, args, std::iter::empty::<(&str, &str)>())
 }
 
-/// Spawn `ezpm <args>` with `cwd` set to `project_dir` and extra env vars.
 pub fn run_ezpm_with_env<I, K, V>(project_dir: &Path, args: &[&str], extra_env: I) -> Output
 where
     I: IntoIterator<Item = (K, V)>,
@@ -115,12 +85,6 @@ where
     cmd.output().expect("failed to spawn ezpm binary")
 }
 
-// ─── Assertion helpers ────────────────────────────────────────────────────────
-
-/// Assert that `output` has a zero exit code.
-///
-/// On failure, prints captured stdout and stderr before panicking so the test
-/// report shows what went wrong.
 pub fn assert_success(output: &Output) {
     if !output.status.success() {
         eprintln!(
@@ -135,7 +99,6 @@ pub fn assert_success(output: &Output) {
     }
 }
 
-/// Assert that `output` has a non-zero exit code.
 pub fn assert_failure(output: &Output) {
     if output.status.success() {
         eprintln!(

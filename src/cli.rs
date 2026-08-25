@@ -44,8 +44,12 @@ pub enum Commands {
         port: Option<u16>,
     },
 
-    /// Initialize a new project
-    Init,
+    /// Initialize a new project or adopt an existing Rojo project
+    Init {
+        /// Show the files ezpm would create without modifying the project
+        #[arg(long)]
+        dry_run: bool,
+    },
 
     /// Install tools and packages
     Install,

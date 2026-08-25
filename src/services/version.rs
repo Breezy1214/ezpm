@@ -1,19 +1,9 @@
 use std::cmp::Ordering;
 
-// ─── Public functions ─────────────────────────────────────────────────────────
-
-/// Compare two semver version strings.
-///
-/// Splits on `.` and compares major, minor, patch components as u64.
-/// Missing components default to 0. Leading `v` prefix is stripped if present.
-///
-/// This is sufficient for EZPM's version check in Phase 5 — Rokit tool
-/// versions are simple semver strings (e.g. "1.2.3" or "v1.2.3").
 pub fn compare_versions(a: &str, b: &str) -> Ordering {
     let parts_a = parse_version(a);
     let parts_b = parse_version(b);
 
-    // Compare major, then minor, then patch
     for i in 0..3 {
         let comp = parts_a[i].cmp(&parts_b[i]);
         if comp != Ordering::Equal {
@@ -24,21 +14,11 @@ pub fn compare_versions(a: &str, b: &str) -> Ordering {
     Ordering::Equal
 }
 
-/// Returns true if `latest` is newer (greater) than `current`.
-///
-/// Convenience wrapper around `compare_versions`.
 pub fn is_newer(current: &str, latest: &str) -> bool {
     compare_versions(latest, current) == Ordering::Greater
 }
 
-// ─── Internal helpers ─────────────────────────────────────────────────────────
-
-/// Parse a version string into [major, minor, patch] as u64 values.
-///
-/// Strips a leading `v` or `V` prefix before parsing.
-/// Missing or unparseable components default to 0.
 fn parse_version(version: &str) -> [u64; 3] {
-    // Strip optional leading 'v' or 'V' prefix
     let trimmed = version.trim_start_matches(['v', 'V']);
 
     let mut parts = [0u64; 3];
@@ -46,13 +26,10 @@ fn parse_version(version: &str) -> [u64; 3] {
         if i >= 3 {
             break;
         }
-        // Parse the component as u64, defaulting to 0 on failure
         parts[i] = component.parse().unwrap_or(0);
     }
     parts
 }
-
-// ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

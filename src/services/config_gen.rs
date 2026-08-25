@@ -21,8 +21,6 @@ pub const DEFAULT_DARKLUA_TOML: &str = r#"process = [
 "**/*.model.json" = "copy"
 "#;
 
-// ─── Public functions ─────────────────────────────────────────────────────────
-
 pub fn default_darklua_table() -> toml::value::Table {
     toml::from_str(DEFAULT_DARKLUA_TOML)
         .expect("DEFAULT_DARKLUA_TOML must be a valid darklua table")
@@ -56,7 +54,6 @@ fn has_convert_require(table: &toml::value::Table) -> bool {
         .unwrap_or(false)
 }
 
-/// Read the lune version from supplied `rokit.toml` contents if present.
 pub fn get_lune_version_from_rokit_contents(contents: &str) -> Option<String> {
     let lune_spec = toolchain::find_tool_spec_in_contents(contents, "lune")?;
     let version = lune_spec.rsplit('@').next()?;
@@ -68,28 +65,23 @@ pub fn get_lune_version_from_rokit_contents(contents: &str) -> Option<String> {
     }
 }
 
-/// Read the lune version from an explicit `rokit.toml` path if present.
 pub fn get_lune_version_from_rokit_path(path: &Path) -> Option<String> {
     let contents = std::fs::read_to_string(path).ok()?;
     get_lune_version_from_rokit_contents(&contents)
 }
 
-/// Read the lune version from `rokit.toml` inside `dir` if present.
 pub fn get_lune_version_in_dir(dir: &Path) -> Option<String> {
     get_lune_version_from_rokit_path(&dir.join("rokit.toml"))
 }
 
-/// Read the lune version from `rokit.toml` in the current working directory.
 pub fn get_lune_version() -> Option<String> {
     get_lune_version_in_dir(Path::new("."))
 }
 
-/// Generate the `.luaurc` configuration file content from an alias map.
 pub fn generate_luaurc(aliases: &HashMap<String, String>) -> String {
     generate_luaurc_for_dir(aliases, Path::new("."))
 }
 
-/// Generate the `.luaurc` configuration file content using `rokit.toml` from `dir`.
 pub fn generate_luaurc_for_dir(aliases: &HashMap<String, String>, dir: &Path) -> String {
     generate_luaurc_with_lune_version(aliases, get_lune_version_in_dir(dir).as_deref())
 }
@@ -101,7 +93,6 @@ fn generate_luaurc_with_lune_version(
     let mut aliases_obj: serde_json::Map<String, serde_json::Value> =
         serde_json::Map::with_capacity(aliases.len() + 1);
 
-    // Add lune typedef alias if version is available
     if let Some(version) = lune_version {
         aliases_obj.insert(
             "lune".to_string(),
@@ -109,7 +100,6 @@ fn generate_luaurc_with_lune_version(
         );
     }
 
-    // Add user aliases
     for (k, v) in aliases {
         aliases_obj.insert(k.clone(), serde_json::Value::String(v.clone()));
     }
@@ -123,7 +113,6 @@ fn generate_luaurc_with_lune_version(
     output
 }
 
-/// generate and write both `.darklua.json` and `.luaurc`
 pub fn write_config_files(
     dir: &Path,
     aliases: &HashMap<String, String>,
@@ -145,8 +134,6 @@ pub fn write_config_files(
 
     Ok(())
 }
-
-// ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -240,7 +227,6 @@ mod tests {
         let dir = TempDir::new().expect("failed to create temp dir");
         let output = generate_luaurc_for_dir(&aliases, dir.path());
 
-        // Parse the output and check the aliases object
         let parsed: serde_json::Value =
             serde_json::from_str(&output).expect("output must be valid JSON");
         let aliases_obj = parsed["aliases"]

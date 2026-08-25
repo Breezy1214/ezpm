@@ -7,38 +7,25 @@ use walkdir::WalkDir;
 
 use crate::{output, services::rojo_project};
 
-// ─── Public types ────────────────────────────────────────────────────────────
-
-/// Overall result of running fix_requires over a directory tree.
 #[derive(Debug, Default)]
 pub struct FixResult {
-    /// Number of files that had at least one require rewritten.
     pub files_changed: usize,
-    /// Total number of .lua/.luau files that were scanned.
     pub total_files_scanned: usize,
-    /// Per-file change details for display.
     pub changes: Vec<FileChange>,
 }
 
-/// Per-file change information.
 #[derive(Debug)]
 pub struct FileChange {
-    /// Path to the file that was changed.
     pub file: PathBuf,
-    /// Each individual require rewrite performed in this file.
     pub rewrites: Vec<RequireRewrite>,
 }
 
-/// A single require path rewrite.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RequireRewrite {
-    /// The old require path (before rewriting).
     pub old: String,
-    /// The new require path (after rewriting).
     pub new: String,
 }
 
-/// Pre-built alias data structures for reuse across multiple `fix_single_file` calls.
 pub struct FixContext {
     pub sorted_aliases: Vec<(String, String)>,
     pub skip_list: Vec<String>,
@@ -68,17 +55,6 @@ impl FixContext {
     }
 }
 
-// ─── Public functions ─────────────────────────────────────────────────────────
-
-/// Scan all .lua/.luau files under `root_dir` and rewrite require paths to
-/// `@alias` notation using the provided alias map.
-///
-/// Only writes files to disk when changes are actually made (BUILD-04).
-/// Returns a FixResult with per-file change details for display (BUILD-05).
-///
-/// `src_prefix` is the source directory prefix (e.g. `"src"`) used to
-/// distinguish internal aliases (rooted under src/) from external ones.
-///
 pub fn fix_requires(
     root_dir: &Path,
     aliases: &HashMap<String, String>,
@@ -128,7 +104,6 @@ pub fn fix_requires(
     })
 }
 
-/// Process a single file, rewriting its require paths in place.
 pub fn fix_single_file(
     file_path: &Path,
     aliases: &HashMap<String, String>,
@@ -151,7 +126,6 @@ pub fn fix_single_file(
         return Ok(None);
     }
 
-    // BUILD-04: only write when changes are actually made
     std::fs::write(file_path, &new_content)?;
     Ok(Some(FileChange {
         file: file_path.to_path_buf(),
@@ -159,7 +133,6 @@ pub fn fix_single_file(
     }))
 }
 
-/// Process a single file using pre-built alias data from a `FixContext`.
 pub fn fix_single_file_with_context(
     file_path: &Path,
     ctx: &FixContext,
@@ -189,10 +162,6 @@ pub fn fix_single_file_with_context(
     }))
 }
 
-// ─── Internal helpers ─────────────────────────────────────────────────────────
-
-/// Normalize path separators to forward slashes (Windows compat).
-/// Alias paths use `/` but PathBuf::to_string_lossy() produces `\` on Windows.
 fn normalize_separators(s: &str) -> String {
     s.replace('\\', "/")
 }
@@ -244,13 +213,10 @@ fn build_sorted_src_aliases(
         })
         .collect();
 
-    // Sort by real path length descending; break ties by alias shortcut name
-    // ascending (alphabetical) for deterministic behaviour (Pitfall 6).
     list.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(&b.0)));
     list
 }
 
-/// Build the list of require path prefixes that should be left untouched.
 fn build_skip_list(aliases: &HashMap<String, String>, src_prefix: &str) -> Vec<String> {
     let prefix = format!("{src_prefix}/");
     let mut skip = vec![
@@ -267,7 +233,6 @@ fn build_skip_list(aliases: &HashMap<String, String>, src_prefix: &str) -> Vec<S
     skip
 }
 
-/// Check whether a file path is a Lua or Luau source file.
 pub fn is_lua_file(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|s| s.to_str()),
@@ -275,15 +240,12 @@ pub fn is_lua_file(path: &Path) -> bool {
     )
 }
 
-/// Return the compiled require-path regex
 pub fn require_regex() -> &'static Regex {
     static REQUIRE_RE: OnceLock<Regex> = OnceLock::new();
     REQUIRE_RE
         .get_or_init(|| Regex::new(r#"require\("([^"]+)"\)"#).expect("require regex is valid"))
 }
 
-/// Recursively search for a file by name under `search_dir`.
-/// Checks exact name, name.luau, and name.lua (matching Luau's findFileByName).
 fn find_file_by_name(expected_name: &str, search_dir: &Path) -> Option<PathBuf> {
     let entries = std::fs::read_dir(search_dir).ok()?;
     for entry in entries.filter_map(|e| e.ok()) {
@@ -311,8 +273,6 @@ fn find_file_by_name(expected_name: &str, search_dir: &Path) -> Option<PathBuf> 
     None
 }
 
-/// Build inverted aliases sorted by real path length descending.
-/// Maps `"src/client/" → "@Client/"` for converting found file paths back to alias notation.
 pub fn build_inverted_aliases(aliases: &HashMap<String, String>) -> Vec<(String, String)> {
     let mut inverted: Vec<(String, String)> = aliases
         .iter()
@@ -326,7 +286,6 @@ pub fn build_inverted_aliases(aliases: &HashMap<String, String>) -> Vec<(String,
         })
         .collect();
 
-    // Sort by real path length descending (longest match first)
     inverted.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
     inverted
 }
@@ -357,8 +316,6 @@ fn build_game_alias_rewrites(
     rewrites
 }
 
-/// Convert a found file path to alias notation using inverted aliases.
-/// Strips `/init.luau`, `/init.lua`, `.luau`, `.lua` suffixes (matching Luau behavior).
 fn convert_path_to_alias(file_path: &str, inverted_aliases: &[(String, String)]) -> String {
     let mut converted = normalize_separators(file_path);
     for (real_path, shortcut) in inverted_aliases {
@@ -368,7 +325,6 @@ fn convert_path_to_alias(file_path: &str, inverted_aliases: &[(String, String)])
         }
     }
 
-    // Strip init file patterns first, then plain extensions
     if converted.ends_with("/init.luau") {
         converted.truncate(converted.len() - "/init.luau".len());
     } else if converted.ends_with("/init.lua") {
@@ -593,15 +549,11 @@ pub fn process_file_content(
     (rebuilt, rewrites)
 }
 
-// ─── Tests ────────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::HashMap;
     use tempfile::TempDir;
-
-    // ── Helper: standard alias map used across many tests ────────────────────
 
     fn standard_aliases() -> HashMap<String, String> {
         let mut m = HashMap::new();
@@ -617,8 +569,6 @@ mod tests {
         build_game_alias_rewrites(None, aliases, "src")
     }
 
-    // ── Alias sorting tests ───────────────────────────────────────────────────
-
     #[test]
     fn test_longest_match_wins() {
         let mut aliases = HashMap::new();
@@ -627,19 +577,16 @@ mod tests {
 
         let sorted = build_sorted_src_aliases(&aliases, "src");
 
-        // Must have at least 2 entries
         assert!(
             sorted.len() >= 2,
             "expected 2 sorted aliases, got {:?}",
             sorted
         );
-        // SharedClient's real path (src/client/shared/) is longer → must appear first
         assert!(
             sorted[0].1.len() >= sorted[1].1.len(),
             "longer path must sort first: {:?}",
             sorted
         );
-        // Verify SharedClient is actually first
         assert_eq!(
             sorted[0].0, "@SharedClient/",
             "SharedClient should be first due to longer path"
@@ -648,15 +595,13 @@ mod tests {
 
     #[test]
     fn test_sort_stability_on_equal_length() {
-        // Two aliases with paths of equal length — sort must be deterministic (alphabetical by name)
         let mut aliases = HashMap::new();
-        aliases.insert("Alpha".to_string(), "src/alpha/".to_string()); // len 10
-        aliases.insert("Beta".to_string(), "src/beta_/".to_string()); // len 10
+        aliases.insert("Alpha".to_string(), "src/alpha/".to_string());
+        aliases.insert("Beta".to_string(), "src/beta_/".to_string());
 
         let sorted = build_sorted_src_aliases(&aliases, "src");
 
         assert_eq!(sorted.len(), 2, "both aliases should appear");
-        // Equal length → alphabetical by alias shortcut name (@Alpha/ < @Beta/)
         assert_eq!(sorted[0].0, "@Alpha/", "Alpha should sort before Beta");
         assert_eq!(sorted[1].0, "@Beta/", "Beta should sort after Alpha");
     }
@@ -666,7 +611,6 @@ mod tests {
         let aliases = standard_aliases();
         let sorted = build_sorted_src_aliases(&aliases, "src");
 
-        // Packages and ServerPackages are external (not under src/) → must NOT appear
         let names: Vec<&str> = sorted.iter().map(|(n, _)| n.as_str()).collect();
         assert!(
             !names.contains(&"@Packages/"),
@@ -676,13 +620,10 @@ mod tests {
             !names.contains(&"@ServerPackages/"),
             "ServerPackages must not appear in src aliases"
         );
-        // src aliases (Client, Server, Shared) must appear
         assert!(names.contains(&"@Client/"), "Client must appear");
         assert!(names.contains(&"@Server/"), "Server must appear");
         assert!(names.contains(&"@Shared/"), "Shared must appear");
     }
-
-    // ── Skip list tests ───────────────────────────────────────────────────────
 
     #[test]
     fn test_external_aliases_in_skip_list() {
@@ -741,8 +682,6 @@ mod tests {
         );
     }
 
-    // ── Require detection tests ───────────────────────────────────────────────
-
     #[test]
     fn test_finds_double_quote_requires() {
         let content = r#"local m = require("@Client/module")"#;
@@ -787,8 +726,6 @@ local c = require("@Packages/rodux")
         assert_eq!(caps.len(), 3, "all 3 double-quote requires must be found");
     }
 
-    // ── Content rewriting tests (pure function, no filesystem) ───────────────
-
     #[test]
     fn test_rewrites_src_path_to_alias() {
         let mut aliases = HashMap::new();
@@ -823,7 +760,6 @@ local c = require("@Packages/rodux")
         let (_, rewrites) = process_file_content(content, &sorted, &skip, "src", None, &[], &[]);
 
         assert_eq!(rewrites.len(), 1);
-        // SharedClient is the longer (more specific) match
         assert_eq!(
             rewrites[0].new, "@SharedClient/util",
             "SharedClient must win over Client"
@@ -947,7 +883,6 @@ local c = require("@Packages/rodux")
         let sorted = build_sorted_src_aliases(&aliases, "src");
         let skip = build_skip_list(&aliases, "src");
 
-        // Content has no requires at all
         let content = "local x = 42\nreturn x\n";
         let (new_content, rewrites) =
             process_file_content(content, &sorted, &skip, "src", None, &[], &[]);
@@ -1017,15 +952,12 @@ local b = require("src/server/api")
         let (new_content, rewrites) =
             process_file_content(content, &sorted, &skip, "src", None, &[], &[]);
 
-        // No filesystem to search — path stays the same
         assert!(
             rewrites.is_empty(),
             "aliased path with no filesystem should not be rewritten"
         );
         assert_eq!(new_content, content, "content must be unchanged");
     }
-
-    // ── Filesystem integration tests ──────────────────────────────────────────
 
     fn make_temp_tree(files: &[(&str, &str)]) -> TempDir {
         let dir = TempDir::new().expect("failed to create temp dir");
@@ -1073,7 +1005,6 @@ local b = require("src/server/api")
 
         let result = fix_requires(dir.path(), &aliases, "src").expect("fix_requires must succeed");
 
-        // Only .luau and .lua files are scanned
         assert_eq!(
             result.total_files_scanned, 2,
             ".txt and .json must not be scanned"
@@ -1090,7 +1021,6 @@ local b = require("src/server/api")
             .modified()
             .expect("mtime");
 
-        // Small sleep to ensure mtime difference would be observable if file were written
         std::thread::sleep(std::time::Duration::from_millis(50));
 
         let aliases = standard_aliases();
@@ -1132,7 +1062,7 @@ local b = require("src/server/api")
     fn test_fix_result_counts_correct() {
         let dir = make_temp_tree(&[
             ("a.luau", r#"local x = require("src/client/a")"#),
-            ("b.luau", "local y = 42\n"), // no requires
+            ("b.luau", "local y = 42\n"),
             ("c.luau", r#"local z = require("src/server/z")"#),
         ]);
 

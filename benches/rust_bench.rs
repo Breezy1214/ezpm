@@ -1,13 +1,3 @@
-//! Benchmark suite for ezpm Rust implementation.
-//!
-//! Measures performance of core pure functions:
-//! - Config TOML parsing
-//! - Require path rewriting (process_file_content)
-//! - Config file generation (.darklua.json, .luaurc)
-//! - Optimization comparisons (FixContext caching, directory-wide fix_requires)
-//!
-//! Run with: cargo bench --bench rust_bench
-
 use std::collections::HashMap;
 use std::time::Instant;
 
@@ -15,10 +5,7 @@ use ezpm::config::load_config_from_str;
 use ezpm::services::config_gen::{generate_darklua_json, generate_luaurc};
 use ezpm::services::require_fixer::{self, process_file_content};
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
 fn bench<F: FnMut()>(name: &str, iterations: u64, mut f: F) {
-    // Warm up
     for _ in 0..100 {
         f();
     }
@@ -90,8 +77,6 @@ fn format_number(n: u64) -> String {
     result.chars().rev().collect()
 }
 
-// ─── Test data ────────────────────────────────────────────────────────────────
-
 fn sample_toml() -> &'static str {
     r#"[project]
 name = "ez-project-manager"
@@ -155,8 +140,6 @@ fn large_luau_file() -> String {
     content.push_str("\nreturn {}\n");
     content
 }
-
-// ─── Build helpers matching require_fixer internals ───────────────────────────
 
 fn build_sorted_src_aliases(
     aliases: &HashMap<String, String>,
@@ -235,8 +218,6 @@ fn create_temp_lua_tree(count: usize) -> tempfile::TempDir {
     dir
 }
 
-// ─── Main ─────────────────────────────────────────────────────────────────────
-
 fn main() {
     println!();
     println!("╔══════════════════════════════════════════════════════════════════════╗");
@@ -247,7 +228,6 @@ fn main() {
     let iterations = 10_000u64;
     let large_iterations = 100u64;
 
-    // ── 1. Config TOML parsing ────────────────────────────────────────────────
     println!("── Config TOML Parsing ──────────────────────────────────────────────");
     let toml_input = sample_toml();
 
@@ -268,7 +248,6 @@ fn main() {
 
     println!();
 
-    // ── 2. Require path rewriting ─────────────────────────────────────────────
     println!("── Require Path Rewriting ─────────────────────────────────────────");
     let aliases = sample_aliases();
     let src_prefix = "src";
@@ -285,6 +264,7 @@ fn main() {
             src_prefix,
             None,
             &inverted_aliases,
+            &[],
         );
     });
 
@@ -300,17 +280,17 @@ fn main() {
                 src_prefix,
                 None,
                 &inverted_aliases,
+                &[],
             );
         },
     );
 
     println!();
 
-    // ── 3. Config generation ──────────────────────────────────────────────────
     println!("── Config File Generation ─────────────────────────────────────────");
 
     bench("generate .darklua.json", iterations, || {
-        let _ = generate_darklua_json();
+        let _ = generate_darklua_json(None);
     });
 
     bench("generate .luaurc (5 aliases)", iterations, || {
@@ -327,7 +307,6 @@ fn main() {
 
     println!();
 
-    // ── 4. Optimization benchmarks ──────────────────────────────────────────
     println!("── Optimization: FixContext caching (#2) ────────────────────────────");
 
     bench_compare(
@@ -337,7 +316,15 @@ fn main() {
             let _sorted = build_sorted_src_aliases(&aliases, src_prefix);
             let _skip = build_skip_list(&aliases, src_prefix);
             let _inv = build_inverted_aliases(&aliases);
-            let _ = process_file_content(small_content, &_sorted, &_skip, src_prefix, None, &_inv);
+            let _ = process_file_content(
+                small_content,
+                &_sorted,
+                &_skip,
+                src_prefix,
+                None,
+                &_inv,
+                &[],
+            );
         },
         || {
             let _ = process_file_content(
@@ -347,13 +334,13 @@ fn main() {
                 src_prefix,
                 None,
                 &inverted_aliases,
+                &[],
             );
         },
     );
 
     println!();
 
-    // ── 5. Directory-wide require fixing ───────────────────────────────────
     println!("── fix_requires 200 files ───────────────────────────────────────────");
     bench("fix_requires 200 files", large_iterations, || {
         let dir = create_temp_lua_tree(200);
@@ -363,7 +350,6 @@ fn main() {
 
     println!();
 
-    // ── Summary ───────────────────────────────────────────────────────────────
     println!("── Overall Timing ─────────────────────────────────────────────────");
 
     bench(
@@ -378,8 +364,9 @@ fn main() {
                 src_prefix,
                 None,
                 &inverted_aliases,
+                &[],
             );
-            let _ = generate_darklua_json();
+            let _ = generate_darklua_json(None);
             let _ = generate_luaurc(&aliases);
         },
     );

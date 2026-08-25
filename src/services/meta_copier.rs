@@ -2,10 +2,6 @@ use anyhow::{Context, Result};
 use std::path::Path;
 use walkdir::WalkDir;
 
-// ─── Public functions ─────────────────────────────────────────────────────────
-
-/// Copy all `init.meta.json` files from `src` to `build`, preserving the
-/// relative directory structure.
 pub fn copy_meta_files(src: &Path, build: &Path) -> Result<usize> {
     let mut count = 0;
 
@@ -14,7 +10,6 @@ pub fn copy_meta_files(src: &Path, build: &Path) -> Result<usize> {
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
     {
-        // Only copy files named exactly "init.meta.json"
         let file_name = entry
             .path()
             .file_name()
@@ -25,7 +20,6 @@ pub fn copy_meta_files(src: &Path, build: &Path) -> Result<usize> {
             continue;
         }
 
-        // Compute relative path from src root
         let rel_path = entry.path().strip_prefix(src).with_context(|| {
             format!(
                 "Failed to strip prefix '{}' from '{}'",
@@ -34,10 +28,8 @@ pub fn copy_meta_files(src: &Path, build: &Path) -> Result<usize> {
             )
         })?;
 
-        // Compute destination path in build directory
         let dest = build.join(rel_path);
 
-        // Ensure parent directories exist
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent).with_context(|| {
                 format!(
@@ -47,7 +39,6 @@ pub fn copy_meta_files(src: &Path, build: &Path) -> Result<usize> {
             })?;
         }
 
-        // Copy the file
         std::fs::copy(entry.path(), &dest).with_context(|| {
             format!(
                 "Failed to copy '{}' to '{}'",
@@ -62,16 +53,12 @@ pub fn copy_meta_files(src: &Path, build: &Path) -> Result<usize> {
     Ok(count)
 }
 
-// ─── Tests ────────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
     use tempfile::TempDir;
 
-    /// Helper: create a temp directory with specified files (path relative to
-    /// temp root -> file content).
     fn make_temp_tree(files: &[(&str, &str)]) -> TempDir {
         let dir = TempDir::new().expect("failed to create temp dir");
         for (path, content) in files {

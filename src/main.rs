@@ -11,7 +11,6 @@ use ezpm::{
     services::{require_fixer, selene, version},
 };
 
-// ─── Version check ────────────────────────────────────────────────────────────
 fn fetch_latest_version() -> Option<String> {
     let body = ureq::get("https://api.github.com/repos/Breezy1214/ezpm/releases/latest")
         .header("Accept", "application/vnd.github.v3+json")
@@ -44,12 +43,11 @@ fn print_update_notice(notice: &str) {
     output::info(notice);
 }
 
-// ─── Entry point ──────────────────────────────────────────────────────────────
-
 fn main() {
     let cli = Cli::parse();
     let is_long_running_serve = matches!(&cli.command, Some(Commands::Serve { .. }));
     let is_interactive_menu = cli.command.is_none();
+    let is_init_dry_run = matches!(&cli.command, Some(Commands::Init { dry_run: true }));
 
     let loaded_config_result = config::load_config();
 
@@ -72,7 +70,6 @@ fn main() {
         },
     );
 
-    // Load config at startup; print any warnings to stderr
     let loaded_config = match loaded_config_result {
         Ok((cfg, warnings)) => {
             for w in &warnings {
@@ -119,9 +116,10 @@ fn main() {
         }
     }
 
-    selene::generate_selene_roblox_std();
+    if !is_init_dry_run {
+        selene::generate_selene_roblox_std();
+    }
 
-    // ── Command dispatch ─────────────────────────────────────────────
     let src = loaded_config
         .as_ref()
         .and_then(|c| c.paths.as_ref())
@@ -131,11 +129,10 @@ fn main() {
 
     let result = match cli.command {
         None => {
-            // No subcommand — show interactive menu (CLI-01)
             ezpm::menu::run_interactive_menu(startup_update_notice.as_deref());
             Ok(())
         }
-        Some(Commands::Init) => init::run_init(),
+        Some(Commands::Init { dry_run }) => init::run_init(dry_run),
         Some(Commands::Install) => {
             let aliases = loaded_config.as_ref().and_then(|c| c.aliases.as_ref());
             install::install_tools(&src, aliases)
@@ -212,10 +209,8 @@ fn main() {
         }
     };
 
-    // ── Error handling ────────────────────────────────────────────────────────
     if let Err(e) = result {
         output::error(&format!("{}", e));
-        // Print version check footer even on error
         if !check_disabled && !update_check_already_handled {
             if let Some(notice) = get_update_notice(&rx, current_ver) {
                 print_update_notice(&notice);
@@ -224,7 +219,6 @@ fn main() {
         std::process::exit(1);
     }
 
-    // ── Version check footer (subtle, on stderr) ──────────────────────────────
     if !check_disabled && !update_check_already_handled {
         if let Some(notice) = get_update_notice(&rx, current_ver) {
             print_update_notice(&notice);

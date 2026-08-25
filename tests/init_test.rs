@@ -1,36 +1,60 @@
-// Integration tests for `ezpm init` command.
-//
-// NOTE: `ezpm init` uses inquire interactive prompts. In a non-TTY environment
-// (piped stdin), inquire will error. These tests verify the command does not
-// panic or hang — they do NOT assert a specific exit code, because inquire's
-// behavior on non-TTY may vary (non-zero is acceptable here).
-//
-// Does NOT assert on specific stdout/stderr text (locked decision).
-
 mod common;
 
+use std::fs;
 use tempfile::TempDir;
 
-// ─── Non-TTY behavior ─────────────────────────────────────────────────────────
-
-/// `ezpm init` in a bare directory (no ezpm.toml) with no TTY completes
-/// without hanging. Exit code may be non-zero due to inquire prompt failure
-/// — that is acceptable; the test verifies no crash/hang only.
 #[test]
 fn init_exits_in_non_tty_environment() {
     let dir = TempDir::new().expect("TempDir::new");
     let out = common::run_ezpm(dir.path(), &["init"]);
-    // We do not assert success or failure — just that the command returned.
-    // The important invariant is: no hang, no panic (which would kill the test
-    // process itself).
-    let _ = out.status; // ignore exit code — non-TTY makes it non-deterministic
+    let _ = out.status;
 }
 
-/// `ezpm init` in an empty TempDir produces an Output (no panic, no hang).
 #[test]
-fn init_without_project_dir_does_not_crash() {
+fn init_dry_run_is_non_interactive_and_does_not_write() {
     let dir = TempDir::new().expect("TempDir::new");
-    let out = common::run_ezpm(dir.path(), &["init"]);
-    // As long as `run_ezpm` returns an Output, the binary did not crash.
-    let _ = out;
+    let template = r#"{
+        "name": "existing",
+        "tree": {"ReplicatedStorage": {"Shared": {"$path": "src/shared"}}}
+    }"#;
+    fs::write(dir.path().join("default.project.json"), template).unwrap();
+
+    let out = common::run_ezpm(dir.path(), &["init", "--dry-run", "--color", "never"]);
+    common::assert_success(&out);
+
+    assert_eq!(
+        fs::read_to_string(dir.path().join("default.project.json")).unwrap(),
+        template,
+        "dry-run must not overwrite the source Rojo template"
+    );
+    for path in ["ezpm.toml", ".darklua.json", ".luaurc", "rokit.toml"] {
+        assert!(!dir.path().join(path).exists(), "dry-run created {path}");
+    }
+    let entries = fs::read_dir(dir.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        entries,
+        [std::ffi::OsString::from("default.project.json")],
+        "dry-run must not create auxiliary files"
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Would preserve Rojo template"), "{stdout}");
+    assert!(stdout.contains("no files were changed"), "{stdout}");
+}
+
+#[test]
+fn init_dry_run_rejects_ambiguous_source_roots_without_writing() {
+    let dir = TempDir::new().expect("TempDir::new");
+    fs::write(
+        dir.path().join("default.project.json"),
+        r#"{"tree":{"A":{"$path":"new/client"},"B":{"$path":"old/server"}}}"#,
+    )
+    .unwrap();
+
+    let out = common::run_ezpm(dir.path(), &["init", "--dry-run", "--color", "never"]);
+    assert!(!out.status.success());
+    assert!(!dir.path().join("ezpm.toml").exists());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("Source root is ambiguous"));
 }

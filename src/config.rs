@@ -3,8 +3,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 
-// ─── Check (dependency analysis) config ──────────────────────────────────────
-
 #[derive(Debug, Deserialize, Serialize, Default, Clone)]
 pub struct CheckConfig {
     pub entry_points: Option<Vec<String>>,
@@ -26,8 +24,22 @@ pub struct EzpmConfig {
     pub display: Option<DisplayConfig>,
     pub aliases: Option<HashMap<String, String>>,
     pub serve: Option<ServeConfig>,
+    pub rojo: Option<RojoConfig>,
     pub check: Option<CheckConfig>,
     pub darklua: Option<toml::value::Table>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Default, Clone)]
+pub struct RojoConfig {
+    pub project: Option<String>,
+    pub generated_project: Option<String>,
+    pub path_maps: Option<Vec<RojoPathMapConfig>>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+pub struct RojoPathMapConfig {
+    pub source: String,
+    pub build: String,
 }
 
 #[derive(Debug, Deserialize, Serialize, Default)]
@@ -51,29 +63,19 @@ pub struct DisplayConfig {
 
 #[derive(Debug, Deserialize, Serialize, Default)]
 pub struct ServeConfig {
-    /// Default port is 34872
     pub port: Option<u16>,
-    /// strict | hybrid | fast (default: hybrid)
     pub require_fix_mode: Option<RequireFixMode>,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum RequireFixMode {
     Strict,
+    #[default]
     Hybrid,
     Fast,
 }
 
-impl Default for RequireFixMode {
-    fn default() -> Self {
-        Self::Hybrid
-    }
-}
-
-/// Serialization-only struct for writing ezpm.toml.
-/// Uses BTreeMap for deterministic alias ordering.
-/// Field order matters: aliases (a table section) MUST be last.
 #[derive(Serialize)]
 struct EzpmTomlOutput {
     project: ProjectTomlOutput,
@@ -101,10 +103,6 @@ struct DisplayTomlOutput {
     check_updates: bool,
 }
 
-/// Write an ezpm.toml file to `dir` with the given configuration values.
-///
-/// Uses `toml::to_string_pretty` with a dedicated serialization struct
-/// to ensure deterministic output (BTreeMap for aliases, Pitfall 3 ordering).
 pub fn save_ezpm_toml(
     dir: &Path,
     project_name: &str,
@@ -138,7 +136,6 @@ pub fn save_ezpm_toml(
     Ok(())
 }
 
-/// Update only the `[aliases]` table in `ezpm.toml`, preserving all other
 pub fn save_aliases_preserving_config(
     dir: &Path,
     project_name: &str,
@@ -202,7 +199,6 @@ pub fn save_aliases_preserving_config(
     Ok(())
 }
 
-/// Parse an ezpm.toml string, returning the config and any warnings about unknown fields.
 pub fn load_config_from_str(input: &str) -> Result<(EzpmConfig, Vec<String>)> {
     if input.trim().is_empty() {
         return Ok((EzpmConfig::default(), vec![]));
@@ -224,15 +220,11 @@ pub fn load_config_from_str(input: &str) -> Result<(EzpmConfig, Vec<String>)> {
     Ok((config, warnings))
 }
 
-/// Try to import aliases from .luaurc or .darklua.json in the current directory.
-/// .luaurc is preferred if it exists; falls back to .darklua.json.
 pub fn import_aliases_from_darklua() -> HashMap<String, String> {
     import_aliases_from_dir(Path::new("."))
 }
 
-/// Import aliases from a specific directory.
 pub fn import_aliases_from_dir(dir: &Path) -> HashMap<String, String> {
-    // Try .luaurc first
     let luaurc_path = dir.join(".luaurc");
     if luaurc_path.exists() {
         if let Ok(contents) = std::fs::read_to_string(&luaurc_path) {
@@ -240,7 +232,6 @@ pub fn import_aliases_from_dir(dir: &Path) -> HashMap<String, String> {
                 if let Some(aliases_obj) = json.get("aliases").and_then(|v| v.as_object()) {
                     let mut aliases = HashMap::new();
                     for (key, value) in aliases_obj {
-                        // Skip the lune typedef path
                         if key == "lune" {
                             continue;
                         }
@@ -256,12 +247,10 @@ pub fn import_aliases_from_dir(dir: &Path) -> HashMap<String, String> {
         }
     }
 
-    // Fall back to .darklua.json
     let darklua_path = dir.join(".darklua.json");
     if darklua_path.exists() {
         if let Ok(contents) = std::fs::read_to_string(&darklua_path) {
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&contents) {
-                // Navigate to process[0].current.aliases
                 let current = json
                     .get("process")
                     .and_then(|p| p.get(0))
@@ -273,7 +262,6 @@ pub fn import_aliases_from_dir(dir: &Path) -> HashMap<String, String> {
                 if let Some(obj) = alias_obj {
                     let mut aliases = HashMap::new();
                     for (key, value) in obj {
-                        // Strip leading @ from alias name
                         let name = key.strip_prefix('@').unwrap_or(key);
                         if let Some(path) = value.as_str() {
                             aliases.insert(name.to_string(), path.to_string());
@@ -288,7 +276,6 @@ pub fn import_aliases_from_dir(dir: &Path) -> HashMap<String, String> {
     HashMap::new()
 }
 
-/// Load config from the ezpm.toml in the current directory.
 pub fn load_config() -> Result<(EzpmConfig, Vec<String>)> {
     let toml_path = Path::new("ezpm.toml");
     let (mut config, warnings) = if toml_path.exists() {
@@ -299,7 +286,6 @@ pub fn load_config() -> Result<(EzpmConfig, Vec<String>)> {
         (EzpmConfig::default(), vec![])
     };
 
-    // Auto-import aliases from .luaurc or .darklua.json if no aliases in config
     let has_aliases = config
         .aliases
         .as_ref()
@@ -334,7 +320,6 @@ mod tests {
         let contents =
             std::fs::read_to_string(dir.path().join("ezpm.toml")).expect("must read ezpm.toml");
 
-        // Verify it can be parsed back
         let (config, warnings) = load_config_from_str(&contents).expect("must parse");
         assert!(warnings.is_empty(), "no unknown fields expected");
         assert_eq!(

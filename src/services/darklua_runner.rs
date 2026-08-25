@@ -4,22 +4,14 @@ use std::process::Command;
 
 use crate::services::toolchain;
 
-// ─── Public types ─────────────────────────────────────────────────────────────
-
-/// Result of running a darklua or rojo subprocess.
 #[derive(Debug)]
 pub struct DarkluaResult {
-    /// Whether the process exited successfully (exit code 0).
     pub success: bool,
-    /// Standard output captured from the process.
     pub stdout: String,
-    /// Standard error captured from the process.
     pub stderr: String,
-    /// Exit code of the process (0 on success).
     pub exit_code: i32,
 }
 
-// ─── Public functions ─────────────────────────────────────────────────────────
 pub fn process_tree(src: &Path, build: &Path) -> Result<DarkluaResult> {
     let output = Command::new("darklua")
         .arg("process")
@@ -36,9 +28,6 @@ pub fn process_tree(src: &Path, build: &Path) -> Result<DarkluaResult> {
     })
 }
 
-/// Run `darklua process <src_file> <build_file>` on a single file.
-///
-/// Used for incremental builds in the serve watch pipeline (Phase 4).
 pub fn process_file(src_file: &Path, build_file: &Path) -> Result<DarkluaResult> {
     let output = Command::new("darklua")
         .arg("process")
@@ -55,22 +44,15 @@ pub fn process_file(src_file: &Path, build_file: &Path) -> Result<DarkluaResult>
     })
 }
 
-/// Run `darklua process` on a tree, retrying once if it succeeds but has
 pub fn process_tree_with_retry(src: &Path, build: &Path) -> Result<DarkluaResult> {
     let result = process_tree(src, build)?;
     if result.success && !result.stderr.trim().is_empty() {
-        // Retry once — DarkLua warnings sometimes clear on a second pass
         let retry = process_tree(src, build)?;
         return Ok(retry);
     }
     Ok(result)
 }
 
-/// Clean and recreate the build directory.
-///
-/// Removes the directory recursively if it exists, then creates a fresh empty
-/// directory. Per CONTEXT.md decision: "Always clean the build/ directory
-/// before full builds".
 pub fn clean_build_dir(build: &Path) -> Result<()> {
     if build.exists() {
         std::fs::remove_dir_all(build)
@@ -80,8 +62,6 @@ pub fn clean_build_dir(build: &Path) -> Result<()> {
         .with_context(|| format!("Failed to create build directory: {}", build.display()))?;
     Ok(())
 }
-
-// ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -93,14 +73,11 @@ mod tests {
         let dir = TempDir::new().expect("failed to create temp dir");
         let build = dir.path().join("build");
 
-        // Create build dir with a file inside
         std::fs::create_dir_all(&build).expect("create build dir");
         std::fs::write(build.join("artifact.lua"), b"-- old artifact").expect("write artifact");
 
-        // Clean it
         clean_build_dir(&build).expect("clean_build_dir must succeed");
 
-        // Dir must exist but be empty
         assert!(build.exists(), "build dir must still exist after clean");
         let entries: Vec<_> = std::fs::read_dir(&build).expect("read build dir").collect();
         assert!(
@@ -115,7 +92,6 @@ mod tests {
         let dir = TempDir::new().expect("failed to create temp dir");
         let build = dir.path().join("nonexistent_build");
 
-        // Build dir does not exist
         assert!(!build.exists(), "build dir must not exist before clean");
 
         clean_build_dir(&build).expect("clean_build_dir must succeed on nonexistent dir");
