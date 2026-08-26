@@ -4,7 +4,16 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::output;
-use crate::services::{sourcemap, toolchain};
+use crate::services::{
+    rojo_project::{RojoProjectSettings, DEFAULT_PROJECT_TEMPLATE},
+    sourcemap, toolchain,
+};
+
+fn source_rojo_project() -> PathBuf {
+    crate::config::load_config()
+        .map(|(config, _)| RojoProjectSettings::from_config(&config).project)
+        .unwrap_or_else(|_| PathBuf::from(DEFAULT_PROJECT_TEMPLATE))
+}
 
 pub fn get_package_dirs(
     aliases: Option<&HashMap<String, String>>,
@@ -248,6 +257,7 @@ pub fn setup_wally_packages(
     }
 
     let package_dirs = get_package_dirs(aliases, src_prefix);
+    let source_project = source_rojo_project();
 
     let pb = output::start_spinner("Setting up Wally packages...");
     pb.set_message("Clearing current systems...");
@@ -300,7 +310,8 @@ pub fn setup_wally_packages(
 
     pb.set_message("Generating source map...");
 
-    let sm_result = sourcemap::generate_sourcemap(&cwd).context("Failed to generate sourcemap")?;
+    let sm_result = sourcemap::generate_sourcemap_for_project(&cwd, &source_project)
+        .context("Failed to generate sourcemap")?;
 
     if !sm_result.success {
         pb.suspend(|| {
@@ -351,8 +362,8 @@ pub fn setup_wally_packages(
     }
 
     pb.set_message("Finalizing...");
-    let sm_result2 =
-        sourcemap::generate_sourcemap(&cwd).context("Failed to generate final sourcemap")?;
+    let sm_result2 = sourcemap::generate_sourcemap_for_project(&cwd, &source_project)
+        .context("Failed to generate final sourcemap")?;
 
     if !sm_result2.success {
         pb.suspend(|| {

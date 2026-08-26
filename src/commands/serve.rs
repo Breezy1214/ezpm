@@ -658,9 +658,9 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
         let pb = output::start_spinner("Generating sourcemap...");
         let t0 = Instant::now();
         let project_dir_clone = project_dir.clone();
-        let generated_project = rojo_settings.generated_project.clone();
+        let source_project = rojo_settings.project.clone();
         let result = tokio::task::spawn_blocking(move || {
-            sourcemap::generate_sourcemap_for_project(&project_dir_clone, &generated_project)
+            sourcemap::generate_sourcemap_for_project(&project_dir_clone, &source_project)
         })
         .await
         .context("sourcemap task panicked")?;

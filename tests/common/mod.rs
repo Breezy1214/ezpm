@@ -36,7 +36,16 @@ Packages = "Packages/"
         p.join("default.project.json"),
         r#"{
   "name": "test-project",
-  "tree": { "$className": "DataModel" }
+  "tree": {
+    "$className": "DataModel",
+    "ReplicatedStorage": {
+      "Shared": { "$path": "src/shared" },
+      "Client": { "$path": "src/client" }
+    },
+    "ServerScriptService": {
+      "Server": { "$path": "src/server" }
+    }
+  }
 }
 "#,
     )

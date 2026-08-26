@@ -26,12 +26,38 @@ pub fn default_darklua_table() -> toml::value::Table {
         .expect("DEFAULT_DARKLUA_TOML must be a valid darklua table")
 }
 
-pub fn generate_darklua_json(darklua: Option<&toml::value::Table>) -> String {
+pub fn generate_darklua_json(
+    aliases: &HashMap<String, String>,
+    darklua: Option<&toml::value::Table>,
+) -> String {
     let default = default_darklua_table();
-    let table = darklua.unwrap_or(&default);
+    let mut table = darklua.unwrap_or(&default).clone();
+
+    if let Some(rules) = table.get_mut("process").and_then(toml::Value::as_array_mut) {
+        for rule in rules {
+            let Some(rule) = rule.as_table_mut() else {
+                continue;
+            };
+            if rule.get("rule").and_then(toml::Value::as_str) != Some("convert_require") {
+                continue;
+            }
+            let Some(current) = rule.get_mut("current").and_then(toml::Value::as_table_mut) else {
+                continue;
+            };
+            let sources = current
+                .entry("sources")
+                .or_insert_with(|| toml::Value::Table(toml::value::Table::new()));
+            let Some(sources) = sources.as_table_mut() else {
+                continue;
+            };
+            for (name, path) in aliases {
+                sources.insert(format!("@{name}"), toml::Value::String(path.clone()));
+            }
+        }
+    }
 
     let json: serde_json::Value =
-        serde_json::to_value(table).expect("darklua table must convert to JSON");
+        serde_json::to_value(&table).expect("darklua table must convert to JSON");
 
     let mut output = serde_json::to_string_pretty(&json).unwrap();
     output.push('\n');
@@ -126,7 +152,7 @@ pub fn write_config_files(
         }
     }
 
-    let darklua_json = generate_darklua_json(darklua);
+    let darklua_json = generate_darklua_json(aliases, darklua);
     let luaurc = generate_luaurc_for_dir(aliases, dir);
 
     std::fs::write(dir.join(".darklua.json"), darklua_json)?;
@@ -143,7 +169,7 @@ mod tests {
 
     #[test]
     fn test_darklua_json_has_convert_require_rule() {
-        let output = generate_darklua_json(None);
+        let output = generate_darklua_json(&HashMap::new(), None);
         assert!(
             output.contains(r#""rule": "convert_require""#),
             "output must contain convert_require rule: {output}"
@@ -155,17 +181,23 @@ mod tests {
     }
 
     #[test]
-    fn test_darklua_json_has_no_aliases() {
-        let output = generate_darklua_json(None);
+    fn test_darklua_json_has_alias_sources() {
+        let aliases = HashMap::from([
+            ("Client".to_string(), "src/client/".to_string()),
+            ("Packages".to_string(), "Packages/".to_string()),
+        ]);
+        let output = generate_darklua_json(&aliases, None);
+        let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
+        let sources = &parsed["process"][0]["current"]["sources"];
         assert!(
-            !output.contains("\"aliases\""),
-            "output must NOT contain 'aliases' key — DarkLua reads them from .luaurc: {output}"
+            sources["@Client"] == "src/client/" && sources["@Packages"] == "Packages/",
+            "DarkLua requires aliases in convert_require.current.sources: {output}"
         );
     }
 
     #[test]
     fn test_darklua_json_has_optimization_rules() {
-        let output = generate_darklua_json(None);
+        let output = generate_darklua_json(&HashMap::new(), None);
         let expected_rules = [
             "compute_expression",
             "remove_unused_if_branch",
@@ -184,7 +216,7 @@ mod tests {
 
     #[test]
     fn test_darklua_json_has_make_assignment_local() {
-        let output = generate_darklua_json(None);
+        let output = generate_darklua_json(&HashMap::new(), None);
         let make_local = output.find("make_assignment_local");
         let compute = output.find("compute_expression");
 
@@ -200,7 +232,7 @@ mod tests {
 
     #[test]
     fn test_darklua_json_has_rojo_sourcemap() {
-        let output = generate_darklua_json(None);
+        let output = generate_darklua_json(&HashMap::new(), None);
         assert!(
             output.contains(r#""rojo_sourcemap": "sourcemap.json""#),
             "output must contain rojo_sourcemap: {output}"
@@ -209,7 +241,7 @@ mod tests {
 
     #[test]
     fn test_darklua_json_copies_rojo_model_files() {
-        let output = generate_darklua_json(None);
+        let output = generate_darklua_json(&HashMap::new(), None);
         let json: serde_json::Value = serde_json::from_str(&output).expect("output is valid JSON");
 
         assert_eq!(
@@ -329,7 +361,7 @@ lune = "lune-org/lune@0.10.4"
 
     #[test]
     fn test_darklua_json_is_valid_json() {
-        let output = generate_darklua_json(None);
+        let output = generate_darklua_json(&HashMap::new(), None);
         let result = serde_json::from_str::<serde_json::Value>(&output);
         assert!(
             result.is_ok(),
@@ -377,7 +409,7 @@ lune = "lune-org/lune@0.10.4"
         )
         .expect("custom darklua toml parses");
 
-        let output = generate_darklua_json(Some(&custom));
+        let output = generate_darklua_json(&HashMap::new(), Some(&custom));
         let json: serde_json::Value = serde_json::from_str(&output).expect("output is valid JSON");
 
         let process = json["process"].as_array().expect("process array");
