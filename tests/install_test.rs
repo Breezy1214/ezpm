@@ -27,5 +27,15 @@ fn install_exits_zero_with_empty_wally_toml() {
             stderr.contains("wally install failed with exit code"),
             "expected either success or known wally failure, got stderr: {stderr}"
         );
+    } else {
+        let output = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            !output.contains("sourcemap generation failed"),
+            "Wally setup must generate its sourcemap from the source project: {output}"
+        );
     }
 }
