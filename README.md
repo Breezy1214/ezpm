@@ -1,160 +1,98 @@
 # ezpm
 
-**Stop wrestling with Rojo, DarkLua, and broken require paths. Just build your game.**
-
-ezpm is a single CLI that replaces your entire Roblox dev pipeline. One command starts your dev server, fixes your requires, syncs to Studio, and watches for changes — no glue scripts, no config juggling.
+**One CLI for your whole Roblox dev pipeline.** Rojo, DarkLua, Wally, Selene, and StyLua wired together.
 
 ```bash
 ezpm serve
 ```
 
-That's it. File watcher, require path fixing, DarkLua transforms, sourcemap generation, and Rojo live sync — all running together.
+File watching, require-path fixing, DarkLua transforms, sourcemap generation, and Rojo live sync, all in one process.
 
-## Why ezpm?
+## Why
 
-Without ezpm, a typical Roblox project means manually wiring together Rojo, DarkLua, Wally, Selene, and StyLua. You're writing shell scripts to glue them together, debugging broken require paths when you move files, and restarting processes every time something drifts out of sync.
-
-**ezpm handles all of that in a single binary.**
-
-| Problem | ezpm solution |
+| Problem | ezpm |
 |---|---|
-| Broken `require()` paths after moving files | Auto-rewrites all requires using `@alias` notation |
-| Manually syncing DarkLua + `.luaurc` + Rojo configs | One `[aliases]` table in `ezpm.toml` — configs regenerated automatically |
-| Juggling 5 terminal tabs for your dev loop | `ezpm serve` runs everything in one process |
-| "Works on my machine" toolchain drift | Rokit-managed toolchain with pinned versions |
-| Circular dependencies creeping in | `ezpm check` catches cycles, architecture violations, and dead code |
+| Broken `require()` paths after moving files | Auto-rewrites requires to `@alias/` notation |
+| Hand-syncing `.darklua.json`, `.luaurc`, and Rojo configs | One `[aliases]` table in `ezpm.toml` — configs regenerated for you |
+| Five terminal tabs for one dev loop | `ezpm serve` runs everything |
+| Toolchain drift between machines | Rokit-managed pins, auto-synced to ezpm's tested versions |
+| Circular deps and layer violations | `ezpm check` catches cycles, forbidden imports, and dead code |
 
-## Get Started in 30 Seconds
-
-### Install
+## Install
 
 ```bash
 rokit add Breezy1214/ezpm
 ```
 
-> No Rokit? Grab a binary from [Releases](https://github.com/Breezy1214/ezpm/releases) (Linux, macOS, Windows) or build from source with `cargo install --path .`
+No Rokit? Grab a binary from [Releases](https://github.com/Breezy1214/ezpm/releases) (Linux/macOS/Windows, x86_64 and aarch64), or `cargo install --path .`.
 
-### New project
+Update with `rokit update ezpm && rokit install`.
 
-```bash
-ezpm init     # scaffolds everything: dirs, ezpm.toml, darklua config, luaurc
-ezpm serve    # dev server is live — start coding
-```
-
-### Existing project
+## Quick start
 
 ```bash
-ezpm init     # detects your existing config, imports aliases
-ezpm serve    # picks up right where you left off
+ezpm init     # scaffold a new project, or adopt an existing Rojo one
+ezpm serve    # dev server is live
 ```
 
-### Update
+`ezpm init` scans the project root for `*.project.json` files. If it finds any, it keeps your existing Rojo project as the source of truth (recording it under `[rojo]` in `ezpm.toml`), infers your source root from its path mappings, and offers to import aliases from `.luaurc` or `.darklua.json`. If it finds none, it scaffolds `default.project.json`, the `src/` tree, `rokit.toml`, `.darklua.json`, and `.luaurc` from scratch.
 
 ```bash
-rokit update ezpm
-rokit install
+ezpm init --dry-run   # print what init would create or change; writes nothing
 ```
 
-## Setting up your `src/` tree
+## Commands
 
-`ezpm init` asks for a **Source directory** (default: `src`) and scaffolds aliases + folders from that.
-
-Default layout:
-
-```text
-src/
-	client/
-	server/
-	shared/
-Packages/
-ServerPackages/
+```
+ezpm                      Interactive menu (arrow-key navigation)
+ezpm serve [-p <port>]    Watch + transform + Rojo live sync
+ezpm init [--dry-run]     Create or adopt a project
+ezpm check [--json]       Dependency analysis (cycles, layer rules, unused modules)
+ezpm fix-requires         Rewrite requires across the source tree to @alias/ form
+ezpm install              Rokit tools + Wally packages + type generation
+ezpm setup-wally-packages Clean reinstall of Wally deps + sourcemap/types
+ezpm lint                 Selene + StyLua --check
+ezpm format [--check]     StyLua format (or verify only, for CI)
+ezpm alias <add|remove|list|sync>   Manage path aliases
+ezpm docs                 Moonwave documentation server
 ```
 
-These map to default aliases:
+Global flags: `--verbose`, `--quiet`, `--color <auto|always|never>`.
 
-- `@Client -> src/client/`
-- `@Server -> src/server/`
-- `@Shared -> src/shared/`
-- `@Packages -> Packages/`
-- `@ServerPackages -> ServerPackages/`
+### `ezpm serve`
 
-If you use a different source root, set it in `ezpm.toml`:
+1. Syncs `rokit.toml` tool pins that lag behind ezpm's bundled versions, then runs `rokit install`
+2. Generates the build Rojo project (`build.project.json`) from your template, remapping source paths to the DarkLua output directory
+3. Cleans the build directory
+4. Generates a Rojo sourcemap from your source project
+5. Fixes require paths across the source tree
+6. Runs DarkLua to turn `@alias/` requires into Roblox paths
+7. Copies `init.meta.json` files into the build tree
+8. Starts Rojo live sync against the generated project
+9. Watches `src/` (`.lua`, `.luau`, `init.meta.json`, `*.model.json`) and re-runs steps 4–7 on change
 
-```toml
-[paths]
-src = "game"
-darklua_build = "darklua_build"
+Port comes from `-p`, then `[serve] port`, then `34872`. If it's already taken, ezpm reports it up front instead of letting Rojo fail.
 
-[aliases]
-Client = "game/client/"
-Server = "game/server/"
-Shared = "game/shared/"
-Packages = "Packages/"
-ServerPackages = "ServerPackages/"
-```
+### `ezpm check`
 
-Then run:
+Static analysis of your require graph:
+
+- **Circular dependencies** — A → B → C → A
+- **Architecture violations** — client importing server, per your `[check.forbid]` rules
+- **Unused modules** — nothing requires them
 
 ```bash
-ezpm alias sync
+ezpm check          # human-readable
+ezpm check --json   # for CI
 ```
 
-to regenerate `.darklua.json` and `.luaurc` from your aliases.
+### `ezpm fix-requires`
 
-## What You Get
-
-### `ezpm serve` — Your entire dev loop, one command
-
-1. Generates `build.project.json` from your Rojo project (remaps source paths to the DarkLua output directory)
-2. Generates a Rojo sourcemap
-3. Fixes require paths across your source tree
-4. Runs DarkLua to transform `@alias` requires into Roblox-compatible paths
-5. Starts Rojo live sync to Studio
-6. Watches for file changes and re-runs steps 2-4 automatically
-
-### `ezpm check` — Catch problems before they hit production
-
-Static analysis of your `require()` graph with zero config:
-
-- **Circular dependencies** — A -> B -> C -> A? Caught.
-- **Architecture violations** — Client importing Server? Blocked.
-- **Unused modules** — Dead code that nobody requires? Found.
-
-```bash
-ezpm check          # human-readable output
-ezpm check --json   # pipe into CI
-```
-
-### `ezpm fix-requires` — Clean up your codebase in one shot
-
-Scans every file and rewrites `require()` calls to use your `@alias/` paths. No more `require(game.ReplicatedStorage.Shared.Utils.Signal)` — just `require("@Shared/Utils/Signal")`.
-
-If `luau-lsp` 1.65.0+ inserts `@game/...` string requires during auto-import, `ezpm fix-requires` and the require-fixing step inside `ezpm serve` normalize alias-equivalent paths back to your configured `@alias/...` form. Unmatched or intentional `@game` requires are left alone.
-
-### Everything else
-
-```
-ezpm install     Rokit + Wally packages + type generation
-ezpm setup-wally-packages   Reinstall Wally deps + regenerate sourcemap/types
-ezpm lint        Selene + StyLua --check
-ezpm format      StyLua format
-ezpm format --check   Check formatting only (CI-friendly)
-ezpm alias       Add, remove, list, or sync path aliases
-ezpm docs        Moonwave documentation server
-ezpm             Interactive menu (arrow-key navigation)
-```
-
-Global flags (available on every command):
-
-```bash
---verbose         detailed output
---quiet           suppress non-error output
---color <auto|always|never>
-```
+Rewrites `require()` calls to your `@alias/` paths — `require(game.ReplicatedStorage.Shared.Utils.Signal)` becomes `require("@Shared/Utils/Signal")`. When `luau-lsp` 1.65.0+ auto-imports insert `@game/...` string requires, alias-equivalent paths are normalized back to `@alias/...`; unmatched or intentional `@game` requires are left alone. Relative (`./`, `../`) requires are unsupported and left untouched.
 
 ## Configuration
 
-All config lives in `ezpm.toml`. Sensible defaults out of the box — only edit what you need.
+Everything lives in `ezpm.toml`. Only `[aliases]` really matters; the rest has defaults.
 
 ```toml
 [project]
@@ -166,9 +104,9 @@ darklua_build = "darklua_build"
 
 [display]
 file_changes = true
-docs_enabled = false
+docs_enabled = false      # must be true for `ezpm docs`
 logs_enabled = true
-check_updates = true
+check_updates = true      # or set EZPM_NO_UPDATE_CHECK=1
 
 [aliases]
 Client = "src/client/"
@@ -182,18 +120,37 @@ port = 34872
 require_fix_mode = "hybrid"   # strict | hybrid | fast
 ```
 
-`docs_enabled` must be `true` for `ezpm docs` to launch Moonwave.
-Set `EZPM_NO_UPDATE_CHECK=1` to disable GitHub release checks.
+Aliases drive `.darklua.json` and `.luaurc`. After editing them by hand, run `ezpm alias sync` to regenerate both.
 
-**`require_fix_mode`** controls how aggressively the file watcher rewrites requires:
+**`require_fix_mode`** — how aggressively the watcher rewrites requires:
 
-- **`strict`** — Full-tree fix on every change. Maximum correctness.
-- **`hybrid`** — Single-file fix on edits, full-tree fix on deletes/renames. Best default.
-- **`fast`** — Single-file fix only. Maximum speed for large projects.
+- **`strict`** — full-tree fix on every change. Maximum correctness.
+- **`hybrid`** — single-file on edits, full-tree on deletes/renames. Good default.
+- **`fast`** — single-file only. Fastest on large trees; may leave stale requires after structural changes.
 
-### DarkLua rules (optional)
+### `[rojo]` (optional)
 
-Add an optional `[darklua]` section to `ezpm.toml` to control the DarkLua pipeline. It maps **verbatim** to the generated `.darklua.json`. Omit it and ezpm uses the built-in defaults shown below:
+By default ezpm reads `default.project.json` and writes `build.project.json`, remapping `src` → `darklua_build`. Override any of that:
+
+```toml
+[rojo]
+project = "game.project.json"            # your hand-maintained template
+generated_project = "build.project.json" # what Rojo actually serves
+
+[[rojo.path_maps]]
+source = "src"
+build = "darklua_build"
+
+[[rojo.path_maps]]
+source = "vendor"
+build = "darklua_build/vendor"
+```
+
+Paths must be project-relative with no `..` traversal, and the generated project must differ from the template. `path_maps` replaces the default `src` → `darklua_build` mapping entirely, so include it if you still need it; longer source prefixes match first. `ezpm init` writes this section for you when it adopts an existing project.
+
+### `[darklua]` (optional)
+
+Omit it and ezpm uses the defaults below. Include it and it becomes the source of truth, written **verbatim** to `.darklua.json` — your rules replace the defaults rather than merging with them.
 
 ```toml
 [darklua]
@@ -212,26 +169,20 @@ process = [
 "**/*.model.json" = "copy"
 ```
 
-See the [DarkLua rules reference](https://darklua.com/docs/rules/).
+Notes ([rules reference](https://darklua.com/docs/rules/)):
 
-- **`convert_require`** rewrites your `@alias/...` requires into Roblox paths — keep it, or alias requires won't resolve (ezpm warns if it's missing).
-- **`make_assignment_local`** lowers the Luau [`const`](https://rfcs.luau.org/const-keyword.html) keyword to `local` so the build runs on Roblox.
-- The `loaders` entry for `**/*.model.json` copies Rojo model files unchanged so DarkLua 0.19 does not convert them into Lua modules.
+- **`convert_require`** rewrites `@alias/...` requires into Roblox paths. Keep it, or alias requires will not resolve — ezpm warns if it is missing. Your aliases are injected into its `current.sources` automatically, so you do not list them here.
+- **`make_assignment_local`** lowers Luau's [`const`](https://rfcs.luau.org/const-keyword.html) keyword to `local` so the build runs on Roblox.
+- The `**/*.model.json` loader copies Rojo model files unchanged instead of letting DarkLua 0.19 treat them as Lua modules.
 
-The `[darklua]` section is **optional**: omit it to use the defaults above, or add it to take full control — when present, it is the source of truth and is written verbatim (your rules replace the defaults, not merge with them). After editing, run `ezpm alias sync` to regenerate `.darklua.json`.
+Run `ezpm alias sync` after editing to regenerate `.darklua.json`.
 
-### Architecture rules (optional)
-
-Use `[check]` to control `ezpm check` behavior:
+### `[check]` (optional)
 
 ```toml
 [check]
-# Optional: paths in dependency graph to treat as roots for unused-module analysis.
-# If omitted, ezpm auto-detects src/<layer>/init.lua(u) entrypoints.
-entry_points = [
-	"src/client/init.luau",
-	"src/server/init.luau"
-]
+# Roots for unused-module analysis. Omitted: ezpm auto-detects src/<layer>/init.lua(u).
+entry_points = ["src/client/init.luau", "src/server/init.luau"]
 
 [check.layers]
 client = "src/client/"
@@ -242,42 +193,42 @@ shared = "src/shared/"
 from = "client"
 to = "server"
 reason = "Client must never import server modules"
-
-[[check.forbid]]
-from = "server"
-to = "client"
-reason = "Server must not import client-only UI code"
 ```
 
-Rules that matter:
-
-- `from` / `to` must match keys in `[check.layers]` exactly.
-- Layer matching is path-prefix based, so keep trailing `/` in layer paths.
+- `from` / `to` must match `[check.layers]` keys exactly.
+- Layer matching is path-prefix based — keep the trailing `/`.
 - Only cross-layer imports are checked; same-layer imports are always allowed.
-- If no `entry_points` and no `src/<layer>/init.lua(u)` files are found, unused-module detection treats all modules as reachable.
+- With no `entry_points` and no `src/<layer>/init.lua(u)`, every module counts as reachable.
 
 ## Toolchain
 
-ezpm integrates with the standard Roblox toolchain, managed via [Rokit](https://github.com/rojo-rbx/rokit):
+Managed through [Rokit](https://github.com/rojo-rbx/rokit). `ezpm serve` bumps any pin older than ezpm's tested version and reinstalls; newer pins are left alone.
 
-| Tool | Role |
-|---|---|
-| [Rojo](https://github.com/rojo-rbx/rojo) | Studio sync |
-| [DarkLua](https://github.com/seaofvoices/darklua) | Require transforms |
-| [Wally](https://github.com/UpliftGames/wally) | Package manager |
-| [Selene](https://github.com/Kampfkarren/selene) | Linter |
-| [StyLua](https://github.com/JohnnyMorganz/StyLua) | Formatter |
+| Tool | Role | Tested |
+|---|---|---|
+| [Rojo](https://github.com/rojo-rbx/rojo) | Studio sync | 7.7.0 |
+| [DarkLua](https://github.com/seaofvoices/darklua) | Require transforms | 0.19.0 |
+| [Wally](https://github.com/UpliftGames/wally) | Package manager | 0.3.2 |
+| [wally-package-types](https://github.com/JohnnyMorganz/wally-package-types) | Package type re-exports | 1.6.2 |
+| [Selene](https://github.com/Kampfkarren/selene) | Linter | 0.31.0 |
+| [StyLua](https://github.com/JohnnyMorganz/StyLua) | Formatter | 2.5.2 |
+
+`setup-wally-packages` wipes and reinstalls package directories, so it refuses to touch anything that is not a real top-level directory in the project root — no symlinks, no paths inside your source tree.
+
+## VS Code extension
+
+`vscode-ezpm/` wraps the CLI: serve start/stop/status, `ezpm check` results as inline diagnostics (cycles and rule violations as errors, unused modules as warnings), and every other command from the palette. Point it at a binary with `ezpm.binaryPath`, or leave it empty to use `PATH`. See [its README](vscode-ezpm/README.md).
 
 ## Limitations
 
 - Requires `@alias/` notation — no `./` or `../` relative requires
-- Requires `default.project.json` in the project root (run `ezpm init`)
-- DarkLua is a hard dependency for the build pipeline
-- v0.2 — config format may still evolve
+- Needs a Rojo project file in the project root (`default.project.json`, or one named under `[rojo]`)
+- DarkLua is a hard dependency of the build pipeline
+- v0.2 — the config format may still evolve
 
 ## Contributing
 
-Contributions welcome. Rust source is in `src/`, entrypoint is `src/main.rs`.
+Rust source in `src/`, entrypoint `src/main.rs`, tests in `tests/`. Run `cargo test` before opening a PR.
 
 ## License
 
