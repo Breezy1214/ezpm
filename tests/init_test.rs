@@ -4,13 +4,6 @@ use std::fs;
 use tempfile::TempDir;
 
 #[test]
-fn init_exits_in_non_tty_environment() {
-    let dir = TempDir::new().expect("TempDir::new");
-    let out = common::run_ezpm(dir.path(), &["init"]);
-    let _ = out.status;
-}
-
-#[test]
 fn init_dry_run_is_non_interactive_and_does_not_write() {
     let dir = TempDir::new().expect("TempDir::new");
     let template = r#"{

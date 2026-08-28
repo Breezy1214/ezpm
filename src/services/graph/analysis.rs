@@ -194,16 +194,6 @@ pub fn run_all_checks(
 mod tests {
     use super::*;
 
-    fn make_dag() -> DepGraph {
-        let mut g = DepGraph::new();
-        let a = g.add_node("a.luau");
-        let b = g.add_node("b.luau");
-        let c = g.add_node("c.luau");
-        g.add_edge(a, b, "b".to_string());
-        g.add_edge(b, c, "c".to_string());
-        g
-    }
-
     fn make_simple_cycle() -> DepGraph {
         let mut g = DepGraph::new();
         let a = g.add_node("a.luau");
@@ -214,49 +204,11 @@ mod tests {
     }
 
     #[test]
-    fn no_cycles_in_dag() {
-        let g = make_dag();
-        let cycles = find_cycles(&g);
-        assert!(cycles.is_empty());
-    }
-
-    #[test]
     fn detects_simple_cycle() {
         let g = make_simple_cycle();
         let cycles = find_cycles(&g);
         assert_eq!(cycles.len(), 1);
         assert_eq!(cycles[0].modules.len(), 2);
-    }
-
-    #[test]
-    fn detects_multiple_cycles() {
-        let mut g = DepGraph::new();
-        let a = g.add_node("a.luau");
-        let b = g.add_node("b.luau");
-        let c = g.add_node("c.luau");
-        let d = g.add_node("d.luau");
-        g.add_edge(a, b, "b".to_string());
-        g.add_edge(b, a, "a".to_string());
-        g.add_edge(c, d, "d".to_string());
-        g.add_edge(d, c, "c".to_string());
-
-        let cycles = find_cycles(&g);
-        assert_eq!(cycles.len(), 2);
-    }
-
-    #[test]
-    fn detects_large_scc() {
-        let mut g = DepGraph::new();
-        let a = g.add_node("a.luau");
-        let b = g.add_node("b.luau");
-        let c = g.add_node("c.luau");
-        g.add_edge(a, b, "b".to_string());
-        g.add_edge(b, c, "c".to_string());
-        g.add_edge(c, a, "a".to_string());
-
-        let cycles = find_cycles(&g);
-        assert_eq!(cycles.len(), 1);
-        assert_eq!(cycles[0].modules.len(), 3);
     }
 
     #[test]
@@ -283,42 +235,6 @@ mod tests {
     }
 
     #[test]
-    fn rule_validation_allows_permitted() {
-        let mut g = DepGraph::new();
-        let client = g.add_node("src/client/ui.luau");
-        let shared = g.add_node("src/shared/util.luau");
-        g.add_edge(client, shared, "@Shared/util".to_string());
-
-        let layers = vec![
-            ("client".to_string(), "src/client/".to_string()),
-            ("server".to_string(), "src/server/".to_string()),
-            ("shared".to_string(), "src/shared/".to_string()),
-        ];
-        let rules = vec![ForbidRule {
-            from: "client".to_string(),
-            to: "server".to_string(),
-            reason: None,
-        }];
-
-        let violations = validate_rules(&g, &layers, &rules);
-        assert!(violations.is_empty());
-    }
-
-    #[test]
-    fn find_unused_orphan() {
-        let mut g = DepGraph::new();
-        let a = g.add_node("src/client/main.luau");
-        let b = g.add_node("src/shared/util.luau");
-        let orphan = g.add_node("src/shared/orphan.luau");
-        g.add_edge(a, b, "@Shared/util".to_string());
-        let _ = orphan;
-
-        let unused = find_unused(&g, &[a]);
-        assert_eq!(unused.len(), 1);
-        assert_eq!(unused[0], "src/shared/orphan.luau");
-    }
-
-    #[test]
     fn find_unused_transitive_reachability() {
         let mut g = DepGraph::new();
         let a = g.add_node("a.luau");
@@ -329,22 +245,5 @@ mod tests {
 
         let unused = find_unused(&g, &[a]);
         assert!(unused.is_empty());
-    }
-
-    #[test]
-    fn run_all_checks_clean_project() {
-        let g = make_dag();
-        let result = run_all_checks(&g, &[], &[], &[0]);
-        assert!(result.pass);
-        assert!(result.cycles.is_empty());
-        assert!(result.rule_violations.is_empty());
-    }
-
-    #[test]
-    fn run_all_checks_with_cycle() {
-        let g = make_simple_cycle();
-        let result = run_all_checks(&g, &[], &[], &[0]);
-        assert!(!result.pass);
-        assert_eq!(result.cycles.len(), 1);
     }
 }

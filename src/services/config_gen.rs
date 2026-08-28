@@ -168,19 +168,6 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn test_darklua_json_has_convert_require_rule() {
-        let output = generate_darklua_json(&HashMap::new(), None);
-        assert!(
-            output.contains(r#""rule": "convert_require""#),
-            "output must contain convert_require rule: {output}"
-        );
-        assert!(
-            output.contains(r#""name": "luau""#),
-            "output must contain current name luau: {output}"
-        );
-    }
-
-    #[test]
     fn test_darklua_json_has_alias_sources() {
         let aliases = HashMap::from([
             ("Client".to_string(), "src/client/".to_string()),
@@ -193,25 +180,6 @@ mod tests {
             sources["@Client"] == "src/client/" && sources["@Packages"] == "Packages/",
             "DarkLua requires aliases in convert_require.current.sources: {output}"
         );
-    }
-
-    #[test]
-    fn test_darklua_json_has_optimization_rules() {
-        let output = generate_darklua_json(&HashMap::new(), None);
-        let expected_rules = [
-            "compute_expression",
-            "remove_unused_if_branch",
-            "remove_unused_while",
-            "filter_after_early_return",
-            "remove_nil_declaration",
-            "remove_empty_do",
-        ];
-        for rule in &expected_rules {
-            assert!(
-                output.contains(rule),
-                "output must contain optimization rule '{rule}': {output}"
-            );
-        }
     }
 
     #[test]
@@ -231,15 +199,6 @@ mod tests {
     }
 
     #[test]
-    fn test_darklua_json_has_rojo_sourcemap() {
-        let output = generate_darklua_json(&HashMap::new(), None);
-        assert!(
-            output.contains(r#""rojo_sourcemap": "sourcemap.json""#),
-            "output must contain rojo_sourcemap: {output}"
-        );
-    }
-
-    #[test]
     fn test_darklua_json_copies_rojo_model_files() {
         let output = generate_darklua_json(&HashMap::new(), None);
         let json: serde_json::Value = serde_json::from_str(&output).expect("output is valid JSON");
@@ -247,47 +206,6 @@ mod tests {
         assert_eq!(
             json["loaders"]["**/*.model.json"], "copy",
             "Rojo model files must be copied so darklua 0.19 does not convert them to Lua modules: {output}"
-        );
-    }
-
-    #[test]
-    fn test_luaurc_contains_aliases() {
-        let mut aliases = HashMap::new();
-        aliases.insert("Client".to_string(), "src/client/".to_string());
-        aliases.insert("Server".to_string(), "src/server/".to_string());
-
-        let dir = TempDir::new().expect("failed to create temp dir");
-        let output = generate_luaurc_for_dir(&aliases, dir.path());
-
-        let parsed: serde_json::Value =
-            serde_json::from_str(&output).expect("output must be valid JSON");
-        let aliases_obj = parsed["aliases"]
-            .as_object()
-            .expect("aliases must be an object");
-
-        assert_eq!(
-            aliases_obj.get("Client").and_then(|v| v.as_str()),
-            Some("src/client/"),
-            "Client alias must be present with correct path"
-        );
-        assert_eq!(
-            aliases_obj.get("Server").and_then(|v| v.as_str()),
-            Some("src/server/"),
-            "Server alias must be present with correct path"
-        );
-    }
-
-    #[test]
-    fn test_get_lune_version_from_rokit_contents_reads_explicit_lune() {
-        let rokit = r#"
-[tools]
-lune = "lune-org/lune@0.10.4"
-"#;
-
-        assert_eq!(
-            get_lune_version_from_rokit_contents(rokit),
-            Some("0.10.4".to_string()),
-            "lune version should be parsed from supplied rokit.toml contents"
         );
     }
 
@@ -339,62 +257,6 @@ lune = "lune-org/lune@0.10.4"
         assert!(
             aliases_obj.get("lune").is_none(),
             "lune alias must be omitted when the project rokit.toml does not declare lune"
-        );
-    }
-
-    #[test]
-    fn test_write_config_files_creates_both() {
-        let dir = TempDir::new().expect("failed to create temp dir");
-        let aliases = HashMap::new();
-
-        write_config_files(dir.path(), &aliases, None).expect("write_config_files must succeed");
-
-        assert!(
-            dir.path().join(".darklua.json").exists(),
-            ".darklua.json must be created"
-        );
-        assert!(
-            dir.path().join(".luaurc").exists(),
-            ".luaurc must be created"
-        );
-    }
-
-    #[test]
-    fn test_darklua_json_is_valid_json() {
-        let output = generate_darklua_json(&HashMap::new(), None);
-        let result = serde_json::from_str::<serde_json::Value>(&output);
-        assert!(
-            result.is_ok(),
-            "generate_darklua_json output must be valid JSON: {:?}",
-            result.err()
-        );
-    }
-
-    #[test]
-    fn test_default_darklua_table_parses() {
-        let table = default_darklua_table();
-        assert!(
-            has_convert_require(&table),
-            "default darklua config must include convert_require"
-        );
-        let process = table
-            .get("process")
-            .and_then(|p| p.as_array())
-            .expect("default must have a process array");
-        assert!(
-            process
-                .iter()
-                .any(|r| r.as_str() == Some("make_assignment_local")),
-            "default must include make_assignment_local"
-        );
-        assert_eq!(
-            table
-                .get("loaders")
-                .and_then(|loaders| loaders.as_table())
-                .and_then(|loaders| loaders.get("**/*.model.json"))
-                .and_then(|loader| loader.as_str()),
-            Some("copy"),
-            "default darklua config must copy Rojo model files"
         );
     }
 

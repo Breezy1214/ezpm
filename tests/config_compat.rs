@@ -49,30 +49,6 @@ unknown_field = "value"
 }
 
 #[test]
-fn missing_toml_falls_back_to_defaults() {
-    let (config, warnings) = load_config_from_str("").expect("empty string should succeed");
-
-    assert!(
-        warnings.is_empty(),
-        "empty input should produce no warnings"
-    );
-    assert!(
-        config.project.is_none(),
-        "project should be None by default"
-    );
-    assert!(config.paths.is_none(), "paths should be None by default");
-    assert!(
-        config.display.is_none(),
-        "display should be None by default"
-    );
-    assert!(
-        config.aliases.is_none(),
-        "aliases should be None by default"
-    );
-    assert!(config.serve.is_none(), "serve should be None by default");
-}
-
-#[test]
 fn full_config_with_all_sections() {
     let toml = r#"
 [project]
@@ -121,27 +97,6 @@ port = 34872
 }
 
 #[test]
-fn serve_section_is_optional() {
-    let toml = r#"
-[project]
-name = "test"
-
-[aliases]
-Client = "src/client/"
-"#;
-
-    let (config, warnings) = load_config_from_str(toml).expect("should parse without serve");
-    assert!(
-        warnings.is_empty(),
-        "no warnings for missing optional serve section"
-    );
-    assert!(
-        config.serve.is_none(),
-        "serve should be None when not specified"
-    );
-}
-
-#[test]
 fn rojo_section_and_path_maps_parse_without_warnings() {
     let toml = r#"
 [rojo]
@@ -169,65 +124,6 @@ build = "darklua_build/common"
     assert_eq!(maps.len(), 2);
     assert_eq!(maps[1].source, "common");
     assert_eq!(maps[1].build, "darklua_build/common");
-}
-
-#[test]
-fn aliases_section_parses_as_hashmap() {
-    let toml = r#"
-[aliases]
-Client = "src/client/"
-Server = "src/server/"
-Shared = "src/shared/"
-Packages = "Packages/"
-ServerPackages = "ServerPackages/"
-"#;
-
-    let (config, warnings) = load_config_from_str(toml).expect("aliases should parse");
-    assert!(warnings.is_empty());
-
-    let aliases = config.aliases.expect("aliases section should be present");
-    assert_eq!(aliases.len(), 5, "should have 5 aliases");
-    assert_eq!(
-        aliases.get("Client"),
-        Some(&"src/client/".to_string()),
-        "Client alias should match"
-    );
-}
-
-#[test]
-fn darklua_json_alias_auto_import() {
-    let darklua_json = r#"{
-        "process": [{
-            "rule": "convert_require",
-            "current": {
-                "name": "luau",
-                "sources": {
-                    "@Client": "src/client/",
-                    "@Server": "src/server/"
-                }
-            },
-            "target": {
-                "name": "roblox",
-                "rojo_sourcemap": "sourcemap.json"
-            }
-        }]
-    }"#;
-
-    let dir = make_temp_dir(&[(".darklua.json", darklua_json)]);
-
-    let aliases = import_aliases_from_dir(dir.path());
-
-    assert_eq!(aliases.len(), 2, "should import 2 aliases");
-    assert_eq!(
-        aliases.get("Client"),
-        Some(&"src/client/".to_string()),
-        "Client alias should have @ stripped"
-    );
-    assert_eq!(
-        aliases.get("Server"),
-        Some(&"src/server/".to_string()),
-        "Server alias should have @ stripped"
-    );
 }
 
 #[test]

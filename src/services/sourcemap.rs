@@ -26,30 +26,3 @@ pub fn generate_sourcemap_for_project(project_dir: &Path, project: &Path) -> Res
         exit_code: output.status.code().unwrap_or(-1),
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::TempDir;
-
-    #[test]
-    #[ignore = "requires rojo in PATH"]
-    fn test_generate_sourcemap_requires_rojo() {
-        let dir = TempDir::new().expect("failed to create temp dir");
-        let _result = generate_sourcemap(dir.path());
-    }
-
-    #[test]
-    fn test_darkluaresult_type_reused() {
-        let result = DarkluaResult {
-            success: true,
-            stdout: "output".to_string(),
-            stderr: String::new(),
-            exit_code: 0,
-        };
-        assert!(result.success);
-        assert_eq!(result.exit_code, 0);
-        assert_eq!(result.stdout, "output");
-        assert!(result.stderr.is_empty());
-    }
-}

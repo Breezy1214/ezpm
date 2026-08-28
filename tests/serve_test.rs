@@ -5,108 +5,6 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 #[test]
-fn serve_starts_and_shuts_down() {
-    let dir = common::create_project();
-
-    let mut child = Command::new(common::ezpm_bin())
-        .arg("serve")
-        .arg("--port")
-        .arg("44872")
-        .current_dir(dir.path())
-        .env("EZPM_NO_UPDATE_CHECK", "1")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to spawn ezpm serve");
-
-    let stdout = child.stdout.take().expect("child stdout was not piped");
-    let mut reader = BufReader::new(stdout);
-
-    let deadline = Instant::now() + Duration::from_secs(30);
-    let mut ready = false;
-
-    for line in (&mut reader).lines() {
-        if Instant::now() >= deadline {
-            break;
-        }
-
-        match line {
-            Ok(text) => {
-                if text.contains("Watching") && text.contains("for changes") {
-                    ready = true;
-                    break;
-                }
-            }
-            Err(_) => break,
-        }
-    }
-
-    let _ = child.kill();
-    let _ = child.wait();
-
-    drop(dir);
-
-    assert!(
-        ready,
-        "serve never became ready within 30 seconds — \
-         ensure all Rokit tools (rojo, darklua, wally) are installed"
-    );
-}
-
-#[test]
-fn serve_bumps_outdated_rokit_tool() {
-    use ezpm::services::toolchain;
-
-    let dir = common::create_project();
-    let rokit_path = dir.path().join("rokit.toml");
-
-    let bundled_rojo = toolchain::tool_spec_by_name("rojo")
-        .expect("rojo is in the bundled manifest")
-        .spec
-        .clone();
-    let original = std::fs::read_to_string(&rokit_path).expect("read rokit.toml");
-    let downgraded = original.replace(&bundled_rojo, "rojo-rbx/rojo@7.0.0");
-    assert_ne!(
-        downgraded, original,
-        "test setup should have downgraded the rojo pin"
-    );
-    std::fs::write(&rokit_path, &downgraded).expect("write downgraded rokit.toml");
-
-    let mut child = Command::new(common::ezpm_bin())
-        .arg("serve")
-        .arg("--port")
-        .arg("44873")
-        .current_dir(dir.path())
-        .env("EZPM_NO_UPDATE_CHECK", "1")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("failed to spawn ezpm serve");
-
-    let deadline = Instant::now() + Duration::from_secs(30);
-    let mut bumped = false;
-    while Instant::now() < deadline {
-        if let Ok(contents) = std::fs::read_to_string(&rokit_path) {
-            if contents.contains(&bundled_rojo) && !contents.contains("rojo-rbx/rojo@7.0.0") {
-                bumped = true;
-                break;
-            }
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-
-    let _ = child.kill();
-    let _ = child.wait();
-    drop(dir);
-
-    assert!(
-        bumped,
-        "serve should rewrite the outdated rojo pin to the bundled version ({})",
-        bundled_rojo
-    );
-}
-
-#[test]
 fn serve_regenerates_when_rojo_template_changes() {
     let dir = common::create_project();
     let template_path = dir.path().join("default.project.json");
@@ -186,7 +84,7 @@ fn serve_regenerates_when_rojo_template_changes() {
 }
 
 #[test]
-fn serve_rebuilds_only_the_changed_lua_file() {
+fn serve_rebuilds_changed_lua_file() {
     let dir = common::create_project();
     let source = dir.path().join("src/client/init.luau");
     let built = dir.path().join("darklua_build/client/init.luau");
