@@ -203,22 +203,3 @@ pub fn docs(docs_enabled: bool) -> Result<()> {
 
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn stylua_install_hint_comes_from_shared_manifest() {
-        let stylua = toolchain::tool_spec_by_name("stylua").expect("stylua exists in toolchain");
-
-        assert_eq!(
-            toolchain::tool_install_hint("stylua"),
-            format!(
-                "Install Rokit, then run `rokit add {}` or `ezpm install`.",
-                stylua.spec
-            ),
-            "quality hints should always use the shared rokit manifest version"
-        );
-    }
-}

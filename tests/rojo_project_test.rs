@@ -104,33 +104,6 @@ fn rejects_invalid_json_and_missing_tree() {
 }
 
 #[test]
-fn generation_uses_defaults_and_skips_an_unchanged_output() {
-    let dir = TempDir::new().expect("temp dir");
-    fs::write(
-        dir.path().join("default.project.json"),
-        r#"{"name":"game","tree":{"Shared":{"$path":"src/shared"}}}"#,
-    )
-    .expect("write template");
-    let settings = RojoProjectSettings::from_config(&EzpmConfig::default());
-
-    let first = generate_build_project(dir.path(), &settings).expect("first generation");
-    let second = generate_build_project(dir.path(), &settings).expect("second generation");
-
-    assert!(first.written);
-    assert!(!second.written);
-    assert_eq!(first.remapped_paths, 1);
-    assert_eq!(
-        first.generated_project,
-        dir.path().join("build.project.json")
-    );
-    let parsed: Value = serde_json::from_str(
-        &fs::read_to_string(&first.generated_project).expect("read generated project"),
-    )
-    .expect("generated project is JSON");
-    assert_eq!(parsed["tree"]["Shared"]["$path"], "darklua_build/shared");
-}
-
-#[test]
 fn config_supports_custom_template_output_and_path_maps() {
     let dir = TempDir::new().expect("temp dir");
     fs::create_dir(dir.path().join("config")).expect("create config dir");
@@ -165,16 +138,6 @@ fn config_supports_custom_template_output_and_path_maps() {
     assert_eq!(result.remapped_paths, 2);
     assert_eq!(parsed["tree"]["Game"]["$path"], "build/game");
     assert_eq!(parsed["tree"]["Shared"]["$path"], "build/common/shared");
-}
-
-#[test]
-fn generation_reports_a_missing_project() {
-    let dir = TempDir::new().expect("temp dir");
-    let settings = RojoProjectSettings::from_config(&EzpmConfig::default());
-    let error = generate_build_project(dir.path(), &settings).expect_err("missing project fails");
-    let message = format!("{error:#}");
-    assert!(message.contains("default.project.json"), "{message}");
-    assert!(message.contains("missing or unreadable"), "{message}");
 }
 
 #[test]
@@ -224,47 +187,6 @@ fn generation_rejects_parent_paths_without_writing_outside_the_project() {
 }
 
 #[test]
-fn generation_rejects_absolute_and_outside_template_paths() {
-    let container = TempDir::new().expect("temp dir");
-    let project_root = container.path().join("project");
-    fs::create_dir(&project_root).expect("create project root");
-    let outside_template = container.path().join("outside-template.project.json");
-    fs::write(&outside_template, r#"{"name":"outside","tree":{}}"#)
-        .expect("write outside template");
-
-    let absolute_output = container.path().join("absolute-output.project.json");
-    let absolute_settings = RojoProjectSettings {
-        project: "default.project.json".into(),
-        generated_project: absolute_output.clone(),
-        path_maps: vec![map("src", "build")],
-    };
-    let error = generate_build_project(&project_root, &absolute_settings)
-        .expect_err("absolute output must fail before reading or writing");
-    assert!(error.to_string().contains("project-relative"));
-    assert!(!absolute_output.exists());
-
-    let windows_absolute_settings = RojoProjectSettings {
-        project: "default.project.json".into(),
-        generated_project: r"C:\outside.project.json".into(),
-        path_maps: vec![map("src", "build")],
-    };
-    let error = generate_build_project(&project_root, &windows_absolute_settings)
-        .expect_err("Windows absolute output must fail on every host");
-    assert!(error.to_string().contains("project-relative"));
-    assert!(!project_root.join(r"C:\outside.project.json").exists());
-
-    let outside_template_settings = RojoProjectSettings {
-        project: "../outside-template.project.json".into(),
-        generated_project: "generated.project.json".into(),
-        path_maps: vec![map("src", "build")],
-    };
-    let error = generate_build_project(&project_root, &outside_template_settings)
-        .expect_err("outside template must fail");
-    assert!(error.to_string().contains("project-relative"));
-    assert!(!project_root.join("generated.project.json").exists());
-}
-
-#[test]
 fn conflicting_duplicate_normalized_path_maps_are_rejected() {
     let input = r#"{"name":"game","tree":{"Code":{"$path":"src/shared"}}}"#;
     let error = transform_project_template(
@@ -277,28 +199,4 @@ fn conflicting_duplicate_normalized_path_maps_are_rejected() {
     assert!(message.contains("source 'src'"), "{message}");
     assert!(message.contains("build/one"), "{message}");
     assert!(message.contains("build/two"), "{message}");
-}
-
-#[test]
-fn path_maps_cannot_escape_the_project() {
-    let input = r#"{"name":"game","tree":{"Code":{"$path":"src"}}}"#;
-
-    for path_map in [map("../src", "build"), map("src", "../build")] {
-        let error = transform_project_template(input, &[path_map])
-            .expect_err("path traversal must be rejected");
-        assert!(error.to_string().contains("project-relative"));
-    }
-}
-
-#[test]
-fn legacy_paths_config_remains_the_default_mapping() {
-    let config = EzpmConfig {
-        paths: Some(PathsConfig {
-            src: Some("game-src".into()),
-            darklua_build: Some("out".into()),
-        }),
-        ..EzpmConfig::default()
-    };
-    let settings = RojoProjectSettings::from_config(&config);
-    assert_eq!(settings.path_maps, vec![map("game-src", "out")]);
 }

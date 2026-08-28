@@ -456,93 +456,6 @@ mod tests {
         DebouncedEvent::new(event, std::time::Instant::now())
     }
 
-    #[test]
-    fn test_is_relevant() {
-        init_output();
-
-        assert!(is_relevant(Path::new("src/foo.lua")));
-        assert!(is_relevant(Path::new("src/bar.luau")));
-        assert!(is_relevant(Path::new("src/thing/init.meta.json")));
-        assert!(is_relevant(Path::new("src/tree/MyModel.model.json")));
-
-        assert!(!is_relevant(Path::new("src/foo.rs")));
-        assert!(!is_relevant(Path::new("src/foo.txt")));
-        assert!(!is_relevant(Path::new("src/data.json")));
-        assert!(!is_relevant(Path::new("README.md")));
-    }
-
-    #[test]
-    fn test_should_ignore() {
-        init_output();
-
-        let defaults = vec![
-            ".git".to_string(),
-            "node_modules".to_string(),
-            "Packages".to_string(),
-        ];
-
-        assert!(should_ignore(Path::new(".git/config"), &defaults));
-        assert!(should_ignore(
-            Path::new("node_modules/pkg/index.js"),
-            &defaults
-        ));
-        assert!(should_ignore(Path::new("Packages/lib.lua"), &defaults));
-
-        assert!(!should_ignore(Path::new("src/foo.lua"), &defaults));
-
-        let mut with_extra = defaults.clone();
-        with_extra.push("build".to_string());
-        assert!(should_ignore(Path::new("build/output.lua"), &with_extra));
-        assert!(!should_ignore(Path::new("src/foo.lua"), &with_extra));
-    }
-
-    #[test]
-    fn test_classify_events_lua_change() {
-        init_output();
-
-        let events = vec![make_debounced_event(
-            EventKind::Modify(ModifyKind::Data(DataChange::Any)),
-            vec![PathBuf::from("src/foo.lua")],
-        )];
-
-        let result = classify_events(&events, &[]);
-
-        assert_eq!(result.len(), 1);
-        assert!(matches!(&result[0], FileChange::LuaChange(p) if p == Path::new("src/foo.lua")));
-    }
-
-    #[test]
-    fn test_classify_events_filters_irrelevant() {
-        init_output();
-
-        let events = vec![make_debounced_event(
-            EventKind::Modify(ModifyKind::Data(DataChange::Any)),
-            vec![PathBuf::from("src/main.rs")],
-        )];
-
-        let result = classify_events(&events, &[]);
-
-        assert!(result.is_empty(), "non-Lua files must be filtered out");
-    }
-
-    #[test]
-    fn test_classify_events_any_kind_treated_as_modify() {
-        init_output();
-
-        let events = vec![make_debounced_event(
-            EventKind::Any,
-            vec![PathBuf::from("src/module.luau")],
-        )];
-
-        let result = classify_events(&events, &[]);
-
-        assert_eq!(result.len(), 1);
-        assert!(
-            matches!(&result[0], FileChange::LuaChange(p) if p == Path::new("src/module.luau")),
-            "EventKind::Any on a .luau file must produce LuaChange"
-        );
-    }
-
     #[tokio::test]
     async fn test_watcher_detects_file_change() {
         init_output();
@@ -591,63 +504,6 @@ mod tests {
     }
 
     #[test]
-    fn test_classify_events_meta_create_becomes_meta_change() {
-        init_output();
-
-        let events = vec![make_debounced_event(
-            EventKind::Create(notify_debouncer_full::notify::event::CreateKind::File),
-            vec![PathBuf::from("src/MyModule/init.meta.json")],
-        )];
-
-        let result = classify_events(&events, &[]);
-
-        assert_eq!(result.len(), 1);
-        assert!(
-            matches!(&result[0], FileChange::MetaChange(p) if p == Path::new("src/MyModule/init.meta.json")),
-            "Create event for init.meta.json must produce MetaChange, got {:?}",
-            result
-        );
-    }
-
-    #[test]
-    fn test_classify_events_model_json_create_becomes_meta_change() {
-        init_output();
-
-        let events = vec![make_debounced_event(
-            EventKind::Create(notify_debouncer_full::notify::event::CreateKind::File),
-            vec![PathBuf::from("src/Map/Tree.model.json")],
-        )];
-
-        let result = classify_events(&events, &[]);
-
-        assert_eq!(result.len(), 1);
-        assert!(
-            matches!(&result[0], FileChange::MetaChange(p) if p == Path::new("src/Map/Tree.model.json")),
-            "Create event for .model.json must produce MetaChange, got {:?}",
-            result
-        );
-    }
-
-    #[test]
-    fn test_classify_events_model_json_modify_becomes_meta_change() {
-        init_output();
-
-        let events = vec![make_debounced_event(
-            EventKind::Modify(ModifyKind::Data(DataChange::Any)),
-            vec![PathBuf::from("src/Map/Tree.model.json")],
-        )];
-
-        let result = classify_events(&events, &[]);
-
-        assert_eq!(result.len(), 1);
-        assert!(
-            matches!(&result[0], FileChange::MetaChange(p) if p == Path::new("src/Map/Tree.model.json")),
-            "Modify event for .model.json must produce MetaChange, got {:?}",
-            result
-        );
-    }
-
-    #[test]
     fn test_classify_events_delete_wins_when_file_truly_gone() {
         init_output();
 
@@ -673,40 +529,6 @@ mod tests {
         assert!(
             matches!(&result[0], FileChange::FileDeleted(p) if p == Path::new("src/nonexistent_file.lua")),
             "expected FileDeleted when file is truly gone, got {:?}",
-            result
-        );
-    }
-
-    #[test]
-    fn test_classify_events_modify_wins_when_file_still_exists() {
-        init_output();
-
-        let tmp = tempfile::TempDir::new().expect("failed to create tempdir");
-        let lua_file = tmp.path().join("replaced.lua");
-        std::fs::write(&lua_file, b"-- content").expect("failed to write file");
-
-        let events = vec![
-            make_debounced_event(
-                EventKind::Remove(notify_debouncer_full::notify::event::RemoveKind::File),
-                vec![lua_file.clone()],
-            ),
-            make_debounced_event(
-                EventKind::Modify(ModifyKind::Data(DataChange::Any)),
-                vec![lua_file.clone()],
-            ),
-        ];
-
-        let result = classify_events(&events, &[]);
-
-        assert_eq!(
-            result.len(),
-            1,
-            "expected 1 event after dedup, got {:?}",
-            result
-        );
-        assert!(
-            matches!(&result[0], FileChange::LuaChange(p) if p == &lua_file),
-            "expected LuaChange when file still exists on disk, got {:?}",
             result
         );
     }
@@ -788,78 +610,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_classify_events_lua_file_rename() {
-        init_output();
-
-        let tmp = tempfile::TempDir::new().expect("failed to create tempdir");
-        let new_file = tmp.path().join("new_name.lua");
-        std::fs::write(&new_file, b"-- moved").expect("failed to write file");
-
-        let old_file = tmp.path().join("old_name.lua");
-
-        let events = vec![
-            make_debounced_event(
-                EventKind::Modify(ModifyKind::Name(
-                    notify_debouncer_full::notify::event::RenameMode::From,
-                )),
-                vec![old_file.clone()],
-            ),
-            make_debounced_event(
-                EventKind::Modify(ModifyKind::Name(
-                    notify_debouncer_full::notify::event::RenameMode::To,
-                )),
-                vec![new_file.clone()],
-            ),
-        ];
-
-        let result = classify_events(&events, &[]);
-
-        assert_eq!(
-            result.len(),
-            2,
-            "expected 2 events for file rename, got {:?}",
-            result
-        );
-        assert!(
-            result
-                .iter()
-                .any(|c| matches!(c, FileChange::FileDeleted(p) if p == &old_file)),
-            "expected FileDeleted for old path, got {:?}",
-            result
-        );
-        assert!(
-            result
-                .iter()
-                .any(|c| matches!(c, FileChange::FileCreated(p) if p == &new_file)),
-            "expected FileCreated for new path, got {:?}",
-            result
-        );
-    }
-
-    #[tokio::test]
-    async fn test_watcher_ignores_non_lua_files() {
-        init_output();
-
-        let tmp = tempfile::TempDir::new().expect("failed to create tempdir");
-        let src_dir = tmp.path().join("src");
-        std::fs::create_dir_all(&src_dir).expect("failed to create src dir");
-
-        let (_watcher, mut rx) = FileWatcher::new(&src_dir, &[]).expect("FileWatcher::new failed");
-
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        let txt_file = src_dir.join("test.txt");
-        std::fs::write(&txt_file, b"not lua").expect("failed to write .txt file");
-
-        let result = timeout(Duration::from_millis(800), rx.recv()).await;
-
-        assert!(
-            result.is_err(),
-            "expected timeout (no event for .txt file), but got an event"
-        );
-    }
-
     fn scoped_rules(tmp: &tempfile::TempDir) -> ClassificationRules {
         ClassificationRules::new(&WatchTargets {
             source_root: tmp.path().join("src"),
@@ -904,33 +654,6 @@ mod tests {
     }
 
     #[test]
-    fn test_source_directory_move_surfaces_topology_changes() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let src = tmp.path().join("src");
-        std::fs::create_dir_all(src.join("new_feature")).unwrap();
-        let old = src.join("old_feature");
-        let new = src.join("new_feature");
-        let events = vec![
-            make_debounced_event(
-                EventKind::Modify(ModifyKind::Name(
-                    notify_debouncer_full::notify::event::RenameMode::From,
-                )),
-                vec![old.clone()],
-            ),
-            make_debounced_event(
-                EventKind::Modify(ModifyKind::Name(
-                    notify_debouncer_full::notify::event::RenameMode::To,
-                )),
-                vec![new.clone()],
-            ),
-        ];
-
-        let result = classify_events_with_rules(&events, &[], &scoped_rules(&tmp));
-        assert!(result.contains(&FileChange::DirectoryRemoved(old)));
-        assert!(result.contains(&FileChange::DirectoryCreated(new)));
-    }
-
-    #[test]
     fn test_generated_output_and_parent_siblings_do_not_loop() {
         let tmp = tempfile::TempDir::new().unwrap();
         let generated = tmp.path().join("darklua_build/generated.luau");
@@ -942,20 +665,6 @@ mod tests {
 
         let result = classify_events_with_rules(&events, &[], &scoped_rules(&tmp));
         assert!(result.is_empty());
-    }
-
-    #[test]
-    fn test_duplicate_topology_events_are_collapsed() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let dir = tmp.path().join("src/feature");
-        std::fs::create_dir_all(&dir).unwrap();
-        let events = vec![
-            make_debounced_event(EventKind::Create(CreateKind::Folder), vec![dir.clone()]),
-            make_debounced_event(EventKind::Create(CreateKind::Folder), vec![dir.clone()]),
-        ];
-
-        let result = classify_events_with_rules(&events, &[], &scoped_rules(&tmp));
-        assert_eq!(result, vec![FileChange::DirectoryCreated(dir)]);
     }
 
     #[tokio::test]

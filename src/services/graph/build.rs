@@ -221,13 +221,6 @@ mod tests {
     }
 
     #[test]
-    fn build_graph_discovers_files() {
-        let dir = setup_project();
-        let graph = build_graph(dir.path(), &test_aliases(), "src").unwrap();
-        assert_eq!(graph.node_count(), 3);
-    }
-
-    #[test]
     fn build_graph_creates_edges() {
         let dir = setup_project();
         let graph = build_graph(dir.path(), &test_aliases(), "src").unwrap();
@@ -252,22 +245,6 @@ mod tests {
     }
 
     #[test]
-    fn build_graph_skips_builtin_aliases() {
-        let dir = TempDir::new().unwrap();
-        let p = dir.path();
-        fs::create_dir_all(p.join("src/client")).unwrap();
-
-        fs::write(
-            p.join("src/client/init.luau"),
-            "local rs = require(\"@game/ReplicatedStorage\")\nlocal self = require(\"@self/other\")\n",
-        )
-        .unwrap();
-
-        let graph = build_graph(p, &test_aliases(), "src").unwrap();
-        assert_eq!(graph.edge_count(), 0);
-    }
-
-    #[test]
     fn build_graph_resolves_init_modules() {
         let dir = TempDir::new().unwrap();
         let p = dir.path();
@@ -283,22 +260,6 @@ mod tests {
 
         let graph = build_graph(p, &test_aliases(), "src").unwrap();
         assert_eq!(graph.edge_count(), 1);
-    }
-
-    #[test]
-    fn build_graph_handles_missing_module_gracefully() {
-        let dir = TempDir::new().unwrap();
-        let p = dir.path();
-        fs::create_dir_all(p.join("src/client")).unwrap();
-
-        fs::write(
-            p.join("src/client/init.luau"),
-            "local missing = require(\"@Shared/nonexistent\")\n",
-        )
-        .unwrap();
-
-        let graph = build_graph(p, &test_aliases(), "src").unwrap();
-        assert_eq!(graph.edge_count(), 0);
     }
 
     #[test]

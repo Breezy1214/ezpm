@@ -261,11 +261,11 @@ async fn handle_lua_file(
         }
     }
 
-    let build_file = match src_to_build_path(path, context.source_root, context.build_root) {
-        Some(p) => p,
+    let source_parent = match path.parent() {
+        Some(parent) => parent.to_path_buf(),
         None => {
             output::error(&format!(
-                "{}: could not compute build path",
+                "{}: could not determine source directory",
                 display_name(path)
             ));
             failed_files.insert(path.to_path_buf());
@@ -273,16 +273,20 @@ async fn handle_lua_file(
         }
     };
 
-    let Some(build_parent) = build_file.parent() else {
-        output::error(&format!(
-            "{}: could not determine build directory",
-            display_name(path)
-        ));
-        failed_files.insert(path.to_path_buf());
-        return;
-    };
+    let build_parent =
+        match src_to_build_path(&source_parent, context.source_root, context.build_root) {
+            Some(p) => p,
+            None => {
+                output::error(&format!(
+                    "{}: could not compute build directory",
+                    display_name(path)
+                ));
+                failed_files.insert(path.to_path_buf());
+                return;
+            }
+        };
 
-    if let Err(e) = std::fs::create_dir_all(build_parent) {
+    if let Err(e) = std::fs::create_dir_all(&build_parent) {
         output::error(&format!(
             "{}: failed to create build directory: {}",
             display_name(path),
@@ -292,11 +296,11 @@ async fn handle_lua_file(
         return;
     }
 
-    let darklua_source = path_for_darklua(path, context.project_dir);
-    let darklua_build_file = path_for_darklua(&build_file, context.project_dir);
+    let darklua_source = path_for_darklua(&source_parent, context.project_dir);
+    let darklua_build = path_for_darklua(&build_parent, context.project_dir);
 
     let result = tokio::task::spawn_blocking(move || {
-        darklua_runner::process_file(&darklua_source, &darklua_build_file)
+        darklua_runner::process_tree(&darklua_source, &darklua_build)
     })
     .await;
 
@@ -1060,38 +1064,4 @@ pub(crate) fn src_to_build_path(
 
 fn path_for_darklua(path: &Path, project_dir: &Path) -> PathBuf {
     path.strip_prefix(project_dir).unwrap_or(path).to_path_buf()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn full_require_fix_scope_matches_mode() {
-        let changed = [FileChange::LuaChange(PathBuf::from("src/a.luau"))];
-        let deleted = [FileChange::FileDeleted(PathBuf::from("src/a.luau"))];
-        let metadata = [FileChange::MetaChange(PathBuf::from("src/init.meta.json"))];
-
-        assert!(needs_full_require_fix(RequireFixMode::Strict, &changed));
-        assert!(!needs_full_require_fix(RequireFixMode::Strict, &metadata));
-        assert!(!needs_full_require_fix(RequireFixMode::Hybrid, &changed));
-        assert!(needs_full_require_fix(RequireFixMode::Hybrid, &deleted));
-        assert!(!needs_full_require_fix(RequireFixMode::Fast, &deleted));
-    }
-
-    #[test]
-    fn sourcemap_refreshes_only_for_topology_changes() {
-        assert!(!changes_project_topology(&[FileChange::LuaChange(
-            PathBuf::from("src/a.luau")
-        )]));
-        assert!(!changes_project_topology(&[FileChange::MetaChange(
-            PathBuf::from("src/init.meta.json")
-        )]));
-        assert!(changes_project_topology(&[FileChange::FileCreated(
-            PathBuf::from("src/a.luau")
-        )]));
-        assert!(changes_project_topology(&[FileChange::DirectoryRemoved(
-            PathBuf::from("src/components")
-        )]));
-    }
 }

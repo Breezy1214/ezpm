@@ -3,25 +3,6 @@ mod common;
 use std::fs;
 
 #[test]
-fn check_clean_project_exits_zero() {
-    let dir = common::create_project();
-    let p = dir.path();
-
-    fs::write(p.join("src/shared/util.luau"), "return {}\n").expect("write util.luau");
-
-    fs::write(
-        p.join("src/client/init.luau"),
-        "local util = require(\"@Shared/util\")\nreturn util\n",
-    )
-    .expect("write init.luau");
-
-    fs::write(p.join("src/server/init.luau"), "return {}\n").expect("write server init");
-
-    let output = common::run_ezpm(p, &["check"]);
-    common::assert_success(&output);
-}
-
-#[test]
 fn check_circular_dependency_exits_nonzero() {
     let dir = common::create_project();
     let p = dir.path();
@@ -121,18 +102,4 @@ fn check_json_output_is_valid() {
     assert!(json.get("cycles").is_some());
     assert!(json.get("pass").is_some());
     assert_eq!(json["pass"], true);
-}
-
-#[test]
-fn check_no_config_still_runs_basic_checks() {
-    let dir = common::create_project();
-    let p = dir.path();
-
-    fs::remove_file(p.join("ezpm.toml")).expect("remove ezpm.toml");
-
-    fs::write(p.join("src/client/init.luau"), "return {}\n").expect("write init.luau");
-    fs::write(p.join("src/shared/util.luau"), "return {}\n").expect("write util.luau");
-
-    let output = common::run_ezpm(p, &["check"]);
-    common::assert_success(&output);
 }

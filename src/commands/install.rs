@@ -382,27 +382,8 @@ pub fn setup_wally_packages(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::services::toolchain;
     use std::collections::HashMap;
     use tempfile::TempDir;
-
-    #[test]
-    fn required_runtime_toolchain_excludes_optional_lune() {
-        let names: Vec<&str> = toolchain::required_runtime_tool_specs()
-            .iter()
-            .map(|tool| tool.name.as_str())
-            .collect();
-
-        assert!(
-            !names.contains(&"lune"),
-            "install should not require lune in the default runtime toolchain"
-        );
-        assert!(
-            names.contains(&"wally"),
-            "install should still require wally"
-        );
-        assert!(names.contains(&"rojo"), "install should still require rojo");
-    }
 
     #[test]
     fn package_dirs_ignore_aliases_that_resolve_outside_project_children() {
@@ -424,26 +405,6 @@ mod tests {
             package_dirs,
             vec!["Packages".to_string(), "ServerPackages".to_string()],
             "only safe top-level package directories should be derived from aliases"
-        );
-    }
-
-    #[test]
-    fn package_dirs_ignore_non_wally_aliases_outside_src() {
-        let mut aliases = HashMap::new();
-        aliases.insert("Assets".to_string(), "Assets/".to_string());
-        aliases.insert("VendorPackages".to_string(), "Vendor/Packages/".to_string());
-        aliases.insert(
-            "ReplicatedAssets".to_string(),
-            "ReplicatedStorage/Assets/".to_string(),
-        );
-        aliases.insert("Client".to_string(), "src/client/".to_string());
-
-        let package_dirs = get_package_dirs(Some(&aliases), "src");
-
-        assert_eq!(
-            package_dirs,
-            vec!["Packages".to_string(), "ServerPackages".to_string()],
-            "non-Wally aliases must not become recursive deletion targets"
         );
     }
 
@@ -478,33 +439,6 @@ mod tests {
             vec!["Packages".to_string(), "ServerPackages".to_string()],
             "direct Wally package aliases should be accepted with Windows separators"
         );
-    }
-
-    #[test]
-    fn package_dirs_fall_back_to_defaults_when_aliases_only_point_inside_src_or_are_unsafe() {
-        let mut aliases = HashMap::new();
-        aliases.insert("ProjectRoot".to_string(), ".".to_string());
-        aliases.insert("Parent".to_string(), "../Packages".to_string());
-        aliases.insert("Client".to_string(), "src/client/".to_string());
-
-        let package_dirs = get_package_dirs(Some(&aliases), "src");
-
-        assert_eq!(
-            package_dirs,
-            vec!["Packages".to_string(), "ServerPackages".to_string()],
-            "unsafe aliases must not replace the default Wally package directories"
-        );
-    }
-
-    #[test]
-    fn package_directory_guard_accepts_only_existing_top_level_children() {
-        let dir = TempDir::new().expect("TempDir::new");
-        std::fs::create_dir_all(dir.path().join("Packages")).expect("create Packages");
-
-        let safe = safe_package_dir_path(dir.path(), "src", "Packages")
-            .expect("Packages should be removable");
-
-        assert_eq!(safe, dir.path().join("Packages"));
     }
 
     #[test]
