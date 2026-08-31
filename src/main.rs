@@ -8,7 +8,7 @@ use ezpm::{
     cli::{AliasCommands, Cli, ColorArg, Commands},
     commands::{alias, check, init, install, quality, serve},
     config, output,
-    services::{require_fixer, selene, version},
+    services::{require_fixer, rojo_project::RojoProjectSettings, selene, version},
 };
 
 fn fetch_latest_version() -> Option<String> {
@@ -153,13 +153,20 @@ fn main() {
         }
         Some(Commands::FixRequires) => {
             let cfg = loaded_config.unwrap_or_default();
-            let aliases = cfg.aliases.unwrap_or_default();
+            let aliases = cfg.aliases.clone().unwrap_or_default();
             let src_prefix = cfg
                 .paths
                 .as_ref()
                 .and_then(|p| p.src.as_deref())
                 .unwrap_or("src");
-            match require_fixer::fix_requires(Path::new(src_prefix), &aliases, src_prefix) {
+            let rojo = RojoProjectSettings::from_config(&cfg);
+            let context = require_fixer::FixContext::new_for_project(
+                Path::new("."),
+                &rojo.project,
+                &aliases,
+                src_prefix,
+            );
+            match require_fixer::fix_requires_with_context(Path::new(src_prefix), &context) {
                 Ok(result) => {
                     if result.files_changed == 0 {
                         output::success(&format!(

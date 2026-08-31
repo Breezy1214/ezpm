@@ -142,11 +142,17 @@ fn run_command(cmd: &str) -> Result<()> {
             crate::commands::quality::docs(docs_enabled)
         }
         "fix-requires" => {
-            let aliases = cfg.aliases.unwrap_or_default();
-            let result = crate::services::require_fixer::fix_requires(
-                std::path::Path::new(src),
+            let rojo = crate::services::rojo_project::RojoProjectSettings::from_config(&cfg);
+            let aliases = cfg.aliases.clone().unwrap_or_default();
+            let context = crate::services::require_fixer::FixContext::new_for_project(
+                std::path::Path::new("."),
+                &rojo.project,
                 &aliases,
                 src,
+            );
+            let result = crate::services::require_fixer::fix_requires_with_context(
+                std::path::Path::new(src),
+                &context,
             )?;
             if result.files_changed == 0 {
                 output::success(&format!(

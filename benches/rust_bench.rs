@@ -248,10 +248,15 @@ fn main() {
     println!();
 
     println!("── fix_requires 200 files ───────────────────────────────────────────");
+    let fix_context = require_fixer::FixContext::from_mappings(
+        &aliases,
+        "src",
+        ezpm::services::rojo_project::default_alias_rojo_mappings(&aliases, "src"),
+    );
     bench("fix_requires 200 files", large_iterations, || {
         let dir = create_temp_lua_tree(200);
         let src_dir = dir.path().join("src");
-        let _ = require_fixer::fix_requires(&src_dir, &aliases, "src");
+        let _ = require_fixer::fix_requires_with_context(&src_dir, &fix_context);
     });
 
     println!();

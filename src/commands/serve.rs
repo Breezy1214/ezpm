@@ -137,21 +137,25 @@ struct ModuleFingerprint {
     hash: u64,
 }
 
-#[derive(Debug)]
-enum ModuleLocation {
-    Unique(PathBuf),
-    Ambiguous,
+#[derive(Debug, Default)]
+struct ModuleSnapshot {
+    by_fingerprint: HashMap<ModuleFingerprint, HashSet<PathBuf>>,
+    by_path: HashMap<PathBuf, ModuleFingerprint>,
 }
 
-type ModuleSnapshot = HashMap<ModuleFingerprint, ModuleLocation>;
-
 fn snapshot_modules(files: &[PathBuf]) -> ModuleSnapshot {
-    use std::collections::hash_map::Entry;
-    let mut snapshot: ModuleSnapshot = HashMap::new();
-
+    let mut snapshot = ModuleSnapshot::default();
     for path in files {
+        snapshot.refresh(path);
+    }
+    snapshot
+}
+
+impl ModuleSnapshot {
+    fn refresh(&mut self, path: &Path) {
+        self.remove(path);
         let Ok(contents) = std::fs::read(path) else {
-            continue;
+            return;
         };
         let mut hasher = DefaultHasher::new();
         contents.hash(&mut hasher);
@@ -159,28 +163,40 @@ fn snapshot_modules(files: &[PathBuf]) -> ModuleSnapshot {
             bytes: contents.len() as u64,
             hash: hasher.finish(),
         };
-        match snapshot.entry(fingerprint) {
-            Entry::Vacant(entry) => {
-                entry.insert(ModuleLocation::Unique(path.clone()));
-            }
-            Entry::Occupied(mut entry) => {
-                entry.insert(ModuleLocation::Ambiguous);
-            }
-        }
+        let path = path.to_path_buf();
+        self.by_fingerprint
+            .entry(fingerprint)
+            .or_default()
+            .insert(path.clone());
+        self.by_path.insert(path, fingerprint);
     }
 
-    snapshot
+    fn remove(&mut self, path: &Path) {
+        let Some(fingerprint) = self.by_path.remove(path) else {
+            return;
+        };
+        let Some(paths) = self.by_fingerprint.get_mut(&fingerprint) else {
+            return;
+        };
+        paths.remove(path);
+        if paths.is_empty() {
+            self.by_fingerprint.remove(&fingerprint);
+        }
+    }
 }
 
 fn infer_module_moves(before: &ModuleSnapshot, after: &ModuleSnapshot) -> Vec<FileChange> {
     let mut moves = Vec::new();
 
-    for (fingerprint, old_location) in before {
-        let (ModuleLocation::Unique(old_path), Some(ModuleLocation::Unique(new_path))) =
-            (old_location, after.get(fingerprint))
-        else {
+    for (fingerprint, old_paths) in &before.by_fingerprint {
+        let Some(new_paths) = after.by_fingerprint.get(fingerprint) else {
             continue;
         };
+        if old_paths.len() != 1 || new_paths.len() != 1 {
+            continue;
+        }
+        let old_path = old_paths.iter().next().expect("one old path");
+        let new_path = new_paths.iter().next().expect("one new path");
         if old_path != new_path {
             moves.push(FileChange::FileRenamed {
                 from: old_path.clone(),
@@ -190,6 +206,17 @@ fn infer_module_moves(before: &ModuleSnapshot, after: &ModuleSnapshot) -> Vec<Fi
     }
 
     moves
+}
+
+fn refresh_changed_modules(snapshot: &mut ModuleSnapshot, changes: &[FileChange]) {
+    for change in changes {
+        match change {
+            FileChange::LuaChange(path) | FileChange::FileCreated(path) if is_lua_file(path) => {
+                snapshot.refresh(path);
+            }
+            _ => {}
+        }
+    }
 }
 
 fn needs_full_require_fix(mode: RequireFixMode, changes: &[FileChange]) -> bool {
@@ -835,8 +862,12 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
                                 &mut failed_files,
                             )
                             .await;
-                            module_snapshot =
-                                snapshot_modules(&require_fixer::lua_files(&src_path));
+                            if topology_changed {
+                                module_snapshot =
+                                    snapshot_modules(&require_fixer::lua_files(&src_path));
+                            } else {
+                                refresh_changed_modules(&mut module_snapshot, &source_changes);
+                            }
                         }
                     }
                     Some(WatchEvent::Error(msg)) => {

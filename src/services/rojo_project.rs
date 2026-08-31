@@ -28,6 +28,7 @@ impl RojoProjectSettings {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AliasRojoMapping {
     pub alias_name: String,
+    pub alias_root: String,
     pub alias_path: String,
     pub instance_path: Vec<String>,
 }
@@ -43,7 +44,10 @@ pub fn game_require(instance_path: &[String]) -> String {
 }
 
 fn normalize_alias_path(path: &str) -> String {
-    path.trim_end_matches('/').replace('\\', "/")
+    path.trim_end_matches('/')
+        .replace('\\', "/")
+        .trim_start_matches("./")
+        .to_string()
 }
 
 pub fn is_src_alias_path(path: &str, src_prefix: &str) -> bool {
@@ -55,7 +59,7 @@ pub fn is_src_alias_path(path: &str, src_prefix: &str) -> bool {
             .is_some_and(|suffix| suffix.starts_with('/'))
 }
 
-fn default_instance_path(alias_name: &str) -> Vec<String> {
+fn generated_project_instance_path(alias_name: &str) -> Vec<String> {
     match alias_name {
         "Client" => vec![
             "StarterPlayer".to_string(),
@@ -80,8 +84,9 @@ pub fn default_alias_rojo_mappings(
         .filter(|(_, alias_path)| is_src_alias_path(alias_path, src_prefix))
         .map(|(alias_name, alias_path)| AliasRojoMapping {
             alias_name: alias_name.clone(),
+            alias_root: normalize_alias_path(alias_path),
             alias_path: normalize_alias_path(alias_path),
-            instance_path: default_instance_path(alias_name),
+            instance_path: generated_project_instance_path(alias_name),
         })
         .collect()
 }
@@ -129,20 +134,48 @@ pub fn generate_rojo_project(
 fn walk_project_tree(
     node: &Value,
     current_path: &mut Vec<String>,
-    aliases_by_path: &HashMap<String, Vec<String>>,
-    found_paths: &mut HashMap<String, Vec<String>>,
+    aliases: &[(String, String)],
+    found: &mut Vec<AliasRojoMapping>,
 ) {
     let Some(obj) = node.as_object() else {
         return;
     };
 
     if let Some(path_value) = obj.get("$path").and_then(|value| value.as_str()) {
-        let normalized_path = normalize_alias_path(path_value);
-        if let Some(alias_names) = aliases_by_path.get(&normalized_path) {
-            for alias_name in alias_names {
-                found_paths
-                    .entry(alias_name.clone())
-                    .or_insert_with(|| current_path.clone());
+        let project_path = normalize_alias_path(path_value);
+        for (alias_name, alias_root) in aliases {
+            if project_path == *alias_root {
+                found.push(AliasRojoMapping {
+                    alias_name: alias_name.clone(),
+                    alias_root: alias_root.clone(),
+                    alias_path: alias_root.clone(),
+                    instance_path: current_path.clone(),
+                });
+                continue;
+            }
+
+            if project_path
+                .strip_prefix(&format!("{alias_root}/"))
+                .is_some()
+            {
+                found.push(AliasRojoMapping {
+                    alias_name: alias_name.clone(),
+                    alias_root: alias_root.clone(),
+                    alias_path: project_path.clone(),
+                    instance_path: current_path.clone(),
+                });
+                continue;
+            }
+
+            if let Some(relative) = alias_root.strip_prefix(&format!("{project_path}/")) {
+                let mut instance_path = current_path.clone();
+                instance_path.extend(relative.split('/').map(str::to_string));
+                found.push(AliasRojoMapping {
+                    alias_name: alias_name.clone(),
+                    alias_root: alias_root.clone(),
+                    alias_path: alias_root.clone(),
+                    instance_path,
+                });
             }
         }
     }
@@ -152,7 +185,7 @@ fn walk_project_tree(
             continue;
         }
         current_path.push(key.clone());
-        walk_project_tree(child, current_path, aliases_by_path, found_paths);
+        walk_project_tree(child, current_path, aliases, found);
         current_path.pop();
     }
 }
@@ -168,42 +201,25 @@ pub fn alias_rojo_mappings_from_project_str(
         .and_then(Value::as_object)
         .context("default.project.json is missing a top-level tree object")?;
 
-    let mut aliases_by_path: HashMap<String, Vec<String>> = HashMap::new();
-    for (alias_name, alias_path) in aliases {
-        aliases_by_path
-            .entry(normalize_alias_path(alias_path))
-            .or_default()
-            .push(alias_name.clone());
-    }
-
-    let mut found_paths: HashMap<String, Vec<String>> = HashMap::new();
+    let normalized_aliases = aliases
+        .iter()
+        .map(|(name, path)| (name.clone(), normalize_alias_path(path)))
+        .collect::<Vec<_>>();
+    let mut resolved = Vec::new();
     let mut current_path = Vec::new();
     walk_project_tree(
         &Value::Object(tree.clone()),
         &mut current_path,
-        &aliases_by_path,
-        &mut found_paths,
+        &normalized_aliases,
+        &mut resolved,
     );
-
-    let mut resolved = Vec::new();
-    let mut alias_names: Vec<String> = found_paths.keys().cloned().collect();
-    alias_names.sort();
-
-    for alias_name in alias_names {
-        let Some(alias_path) = aliases.get(&alias_name) else {
-            continue;
-        };
-        let Some(instance_path) = found_paths.remove(&alias_name) else {
-            continue;
-        };
-
-        resolved.push(AliasRojoMapping {
-            alias_name,
-            alias_path: normalize_alias_path(alias_path),
-            instance_path,
-        });
-    }
-
+    resolved.sort_by(|left, right| {
+        left.alias_name
+            .cmp(&right.alias_name)
+            .then_with(|| left.alias_path.cmp(&right.alias_path))
+            .then_with(|| left.instance_path.cmp(&right.instance_path))
+    });
+    resolved.dedup();
     Ok(resolved)
 }
 
@@ -224,26 +240,13 @@ pub fn alias_rojo_mappings_for_project(
     project_root: &Path,
     project_file: &Path,
     aliases: &HashMap<String, String>,
-    src_prefix: &str,
+    _src_prefix: &str,
 ) -> Vec<AliasRojoMapping> {
-    let mut mappings_by_alias: HashMap<String, AliasRojoMapping> =
-        default_alias_rojo_mappings(aliases, src_prefix)
-            .into_iter()
-            .map(|mapping| (mapping.alias_name.clone(), mapping))
-            .collect();
-
     let project_path = project_root.join(project_file);
-    if let Ok(contents) = std::fs::read_to_string(&project_path) {
-        if let Ok(project_mappings) = alias_rojo_mappings_from_project_str(&contents, aliases) {
-            for mapping in project_mappings {
-                mappings_by_alias.insert(mapping.alias_name.clone(), mapping);
-            }
-        }
-    }
-
-    let mut mappings: Vec<AliasRojoMapping> = mappings_by_alias.into_values().collect();
-    mappings.sort_by(|a, b| a.alias_name.cmp(&b.alias_name));
-    mappings
+    std::fs::read_to_string(project_path)
+        .ok()
+        .and_then(|contents| alias_rojo_mappings_from_project_str(&contents, aliases).ok())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -346,7 +349,7 @@ mod tests {
     }
 
     #[test]
-    fn test_alias_rojo_mappings_for_project_root_falls_back_per_missing_alias() {
+    fn test_custom_project_does_not_invent_missing_alias_mappings() {
         let dir = TempDir::new().expect("failed to create temp dir");
         let aliases = make_aliases(&[("Client", "src/client/"), ("Libraries", "src/libraries/")]);
 
@@ -379,9 +382,30 @@ mod tests {
             by_alias.get("Libraries").map(String::as_str),
             Some("ReplicatedStorage/Vendor")
         );
-        assert_eq!(
-            by_alias.get("Client").map(String::as_str),
-            Some("StarterPlayer/StarterPlayerScripts/Client")
-        );
+        assert!(!by_alias.contains_key("Client"));
+    }
+
+    #[test]
+    fn test_project_subdirectory_mapping_keeps_its_real_instance_path() {
+        let aliases = make_aliases(&[("Shared", "src/shared/")]);
+        let project = r#"{
+  "name": "test",
+  "tree": {
+    "$className": "DataModel",
+    "ReplicatedStorage": {
+      "Features": {
+        "$path": "src/shared/features"
+      }
+    }
+  }
+}"#;
+
+        let mappings = alias_rojo_mappings_from_project_str(project, &aliases)
+            .expect("project mappings should parse");
+
+        assert_eq!(mappings.len(), 1);
+        assert_eq!(mappings[0].alias_root, "src/shared");
+        assert_eq!(mappings[0].alias_path, "src/shared/features");
+        assert_eq!(mappings[0].game_path(), "ReplicatedStorage/Features");
     }
 }

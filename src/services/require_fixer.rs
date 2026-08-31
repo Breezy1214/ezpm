@@ -2,7 +2,7 @@ use anyhow::Result;
 use regex::Regex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use walkdir::WalkDir;
 
 use crate::{output, services::rojo_project};
@@ -39,6 +39,7 @@ pub struct FixContext {
 #[derive(Debug, Default)]
 pub struct ModuleIndex {
     by_name: HashMap<String, Vec<PathBuf>>,
+    warned_ambiguities: Mutex<std::collections::HashSet<String>>,
 }
 
 impl ModuleIndex {
@@ -90,14 +91,20 @@ impl ModuleIndex {
             return matches.first().map(PathBuf::as_path);
         }
 
-        output::warn(&format!(
-            "require path '{name}' is ambiguous; matches {}",
-            matches
-                .iter()
-                .map(|path| path.display().to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
+        let should_warn = self
+            .warned_ambiguities
+            .lock()
+            .is_ok_and(|mut warned| warned.insert(name.to_string()));
+        if should_warn {
+            output::warn(&format!(
+                "require path '{name}' is ambiguous; matches {}",
+                matches
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
         None
     }
 }
@@ -133,17 +140,6 @@ impl FixContext {
         }
     }
 
-    fn for_path(start_path: &Path, aliases: &HashMap<String, String>, src_prefix: &str) -> Self {
-        let project_root = find_project_root(start_path);
-        let source_mappings = match project_root.as_deref() {
-            Some(root) => {
-                rojo_project::alias_rojo_mappings_for_project_root(root, aliases, src_prefix)
-            }
-            None => rojo_project::default_alias_rojo_mappings(aliases, src_prefix),
-        };
-        Self::from_mappings(aliases, src_prefix, source_mappings)
-    }
-
     pub fn game_require_for_source(
         &self,
         project_dir: &Path,
@@ -151,15 +147,6 @@ impl FixContext {
     ) -> Option<String> {
         game_require_from_mappings(project_dir, source_path, &self.source_mappings)
     }
-}
-
-pub fn fix_requires(
-    root_dir: &Path,
-    aliases: &HashMap<String, String>,
-    src_prefix: &str,
-) -> Result<FixResult> {
-    let ctx = FixContext::for_path(root_dir, aliases, src_prefix);
-    fix_requires_with_context(root_dir, &ctx)
 }
 
 pub fn fix_requires_with_context(root_dir: &Path, ctx: &FixContext) -> Result<FixResult> {
@@ -312,35 +299,6 @@ fn normalize_separators(s: &str) -> String {
     s.replace('\\', "/")
 }
 
-fn find_project_root(start_path: &Path) -> Option<PathBuf> {
-    let mut current = if start_path.is_file() {
-        start_path.parent()
-    } else {
-        Some(start_path)
-    };
-
-    while let Some(dir) = current {
-        let candidate = if dir.as_os_str().is_empty() {
-            Path::new(".")
-        } else {
-            dir
-        };
-
-        if candidate.join("default.project.json").exists() || candidate.join("ezpm.toml").exists() {
-            return Some(candidate.to_path_buf());
-        }
-
-        current = candidate.parent();
-    }
-
-    let cwd = Path::new(".");
-    if cwd.join("default.project.json").exists() || cwd.join("ezpm.toml").exists() {
-        return Some(cwd.to_path_buf());
-    }
-
-    None
-}
-
 fn build_sorted_src_aliases(
     aliases: &HashMap<String, String>,
     src_prefix: &str,
@@ -424,8 +382,18 @@ fn game_alias_rewrites_from_mappings(
     let mut rewrites: Vec<(String, String)> = mappings
         .iter()
         .map(|mapping| {
+            let relative = mapping
+                .alias_path
+                .strip_prefix(&mapping.alias_root)
+                .unwrap_or_default()
+                .trim_start_matches('/');
+            let alias_path = if relative.is_empty() {
+                format!("@{}", mapping.alias_name)
+            } else {
+                format!("@{}/{relative}", mapping.alias_name)
+            };
             (
-                format!("@{}", mapping.alias_name),
+                alias_path,
                 rojo_project::game_require(&mapping.instance_path),
             )
         })
@@ -754,6 +722,29 @@ mod tests {
     }
 
     #[test]
+    fn test_rewrites_project_mapped_alias_subdirectory() {
+        let aliases = HashMap::from([("Shared".to_string(), "src/shared/".to_string())]);
+        let mappings = vec![rojo_project::AliasRojoMapping {
+            alias_name: "Shared".to_string(),
+            alias_root: "src/shared".to_string(),
+            alias_path: "src/shared/features".to_string(),
+            instance_path: vec!["ReplicatedStorage".to_string(), "Features".to_string()],
+        }];
+        let context = FixContext::from_mappings(&aliases, "src", mappings);
+        let dir = make_temp_tree(&[("src/shared/features/Signal.luau", "return {}\n")]);
+
+        let content = r#"local m = require("@Shared/features/Signal")"#;
+        let (updated, rewrites) =
+            process_file_content(content, &context, Some(dir.path().join("src").as_path()));
+
+        assert_eq!(rewrites.len(), 1);
+        assert_eq!(
+            updated,
+            r#"local m = require("@game/ReplicatedStorage/Features/Signal")"#
+        );
+    }
+
+    #[test]
     fn test_multiple_rewrites_in_one_file() {
         let mut aliases = HashMap::new();
         aliases.insert("Client".to_string(), "src/client/".to_string());
@@ -802,7 +793,8 @@ local b = require("src/server/api")
         std::thread::sleep(std::time::Duration::from_millis(50));
 
         let aliases = standard_aliases();
-        fix_requires(dir.path(), &aliases, "src").expect("fix_requires must succeed");
+        fix_requires_with_context(dir.path(), &ctx_with_game_paths(&aliases))
+            .expect("fix_requires must succeed");
 
         let mtime_after = std::fs::metadata(&file_path)
             .expect("metadata")
@@ -827,7 +819,8 @@ local b = require("src/server/api")
         let mut aliases = HashMap::new();
         aliases.insert("Client".to_string(), "src/client/".to_string());
 
-        fix_requires(dir.path(), &aliases, "src").expect("fix_requires must succeed");
+        fix_requires_with_context(dir.path(), &ctx_with_game_paths(&aliases))
+            .expect("fix_requires must succeed");
 
         let updated = std::fs::read_to_string(&file_path).expect("read updated file");
         assert!(
@@ -849,7 +842,8 @@ local b = require("src/server/api")
         aliases.insert("Shared".to_string(), "src/shared/".to_string());
         aliases.insert("Server".to_string(), "src/server/".to_string());
 
-        fix_requires(dir.path(), &aliases, "src").expect("initial scan must succeed");
+        let context = ctx_with_game_paths(&aliases);
+        fix_requires_with_context(dir.path(), &context).expect("initial scan must succeed");
 
         let consumer_path = dir.path().join("consumer.luau");
         let initial = std::fs::read_to_string(&consumer_path).expect("read initial consumer");
@@ -865,7 +859,7 @@ local b = require("src/server/api")
         )
         .expect("move module to server");
 
-        fix_requires(dir.path(), &aliases, "src").expect("rescan after move must succeed");
+        fix_requires_with_context(dir.path(), &context).expect("rescan after move must succeed");
 
         let updated = std::fs::read_to_string(&consumer_path).expect("read updated consumer");
         assert!(
