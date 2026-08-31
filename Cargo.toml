@@ -22,7 +22,6 @@ serde_json = "1"
 toml = "0.8"
 serde_ignored = "0.1"
 inquire = "0.7"
-thiserror = "1"
 anyhow = "1"
 walkdir = "2"
 regex = "1"
@@ -31,6 +30,8 @@ owo-colors = { version = "4", features = ["supports-colors"] }
 indicatif = "0.18"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "signal", "time", "sync"] }
 notify-debouncer-full = "0.7"
+
+[dev-dependencies]
 tempfile = "3"
 
 [target.'cfg(unix)'.dependencies]

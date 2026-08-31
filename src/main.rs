@@ -1,14 +1,13 @@
 use clap::Parser;
-use std::path::Path;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
 use ezpm::{
     cli::{AliasCommands, Cli, ColorArg, Commands},
-    commands::{alias, check, init, install, quality, serve},
+    commands::{alias, check, fix_requires, init, install, quality, serve},
     config, output,
-    services::{require_fixer, selene, version},
+    services::{selene, version},
 };
 
 fn fetch_latest_version() -> Option<String> {
@@ -153,41 +152,7 @@ fn main() {
         }
         Some(Commands::FixRequires) => {
             let cfg = loaded_config.unwrap_or_default();
-            let aliases = cfg.aliases.unwrap_or_default();
-            let src_prefix = cfg
-                .paths
-                .as_ref()
-                .and_then(|p| p.src.as_deref())
-                .unwrap_or("src");
-            match require_fixer::fix_requires(Path::new(src_prefix), &aliases, src_prefix) {
-                Ok(result) => {
-                    if result.files_changed == 0 {
-                        output::success(&format!(
-                            "All requires up to date. 0 changes across {} files.",
-                            result.total_files_scanned
-                        ));
-                    } else {
-                        let total_rewrites: usize =
-                            result.changes.iter().map(|c| c.rewrites.len()).sum();
-                        for file_change in &result.changes {
-                            output::print_line(&format!("{}:", file_change.file.display()));
-                            for rewrite in &file_change.rewrites {
-                                output::print_line(&format!(
-                                    "  {} -> {}",
-                                    rewrite.old, rewrite.new
-                                ));
-                            }
-                        }
-                        output::print_line("");
-                        output::success(&format!(
-                            "Fixed {} requires across {} files",
-                            total_rewrites, result.files_changed
-                        ));
-                    }
-                    Ok(())
-                }
-                Err(e) => Err(e),
-            }
+            fix_requires::run(&cfg)
         }
         Some(Commands::Check { json }) => check::run_check(loaded_config.as_ref(), json),
         Some(Commands::Alias { subcommand }) => match subcommand {

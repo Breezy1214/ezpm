@@ -20,7 +20,7 @@ fn init_dry_run_is_non_interactive_and_does_not_write() {
         template,
         "dry-run must not overwrite the source Rojo template"
     );
-    for path in ["ezpm.toml", ".darklua.json", ".luaurc", "rokit.toml"] {
+    for path in ["ezpm.toml", ".luaurc", "rokit.toml"] {
         assert!(!dir.path().join(path).exists(), "dry-run created {path}");
     }
     let entries = fs::read_dir(dir.path())

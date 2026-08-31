@@ -1,17 +1,17 @@
 use std::collections::{HashMap, HashSet};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use crate::{
-    config::{self, EzpmConfig, RequireFixMode},
+    config::{self, EzpmConfig},
     output,
     services::{
-        darklua_runner,
+        config_gen,
         file_watcher::{FileChange, FileWatcher, WatchEvent, WatchTargets},
-        meta_copier,
         process_manager::{ProcessEvent, ProcessManager},
-        require_fixer,
-        rojo_project::{self, RojoProjectSettings},
+        require_fixer::{self, is_lua_file},
+        rojo_project::RojoProjectSettings,
         sourcemap, toolchain,
     },
 };
@@ -94,44 +94,127 @@ fn sync_toolchain_versions(project_dir: &Path) -> anyhow::Result<()> {
     }
 }
 
-async fn run_fix_requires(
-    src: &str,
-    aliases: &HashMap<String, String>,
-) -> anyhow::Result<require_fixer::FixResult> {
-    let src_clone = src.to_string();
-    let aliases_clone = aliases.clone();
-    tokio::task::spawn_blocking(move || {
-        require_fixer::fix_requires(&PathBuf::from(&src_clone), &aliases_clone, &src_clone)
-    })
-    .await
-    .unwrap_or_else(|e| Err(anyhow::anyhow!("task panicked: {}", e)))
+async fn run_fix_requires(context: &require_fixer::FixContext) -> bool {
+    let context = context.clone();
+    let result =
+        tokio::task::spawn_blocking(move || require_fixer::fix_requires_with_context(&context))
+            .await
+            .unwrap_or_else(|e| Err(anyhow::anyhow!("task panicked: {}", e)));
+
+    match result {
+        Ok(_) => true,
+        Err(error) => {
+            output::error(&format!("Require fix failed: {error}"));
+            false
+        }
+    }
 }
 
 struct ChangeContext<'a> {
-    src_prefix: &'a str,
-    source_root: &'a Path,
-    build_root: &'a Path,
-    aliases: &'a HashMap<String, String>,
-    require_fix_mode: RequireFixMode,
-    project_dir: &'a Path,
-    generated_project: &'a Path,
     file_changes_enabled: bool,
     fix_ctx: &'a require_fixer::FixContext,
+    previous_fix_ctx: Option<&'a require_fixer::FixContext>,
+    module_index: &'a require_fixer::ModuleIndex,
 }
 
-fn needs_full_require_fix(mode: RequireFixMode, changes: &[FileChange]) -> bool {
-    match mode {
-        RequireFixMode::Strict => changes
-            .iter()
-            .any(|change| !matches!(change, FileChange::MetaChange(_))),
-        RequireFixMode::Hybrid => changes.iter().any(|change| {
-            matches!(
-                change,
-                FileChange::FileDeleted(_) | FileChange::DirectoryRemoved(_)
-            )
-        }),
-        RequireFixMode::Fast => false,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct ModuleFingerprint {
+    bytes: u64,
+    hash: u64,
+}
+
+#[derive(Debug, Default)]
+struct ModuleSnapshot {
+    by_fingerprint: HashMap<ModuleFingerprint, HashSet<PathBuf>>,
+    by_path: HashMap<PathBuf, ModuleFingerprint>,
+}
+
+fn snapshot_modules(files: &[PathBuf]) -> ModuleSnapshot {
+    let mut snapshot = ModuleSnapshot::default();
+    for path in files {
+        snapshot.refresh(path);
     }
+    snapshot
+}
+
+impl ModuleSnapshot {
+    fn refresh(&mut self, path: &Path) {
+        self.remove(path);
+        let Ok(contents) = std::fs::read(path) else {
+            return;
+        };
+        let mut hasher = DefaultHasher::new();
+        contents.hash(&mut hasher);
+        let fingerprint = ModuleFingerprint {
+            bytes: contents.len() as u64,
+            hash: hasher.finish(),
+        };
+        let path = path.to_path_buf();
+        self.by_fingerprint
+            .entry(fingerprint)
+            .or_default()
+            .insert(path.clone());
+        self.by_path.insert(path, fingerprint);
+    }
+
+    fn remove(&mut self, path: &Path) {
+        let Some(fingerprint) = self.by_path.remove(path) else {
+            return;
+        };
+        let Some(paths) = self.by_fingerprint.get_mut(&fingerprint) else {
+            return;
+        };
+        paths.remove(path);
+        if paths.is_empty() {
+            self.by_fingerprint.remove(&fingerprint);
+        }
+    }
+}
+
+fn infer_module_moves(before: &ModuleSnapshot, after: &ModuleSnapshot) -> Vec<FileChange> {
+    let mut moves = Vec::new();
+
+    for (fingerprint, old_paths) in &before.by_fingerprint {
+        let Some(new_paths) = after.by_fingerprint.get(fingerprint) else {
+            continue;
+        };
+        if old_paths.len() != 1 || new_paths.len() != 1 {
+            continue;
+        }
+        let old_path = old_paths.iter().next().expect("one old path");
+        let new_path = new_paths.iter().next().expect("one new path");
+        if old_path != new_path {
+            moves.push(FileChange::FileRenamed {
+                from: old_path.clone(),
+                to: new_path.clone(),
+            });
+        }
+    }
+
+    moves
+}
+
+fn refresh_changed_modules(snapshot: &mut ModuleSnapshot, changes: &[FileChange]) {
+    for change in changes {
+        match change {
+            FileChange::LuaChange(path) | FileChange::FileCreated(path) if is_lua_file(path) => {
+                snapshot.refresh(path);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn needs_full_require_fix(changes: &[FileChange]) -> bool {
+    changes.iter().any(|change| {
+        matches!(
+            change,
+            FileChange::MetaChange(_)
+                | FileChange::FileDeleted(_)
+                | FileChange::FileRenamed { .. }
+                | FileChange::DirectoryRemoved(_)
+        )
+    })
 }
 
 fn changes_project_topology(changes: &[FileChange]) -> bool {
@@ -139,29 +222,94 @@ fn changes_project_topology(changes: &[FileChange]) -> bool {
         matches!(
             change,
             FileChange::FileCreated(_)
+                | FileChange::MetaChange(_)
                 | FileChange::FileDeleted(_)
+                | FileChange::FileRenamed { .. }
                 | FileChange::DirectoryCreated(_)
                 | FileChange::DirectoryRemoved(_)
         )
     })
 }
 
-async fn refresh_sourcemap(context: &ChangeContext<'_>) {
-    let project_dir = context.project_dir.to_path_buf();
-    let generated_project = context.generated_project.to_path_buf();
-    let result = tokio::task::spawn_blocking(move || {
-        sourcemap::generate_sourcemap_for_project(&project_dir, &generated_project)
-    })
-    .await;
+fn lone<'a>(
+    changes: &'a [FileChange],
+    select: impl Fn(&'a FileChange) -> Option<&'a Path>,
+) -> Option<&'a Path> {
+    let mut matches = changes.iter().filter_map(select);
+    let path = matches.next()?;
+    matches.next().is_none().then_some(path)
+}
+
+fn paired_rename(
+    changes: &[FileChange],
+    removed: impl Fn(&FileChange) -> Option<&Path>,
+    created: impl Fn(&FileChange) -> Option<&Path>,
+) -> Option<(PathBuf, PathBuf)> {
+    let from = lone(changes, removed)?;
+    let to = lone(changes, created)?;
+    Some((from.to_path_buf(), to.to_path_buf()))
+}
+
+fn detected_renames(changes: &[FileChange]) -> Vec<(PathBuf, PathBuf)> {
+    let explicit = changes
+        .iter()
+        .filter_map(|change| match change {
+            FileChange::FileRenamed { from, to } => Some((from.clone(), to.clone())),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if !explicit.is_empty() {
+        return explicit;
+    }
+
+    let file_move = paired_rename(
+        changes,
+        |change| match change {
+            FileChange::FileDeleted(path) if is_lua_file(path) => Some(path.as_path()),
+            _ => None,
+        },
+        |change| match change {
+            FileChange::FileCreated(path) if is_lua_file(path) => Some(path.as_path()),
+            _ => None,
+        },
+    );
+    let dir_move = || {
+        paired_rename(
+            changes,
+            |change| match change {
+                FileChange::DirectoryRemoved(path) => Some(path.as_path()),
+                _ => None,
+            },
+            |change| match change {
+                FileChange::DirectoryCreated(path) => Some(path.as_path()),
+                _ => None,
+            },
+        )
+    };
+
+    file_move.or_else(dir_move).into_iter().collect()
+}
+
+async fn refresh_sourcemap(
+    project_dir: &Path,
+    project_file: &Path,
+) -> Option<sourcemap::SourcemapIndex> {
+    let project_dir = project_dir.to_path_buf();
+    let project_file = project_file.to_path_buf();
+    let result =
+        tokio::task::spawn_blocking(move || sourcemap::generate_index(&project_dir, &project_file))
+            .await;
 
     match result {
-        Ok(Ok(result)) if result.success => {}
-        Ok(Ok(result)) => output::error(&format!(
-            "Sourcemap update failed: {}",
-            result.stderr.trim()
-        )),
-        Ok(Err(error)) => output::error(&format!("Sourcemap update failed: {error}")),
-        Err(error) => output::error(&format!("Sourcemap task panicked: {error}")),
+        Ok(Ok(index)) => Some(index),
+        Ok(Err(error)) => {
+            output::error(&format!("Sourcemap update failed: {error}"));
+            None
+        }
+        Err(error) => {
+            output::error(&format!("Sourcemap task panicked: {error}"));
+            None
+        }
     }
 }
 
@@ -173,12 +321,29 @@ async fn handle_changes(
     let t0 = Instant::now();
     let is_batch = changes.len() > 1;
 
-    let full_fix_performed = needs_full_require_fix(context.require_fix_mode, changes);
-    if full_fix_performed {
-        if let Err(error) = run_fix_requires(context.src_prefix, context.aliases).await {
-            output::error(&format!("Require fix failed: {error}"));
-            return;
+    let mut replacements = detected_renames(changes)
+        .into_iter()
+        .flat_map(|(from, to)| {
+            context
+                .previous_fix_ctx
+                .unwrap_or(context.fix_ctx)
+                .relocation_rewrites(context.fix_ctx, &from, &to)
+        })
+        .collect::<Vec<_>>();
+    replacements.sort();
+    replacements.dedup();
+
+    if !replacements.is_empty() {
+        if let Err(error) =
+            require_fixer::rewrite_require_prefixes(context.fix_ctx.script_files(), &replacements)
+        {
+            output::error(&format!("Could not update renamed requires: {error}"));
         }
+    }
+
+    let full_fix_performed = needs_full_require_fix(changes);
+    if full_fix_performed && !run_fix_requires(context.fix_ctx).await {
+        return;
     }
 
     for change in changes {
@@ -186,30 +351,24 @@ async fn handle_changes(
             FileChange::LuaChange(path) => {
                 handle_lua_file(path, context, failed_files, is_batch, full_fix_performed).await;
             }
-            FileChange::MetaChange(path) => {
-                handle_meta_change(path, context, is_batch).await;
-            }
             FileChange::FileCreated(path) => {
                 if is_lua_file(path) {
                     handle_lua_file(path, context, failed_files, is_batch, full_fix_performed)
                         .await;
                 }
             }
-            FileChange::FileDeleted(path) => {
-                handle_file_deleted(path, context).await;
+            FileChange::FileRenamed { to, .. } => {
+                if is_lua_file(to) {
+                    handle_lua_file(to, context, failed_files, is_batch, true).await;
+                }
             }
-            FileChange::DirectoryCreated(path) => {
-                handle_directory_created(path, context, is_batch).await;
-            }
-            FileChange::DirectoryRemoved(path) => {
-                handle_directory_removed(path, context).await;
-            }
-            FileChange::RojoProjectChange(_) | FileChange::ConfigChange(_) => {}
+            FileChange::MetaChange(_)
+            | FileChange::FileDeleted(_)
+            | FileChange::DirectoryCreated(_)
+            | FileChange::DirectoryRemoved(_)
+            | FileChange::RojoProjectChange(_)
+            | FileChange::ConfigChange(_) => {}
         }
-    }
-
-    if changes_project_topology(changes) {
-        refresh_sourcemap(context).await;
     }
 
     if is_batch && context.file_changes_enabled {
@@ -233,13 +392,6 @@ fn display_name(path: &Path) -> String {
     file_name.into_owned()
 }
 
-fn is_lua_file(path: &Path) -> bool {
-    matches!(
-        path.extension().and_then(|extension| extension.to_str()),
-        Some("lua") | Some("luau")
-    )
-}
-
 async fn handle_lua_file(
     path: &Path,
     context: &ChangeContext<'_>,
@@ -249,8 +401,10 @@ async fn handle_lua_file(
 ) {
     let t0 = Instant::now();
 
-    if !full_fix_performed && !matches!(context.require_fix_mode, RequireFixMode::Strict) {
-        if let Err(e) = require_fixer::fix_single_file_with_context(path, context.fix_ctx) {
+    if !full_fix_performed {
+        if let Err(e) =
+            require_fixer::fix_single_file_with_index(path, context.fix_ctx, context.module_index)
+        {
             output::error(&format!(
                 "{}: require fix failed: {}",
                 display_name(path),
@@ -261,196 +415,21 @@ async fn handle_lua_file(
         }
     }
 
-    let source_parent = match path.parent() {
-        Some(parent) => parent.to_path_buf(),
-        None => {
-            output::error(&format!(
-                "{}: could not determine source directory",
-                display_name(path)
-            ));
-            failed_files.insert(path.to_path_buf());
-            return;
-        }
-    };
-
-    let build_parent =
-        match src_to_build_path(&source_parent, context.source_root, context.build_root) {
-            Some(p) => p,
-            None => {
-                output::error(&format!(
-                    "{}: could not compute build directory",
-                    display_name(path)
-                ));
-                failed_files.insert(path.to_path_buf());
-                return;
-            }
-        };
-
-    if let Err(e) = std::fs::create_dir_all(&build_parent) {
-        output::error(&format!(
-            "{}: failed to create build directory: {}",
-            display_name(path),
-            e
-        ));
-        failed_files.insert(path.to_path_buf());
-        return;
-    }
-
-    let darklua_source = path_for_darklua(&source_parent, context.project_dir);
-    let darklua_build = path_for_darklua(&build_parent, context.project_dir);
-
-    let result = tokio::task::spawn_blocking(move || {
-        darklua_runner::process_tree(&darklua_source, &darklua_build)
-    })
-    .await;
-
     let filename = display_name(path);
-
-    match result {
-        Ok(Ok(r)) if r.success => {
-            let was_failed = failed_files.remove(path);
-            if !is_batch && context.file_changes_enabled {
-                if was_failed {
-                    output::success(&format!(
-                        "{} fixed ({}ms)",
-                        filename,
-                        t0.elapsed().as_millis()
-                    ));
-                } else {
-                    output::success(&format!(
-                        "Rebuilt {} ({}ms)",
-                        filename,
-                        t0.elapsed().as_millis()
-                    ));
-                }
-            }
-        }
-        Ok(Ok(r)) => {
-            failed_files.insert(path.to_path_buf());
-            let detail = r.stderr.trim().to_string();
-            output::error(&format!("{}: {}", filename, detail));
-        }
-        Ok(Err(e)) => {
-            failed_files.insert(path.to_path_buf());
-            output::error(&format!("{}: {}", filename, e));
-        }
-        Err(e) => {
-            failed_files.insert(path.to_path_buf());
-            output::error(&format!("{}: task panicked: {}", filename, e));
-        }
-    }
-}
-
-async fn handle_meta_change(path: &Path, context: &ChangeContext<'_>, is_batch: bool) {
-    let build_dest = match src_to_build_path(path, context.source_root, context.build_root) {
-        Some(p) => p,
-        None => {
-            output::error(&format!(
-                "{}: could not compute build path for meta file",
-                display_name(path)
+    let was_failed = failed_files.remove(path);
+    if !is_batch && context.file_changes_enabled {
+        if was_failed {
+            output::success(&format!(
+                "{} fixed ({}ms)",
+                filename,
+                t0.elapsed().as_millis()
             ));
-            return;
-        }
-    };
-
-    if let Some(parent) = build_dest.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            output::error(&format!("failed to create build dir for meta file: {}", e));
-            return;
-        }
-    }
-
-    let filename = display_name(path);
-
-    match std::fs::copy(path, &build_dest) {
-        Ok(_) => {
-            if !is_batch && context.file_changes_enabled {
-                output::success(&format!("Copied {}", filename));
-            }
-        }
-        Err(e) => {
-            output::error(&format!("{}: copy failed: {}", filename, e));
-        }
-    }
-}
-
-async fn handle_directory_created(path: &Path, context: &ChangeContext<'_>, is_batch: bool) {
-    let t0 = Instant::now();
-    let dirname = path
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .to_string();
-
-    let build_dir = match src_to_build_path(path, context.source_root, context.build_root) {
-        Some(p) => p,
-        None => {
-            output::error(&format!("{}/: could not compute build path", dirname));
-            return;
-        }
-    };
-
-    if let Err(e) = std::fs::create_dir_all(&build_dir) {
-        output::error(&format!("failed to create build dir: {}", e));
-        return;
-    }
-
-    let src_dir = path_for_darklua(path, context.project_dir);
-    let darklua_build_dir = path_for_darklua(&build_dir, context.project_dir);
-    let result = tokio::task::spawn_blocking(move || {
-        darklua_runner::process_tree(&src_dir, &darklua_build_dir)
-    })
-    .await;
-
-    match result {
-        Ok(Ok(r)) if r.success => {
-            if !is_batch && context.file_changes_enabled {
-                output::success(&format!(
-                    "Rebuilt {}/ ({}ms)",
-                    dirname,
-                    t0.elapsed().as_millis()
-                ));
-            }
-        }
-        Ok(Ok(r)) => {
-            let detail = r.stderr.trim().to_string();
-            output::error(&format!("{}/: darklua failed: {}", dirname, detail));
-        }
-        Ok(Err(e)) => {
-            output::error(&format!("{}/: darklua failed: {}", dirname, e));
-        }
-        Err(e) => {
-            output::error(&format!("{}/: darklua task panicked: {}", dirname, e));
-        }
-    }
-}
-
-async fn handle_directory_removed(path: &Path, context: &ChangeContext<'_>) {
-    let dirname = path
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .to_string();
-
-    if let Some(build_dir) = src_to_build_path(path, context.source_root, context.build_root) {
-        if build_dir.is_dir() {
-            if let Err(e) = std::fs::remove_dir_all(&build_dir) {
-                output::error(&format!("failed to remove build dir {}/: {}", dirname, e));
-            }
-        }
-    }
-}
-
-async fn handle_file_deleted(path: &Path, context: &ChangeContext<'_>) {
-    if let Some(build_path) = src_to_build_path(path, context.source_root, context.build_root) {
-        if build_path.is_file() {
-            if let Err(e) = std::fs::remove_file(&build_path) {
-                output::error(&format!("failed to delete build file: {}", e));
-            }
-        } else if build_path.is_dir() {
-            if let Err(e) = std::fs::remove_dir_all(&build_path) {
-                output::error(&format!("failed to delete build directory: {}", e));
-            }
+        } else {
+            output::success(&format!(
+                "Synced {} ({}ms)",
+                filename,
+                t0.elapsed().as_millis()
+            ));
         }
     }
 }
@@ -460,20 +439,16 @@ async fn handle_process_event(
     pm: &mut ProcessManager,
     restart_count: &mut u32,
     port: u16,
-    generated_project: &Path,
+    project: &Path,
 ) {
     match event {
         ProcessEvent::Crashed { ref name, .. } if name == "rojo" => {
             if *restart_count < 1 {
                 output::warn("Rojo exited unexpectedly — restarting...");
                 let port_str = port.to_string();
-                let generated_project = generated_project.to_string_lossy();
+                let project = project.to_string_lossy();
                 if let Err(e) = pm
-                    .spawn(
-                        "rojo",
-                        "rojo",
-                        &["serve", &generated_project, "--port", &port_str],
-                    )
+                    .spawn("rojo", "rojo", &["serve", &project, "--port", &port_str])
                     .await
                 {
                     output::error(&format!("Failed to restart Rojo: {}", e));
@@ -492,75 +467,41 @@ async fn handle_process_event(
 
 fn watch_targets(
     project_dir: &Path,
-    source_root: &Path,
-    build_root: &Path,
     settings: &RojoProjectSettings,
+    fix_context: &require_fixer::FixContext,
 ) -> WatchTargets {
+    let mut source_roots = vec![project_dir.to_path_buf()];
+    source_roots.extend(
+        fix_context
+            .script_files()
+            .iter()
+            .filter(|path| !path.starts_with(project_dir))
+            .filter_map(|path| path.parent().map(Path::to_path_buf)),
+    );
+    source_roots.sort();
+    source_roots.dedup();
     WatchTargets {
-        source_root: source_root.to_path_buf(),
+        source_roots,
         project_files: vec![project_dir.join(&settings.project)],
         config_file: Some(project_dir.join("ezpm.toml")),
-        generated_roots: vec![
-            build_root.to_path_buf(),
-            project_dir.join(&settings.generated_project),
-        ],
     }
-}
-
-async fn regenerate_rojo_project(
-    project_dir: &Path,
-    settings: &RojoProjectSettings,
-) -> anyhow::Result<bool> {
-    let generation_root = project_dir.to_path_buf();
-    let settings = settings.clone();
-    let generation = tokio::task::spawn_blocking(move || {
-        rojo_project::generate_build_project(&generation_root, &settings)
-    })
-    .await
-    .context("Rojo project generation task panicked")??;
-
-    if !generation.written {
-        return Ok(false);
-    }
-
-    let project_dir = project_dir.to_path_buf();
-    let generated_project = generation.generated_project.clone();
-    let sourcemap = tokio::task::spawn_blocking(move || {
-        sourcemap::generate_sourcemap_for_project(&project_dir, &generated_project)
-    })
-    .await
-    .context("sourcemap task panicked")??;
-
-    if !sourcemap.success {
-        anyhow::bail!("sourcemap generation failed: {}", sourcemap.stderr.trim());
-    }
-
-    output::success(&format!(
-        "Rojo project regenerated ({} paths remapped)",
-        generation.remapped_paths
-    ));
-    Ok(true)
 }
 
 async fn restart_rojo(
     process_manager: &mut ProcessManager,
     process_rx: &mut tokio::sync::mpsc::Receiver<ProcessEvent>,
     port: u16,
-    generated_project: &Path,
+    project: &Path,
 ) -> anyhow::Result<()> {
     process_manager.kill("rojo").await;
     while process_rx.try_recv().is_ok() {}
 
     let port = port.to_string();
-    let generated_project = generated_project.to_string_lossy();
+    let project = project.to_string_lossy();
     process_manager
-        .spawn(
-            "rojo",
-            "rojo",
-            &["serve", &generated_project, "--port", &port],
-        )
+        .spawn("rojo", "rojo", &["serve", &project, "--port", &port])
         .await
-        .context("failed to restart Rojo after project regeneration")
+        .context("failed to restart Rojo")
 }
 
 pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::Result<()> {
@@ -573,24 +514,12 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
         .and_then(|p| p.src.as_deref())
         .unwrap_or("src")
         .to_string();
-    let build = config
-        .paths
-        .as_ref()
-        .and_then(|p| p.darklua_build.as_deref())
-        .unwrap_or("darklua_build")
-        .to_string();
-    let aliases: HashMap<String, String> = config.aliases.clone().unwrap_or_default();
+    let mut aliases: HashMap<String, String> = config.aliases.clone().unwrap_or_default();
     let file_changes_enabled = config
         .display
         .as_ref()
         .and_then(|d| d.file_changes)
         .unwrap_or(true);
-    let require_fix_mode = config
-        .serve
-        .as_ref()
-        .and_then(|s| s.require_fix_mode)
-        .unwrap_or_default();
-
     let port: u16 = cli_port
         .or_else(|| config.serve.as_ref().and_then(|s| s.port))
         .unwrap_or(34872);
@@ -607,95 +536,46 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
 
     let project_dir = std::env::current_dir().context("could not determine current directory")?;
     let src_path = project_dir.join(&src);
-    let build_path = project_dir.join(&build);
+
+    config_gen::write_config_files(&project_dir, &aliases)
+        .context("failed to generate .luaurc from ezpm.toml")?;
 
     sync_toolchain_versions(&project_dir)?;
-
-    {
-        let pb = output::start_spinner(&format!(
-            "Generating {}...",
-            rojo_settings.generated_project.display()
-        ));
-        let t0 = Instant::now();
-        let result = rojo_project::generate_build_project(&project_dir, &rojo_settings);
-        pb.finish_and_clear();
-        match result {
-            Ok(generation) => {
-                let status = if generation.written {
-                    "generated"
-                } else {
-                    "already current"
-                };
-                output::success(&format!(
-                    "Build project {} ({} paths remapped, {:.0}ms)",
-                    status,
-                    generation.remapped_paths,
-                    t0.elapsed().as_millis()
-                ));
-            }
-            Err(e) => {
-                output::error(&format!("Generate build project failed: {}", e));
-                return Err(e);
-            }
-        }
-    }
-
-    {
-        let pb = output::start_spinner("Cleaning build directory...");
-        let t0 = Instant::now();
-        let build_path_clone = build_path.clone();
-        let result = darklua_runner::clean_build_dir(&build_path_clone);
-        pb.finish_and_clear();
-        match result {
-            Ok(()) => output::success(&format!(
-                "Build directory cleaned ({:.0}ms)",
-                t0.elapsed().as_millis()
-            )),
-            Err(e) => {
-                output::error(&format!("Clean build directory failed: {}", e));
-                return Err(e);
-            }
-        }
-    }
-
-    {
+    let initial_sourcemap = {
         let pb = output::start_spinner("Generating sourcemap...");
         let t0 = Instant::now();
         let project_dir_clone = project_dir.clone();
         let source_project = rojo_settings.project.clone();
         let result = tokio::task::spawn_blocking(move || {
-            sourcemap::generate_sourcemap_for_project(&project_dir_clone, &source_project)
+            sourcemap::generate_index(&project_dir_clone, &source_project)
         })
         .await
         .context("sourcemap task panicked")?;
         pb.finish_and_clear();
         match result {
-            Ok(r) if r.success => output::success(&format!(
-                "Sourcemap generated ({:.0}ms)",
-                t0.elapsed().as_millis()
-            )),
-            Ok(r) => {
-                let detail = r.stderr.trim().to_string();
-                output::error(&format!("Generate sourcemap failed: {}", detail));
-                return Err(anyhow::anyhow!("sourcemap generation failed"));
+            Ok(index) => {
+                output::success(&format!(
+                    "Sourcemap generated ({:.0}ms)",
+                    t0.elapsed().as_millis()
+                ));
+                index
             }
             Err(e) => {
                 output::error(&format!("Generate sourcemap failed: {}", e));
                 return Err(e);
             }
         }
-    }
+    };
 
+    let mut fix_ctx = require_fixer::FixContext::new(&project_dir, &aliases, initial_sourcemap);
     {
         let pb = output::start_spinner("Fixing require paths...");
         let t0 = Instant::now();
-        let aliases_clone = aliases.clone();
-        let src_clone = src.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            require_fixer::fix_requires(&PathBuf::from(&src_clone), &aliases_clone, &src_clone)
-        })
-        .await
-        .context("require-fixer task panicked")?;
+        let context = fix_ctx.clone();
+        let result =
+            tokio::task::spawn_blocking(move || require_fixer::fix_requires_with_context(&context))
+                .await
+                .context("require-fixer task panicked")?;
         pb.finish_and_clear();
         match result {
             Ok(fix_result) => output::success(&format!(
@@ -710,72 +590,11 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
         }
     }
 
-    {
-        let pb = output::start_spinner("Running DarkLua...");
-        let t0 = Instant::now();
-        let src_path_clone = PathBuf::from(&src);
-        let build_path_clone = PathBuf::from(&build);
-        let result = tokio::task::spawn_blocking(move || {
-            darklua_runner::process_tree_with_retry(&src_path_clone, &build_path_clone)
-        })
-        .await
-        .context("darklua task panicked")?;
-        pb.finish_and_clear();
-        match result {
-            Ok(r) if r.success && r.stderr.trim().is_empty() => output::success(&format!(
-                "DarkLua processed ({:.0}ms)",
-                t0.elapsed().as_millis()
-            )),
-            Ok(r) if r.success => {
-                let detail = r.stderr.trim().to_string();
-                output::error(&format!("DarkLua warnings persist after retry: {}", detail));
-                return Err(anyhow::anyhow!(
-                    "darklua processing had persistent warnings"
-                ));
-            }
-            Ok(r) => {
-                let detail = r.stderr.trim().to_string();
-                output::error(&format!("DarkLua failed: {}", detail));
-                return Err(anyhow::anyhow!("darklua processing failed"));
-            }
-            Err(e) => {
-                output::error(&format!("DarkLua failed: {}", e));
-                return Err(e);
-            }
-        }
-    }
-
-    {
-        let pb = output::start_spinner("Copying meta files...");
-        let t0 = Instant::now();
-        let src_path_clone = src_path.clone();
-        let build_path_clone = build_path.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            meta_copier::copy_meta_files(&src_path_clone, &build_path_clone)
-        })
-        .await
-        .context("meta-copier task panicked")?;
-        pb.finish_and_clear();
-        match result {
-            Ok(count) => output::success(&format!(
-                "Meta files copied ({} files, {:.0}ms)",
-                count,
-                t0.elapsed().as_millis()
-            )),
-            Err(e) => {
-                output::error(&format!("Copy meta files failed: {}", e));
-                return Err(e);
-            }
-        }
-    }
-
     let (mut watcher, mut watcher_rx) = {
         let pb = output::start_spinner("Starting file watcher...");
         let t0 = Instant::now();
-        let result = FileWatcher::with_targets(
-            watch_targets(&project_dir, &src_path, &build_path, &rojo_settings),
-            &[],
-        );
+        let result =
+            FileWatcher::with_targets(watch_targets(&project_dir, &rojo_settings, &fix_ctx), &[]);
         pb.finish_and_clear();
         match result {
             Ok((watcher, rx)) => {
@@ -796,14 +615,10 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
         let pb = output::start_spinner("Starting Rojo...");
         let t0 = Instant::now();
         let port_str = port.to_string();
-        let generated_project = rojo_settings.generated_project.to_string_lossy();
+        let project = rojo_settings.project.to_string_lossy();
         let (mut pm, rx) = ProcessManager::new();
         let result = pm
-            .spawn(
-                "rojo",
-                "rojo",
-                &["serve", &generated_project, "--port", &port_str],
-            )
+            .spawn("rojo", "rojo", &["serve", &project, "--port", &port_str])
             .await;
         pb.finish_and_clear();
         match result {
@@ -832,17 +647,15 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
     }
     output::print_line("");
     output::info(&format!("Rojo serving on port {}", port));
-    output::info(&format!(
-        "Watching {}/ for changes (.lua, .luau, init.meta.json, *.model.json)",
-        src
-    ));
-    output::info(&format!("Require-fix mode: {:?}", require_fix_mode).to_lowercase());
+    output::info("Watching Rojo source files (.lua, .luau, init.meta.json, *.model.json)");
     output::info("Press Ctrl-C to stop");
     output::print_line("");
 
     let mut failed_files: HashSet<PathBuf> = HashSet::new();
     let mut rojo_restart_count: u32 = 0;
-    let fix_ctx = require_fixer::FixContext::new(&aliases, &src);
+    let source_files = require_fixer::lua_files(&src_path);
+    let mut module_snapshot = snapshot_modules(&source_files);
+    let mut module_index = fix_ctx.module_index();
 
     #[cfg(unix)]
     let mut sig_hup = {
@@ -871,7 +684,17 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
         tokio::select! {
             event = watcher_rx.recv() => {
                 match event {
-                    Some(WatchEvent::Changes(changes)) => {
+                    Some(WatchEvent::Changes(mut changes)) => {
+                        let topology_changed = changes_project_topology(&changes);
+                        if topology_changed {
+                            let files = require_fixer::lua_files(&src_path);
+                            let current_snapshot = snapshot_modules(&files);
+                            for inferred in infer_module_moves(&module_snapshot, &current_snapshot) {
+                                if !changes.contains(&inferred) {
+                                    changes.push(inferred);
+                                }
+                            }
+                        }
                         let config_changed = changes
                             .iter()
                             .any(|change| matches!(change, FileChange::ConfigChange(_)));
@@ -885,66 +708,69 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
                                     for warning in warnings {
                                         output::warn(&warning);
                                     }
+                                    let new_aliases = new_config.aliases.clone().unwrap_or_default();
+                                    match config_gen::write_config_files(&project_dir, &new_aliases) {
+                                        Ok(()) => output::info("Regenerated .luaurc from ezpm.toml"),
+                                        Err(error) => output::error(&format!(
+                                            "Could not regenerate .luaurc: {error}"
+                                        )),
+                                    }
                                     let new_src = new_config
                                         .paths
                                         .as_ref()
                                         .and_then(|paths| paths.src.as_deref())
                                         .unwrap_or("src");
-                                    let new_build = new_config
-                                        .paths
-                                        .as_ref()
-                                        .and_then(|paths| paths.darklua_build.as_deref())
-                                        .unwrap_or("darklua_build");
-
-                                    if new_src != src || new_build != build {
+                                    if new_src != src {
                                         output::warn(
-                                            "Source/build path changes require restarting `ezpm serve`; keeping the current watcher.",
+                                            "Source path changes require restarting `ezpm serve`; keeping the current watcher.",
                                         );
                                     } else {
+                                        if new_aliases != aliases {
+                                            aliases = new_aliases;
+                                            fix_ctx = fix_ctx.with_aliases(&aliases);
+                                            module_index = fix_ctx.module_index();
+                                            run_fix_requires(&fix_ctx).await;
+                                        }
                                         let new_settings = RojoProjectSettings::from_config(&new_config);
                                         if new_settings != rojo_settings {
+                                            let Some(index) = refresh_sourcemap(
+                                                &project_dir,
+                                                &new_settings.project,
+                                            )
+                                            .await
+                                            else {
+                                                continue;
+                                            };
+                                            let new_fix_ctx = require_fixer::FixContext::new(
+                                                &project_dir,
+                                                &aliases,
+                                                index,
+                                            );
                                             let new_targets = watch_targets(
                                                 &project_dir,
-                                                &src_path,
-                                                &build_path,
                                                 &new_settings,
+                                                &new_fix_ctx,
                                             );
                                             match FileWatcher::with_targets(new_targets, &[]) {
                                                 Ok((new_watcher, new_rx)) => {
-                                                    match regenerate_rojo_project(
-                                                        &project_dir,
-                                                        &new_settings,
+                                                    if let Err(error) = restart_rojo(
+                                                        &mut process_manager,
+                                                        &mut process_rx,
+                                                        port,
+                                                        &new_settings.project,
                                                     )
                                                     .await
                                                     {
-                                                        Ok(written) => {
-                                                            if written {
-                                                                if let Err(error) = restart_rojo(
-                                                                    &mut process_manager,
-                                                                    &mut process_rx,
-                                                                    port,
-                                                                    &new_settings.generated_project,
-                                                                )
-                                                                .await
-                                                                {
-                                                                    output::error(&format!(
-                                                                        "Rojo restart failed: {error}"
-                                                                    ));
-                                                                } else {
-                                                                    rojo_restart_count = 0;
-                                                                }
-                                                            }
-                                                            watcher = new_watcher;
-                                                            watcher_rx = new_rx;
-                                                            rojo_settings = new_settings;
-                                                            output::info(
-                                                                "Reloaded Rojo project settings; other ezpm.toml changes take effect after restart.",
-                                                            );
-                                                        }
-                                                        Err(error) => output::error(&format!(
-                                                            "Rojo config reload failed: {error:#}"
-                                                        )),
+                                                        output::error(&format!("Rojo restart failed: {error}"));
+                                                    } else {
+                                                        rojo_restart_count = 0;
                                                     }
+                                                    watcher = new_watcher;
+                                                    watcher_rx = new_rx;
+                                                    rojo_settings = new_settings;
+                                                    fix_ctx = new_fix_ctx;
+                                                    module_index = fix_ctx.module_index();
+                                                    output::info("Reloaded Rojo project settings; alias changes take effect after restart.");
                                                 }
                                                 Err(error) => output::error(&format!(
                                                     "Could not update file watcher: {error}"
@@ -962,27 +788,41 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
                                 )),
                             }
                         }
-
                         if project_changed {
-                            match regenerate_rojo_project(&project_dir, &rojo_settings).await {
-                                Ok(true) => {
-                                    if let Err(error) = restart_rojo(
-                                        &mut process_manager,
-                                        &mut process_rx,
-                                        port,
-                                        &rojo_settings.generated_project,
-                                    )
-                                    .await
-                                    {
-                                        output::error(&format!("Rojo restart failed: {error}"));
-                                    } else {
-                                        rojo_restart_count = 0;
+                            if let Some(index) =
+                                refresh_sourcemap(&project_dir, &rojo_settings.project).await
+                            {
+                                fix_ctx = require_fixer::FixContext::new(
+                                    &project_dir,
+                                    &aliases,
+                                    index,
+                                );
+                                module_index = fix_ctx.module_index();
+                                match FileWatcher::with_targets(
+                                    watch_targets(&project_dir, &rojo_settings, &fix_ctx),
+                                    &[],
+                                ) {
+                                    Ok((new_watcher, new_rx)) => {
+                                        watcher = new_watcher;
+                                        watcher_rx = new_rx;
                                     }
+                                    Err(error) => output::error(&format!(
+                                        "Could not update file watcher: {error}"
+                                    )),
                                 }
-                                Ok(false) => {}
-                                Err(error) => output::error(&format!(
-                                    "Rojo project regeneration failed: {error:#}"
-                                )),
+                                run_fix_requires(&fix_ctx).await;
+                            }
+                            if let Err(error) = restart_rojo(
+                                &mut process_manager,
+                                &mut process_rx,
+                                port,
+                                &rojo_settings.project,
+                            )
+                            .await
+                            {
+                                output::error(&format!("Rojo restart failed: {error}"));
+                            } else {
+                                rojo_restart_count = 0;
                             }
                         }
 
@@ -996,16 +836,25 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
                             })
                             .collect::<Vec<_>>();
                         if !source_changes.is_empty() {
+                            let previous_fix_ctx = topology_changed.then(|| fix_ctx.clone());
+                            if topology_changed {
+                                let Some(index) =
+                                    refresh_sourcemap(&project_dir, &rojo_settings.project).await
+                                else {
+                                    continue;
+                                };
+                                fix_ctx = require_fixer::FixContext::new(
+                                    &project_dir,
+                                    &aliases,
+                                    index,
+                                );
+                                module_index = fix_ctx.module_index();
+                            }
                             let context = ChangeContext {
-                                src_prefix: &src,
-                                source_root: &src_path,
-                                build_root: &build_path,
-                                aliases: &aliases,
-                                require_fix_mode,
-                                project_dir: &project_dir,
-                                generated_project: &rojo_settings.generated_project,
                                 file_changes_enabled,
                                 fix_ctx: &fix_ctx,
+                                previous_fix_ctx: previous_fix_ctx.as_ref(),
+                                module_index: &module_index,
                             };
                             handle_changes(
                                 &source_changes,
@@ -1013,6 +862,12 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
                                 &mut failed_files,
                             )
                             .await;
+                            if topology_changed {
+                                module_snapshot =
+                                    snapshot_modules(&require_fixer::lua_files(&src_path));
+                            } else {
+                                refresh_changed_modules(&mut module_snapshot, &source_changes);
+                            }
                         }
                     }
                     Some(WatchEvent::Error(msg)) => {
@@ -1029,7 +884,7 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
                         &mut process_manager,
                         &mut rojo_restart_count,
                         port,
-                        &rojo_settings.generated_project,
+                        &rojo_settings.project,
                     )
                     .await;
                 }
@@ -1049,19 +904,4 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
     drop(watcher);
 
     Ok(())
-}
-
-pub(crate) fn src_to_build_path(
-    src_file: &Path,
-    src_root: &Path,
-    build_root: &Path,
-) -> Option<PathBuf> {
-    src_file
-        .strip_prefix(src_root)
-        .ok()
-        .map(|rel| build_root.join(rel))
-}
-
-fn path_for_darklua(path: &Path, project_dir: &Path) -> PathBuf {
-    path.strip_prefix(project_dir).unwrap_or(path).to_path_buf()
 }
