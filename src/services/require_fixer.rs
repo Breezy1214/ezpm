@@ -26,32 +26,130 @@ pub struct RequireRewrite {
     pub new: String,
 }
 
+#[derive(Clone)]
 pub struct FixContext {
     pub sorted_aliases: Vec<(String, String)>,
     pub skip_list: Vec<String>,
     pub inverted_aliases: Vec<(String, String)>,
     pub game_alias_rewrites: Vec<(String, String)>,
     pub src_prefix: String,
+    source_mappings: Vec<rojo_project::AliasRojoMapping>,
+}
+
+#[derive(Debug, Default)]
+pub struct ModuleIndex {
+    by_name: HashMap<String, Vec<PathBuf>>,
+}
+
+impl ModuleIndex {
+    pub fn build(root_dir: &Path) -> Self {
+        Self::from_files(&lua_files(root_dir))
+    }
+
+    pub fn from_files(files: &[PathBuf]) -> Self {
+        let mut index = Self::default();
+        for path in files {
+            index.insert(path);
+        }
+        index
+    }
+
+    fn insert(&mut self, path: &Path) {
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            return;
+        };
+        let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+            return;
+        };
+
+        self.add(file_name, path);
+        self.add(stem, path);
+        if stem == "init" {
+            if let Some(parent) = path
+                .parent()
+                .and_then(Path::file_name)
+                .and_then(|name| name.to_str())
+            {
+                if parent != stem {
+                    self.add(parent, path);
+                }
+            }
+        }
+    }
+
+    fn add(&mut self, name: &str, path: &Path) {
+        self.by_name
+            .entry(name.to_string())
+            .or_default()
+            .push(path.to_path_buf());
+    }
+
+    fn find_unique(&self, name: &str) -> Option<&Path> {
+        let matches = self.by_name.get(name)?;
+        if matches.len() == 1 {
+            return matches.first().map(PathBuf::as_path);
+        }
+
+        output::warn(&format!(
+            "require path '{name}' is ambiguous; matches {}",
+            matches
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+        None
+    }
 }
 
 impl FixContext {
-    pub fn new(aliases: &HashMap<String, String>, src_prefix: &str) -> Self {
-        Self::for_path(Path::new(src_prefix), aliases, src_prefix)
+    pub fn new_for_project(
+        project_root: &Path,
+        project_file: &Path,
+        aliases: &HashMap<String, String>,
+        src_prefix: &str,
+    ) -> Self {
+        let source_mappings = rojo_project::alias_rojo_mappings_for_project(
+            project_root,
+            project_file,
+            aliases,
+            src_prefix,
+        );
+        Self::from_mappings(aliases, src_prefix, source_mappings)
     }
 
-    fn for_path(start_path: &Path, aliases: &HashMap<String, String>, src_prefix: &str) -> Self {
-        let project_root = find_project_root(start_path);
+    pub fn from_mappings(
+        aliases: &HashMap<String, String>,
+        src_prefix: &str,
+        source_mappings: Vec<rojo_project::AliasRojoMapping>,
+    ) -> Self {
         Self {
             sorted_aliases: build_sorted_src_aliases(aliases, src_prefix),
             skip_list: build_skip_list(aliases, src_prefix),
             inverted_aliases: build_inverted_aliases(aliases),
-            game_alias_rewrites: build_game_alias_rewrites(
-                project_root.as_deref(),
-                aliases,
-                src_prefix,
-            ),
+            game_alias_rewrites: game_alias_rewrites_from_mappings(&source_mappings),
             src_prefix: src_prefix.to_string(),
+            source_mappings,
         }
+    }
+
+    fn for_path(start_path: &Path, aliases: &HashMap<String, String>, src_prefix: &str) -> Self {
+        let project_root = find_project_root(start_path);
+        let source_mappings = match project_root.as_deref() {
+            Some(root) => {
+                rojo_project::alias_rojo_mappings_for_project_root(root, aliases, src_prefix)
+            }
+            None => rojo_project::default_alias_rojo_mappings(aliases, src_prefix),
+        };
+        Self::from_mappings(aliases, src_prefix, source_mappings)
+    }
+
+    pub fn game_require_for_source(
+        &self,
+        project_dir: &Path,
+        source_path: &Path,
+    ) -> Option<String> {
+        game_require_from_mappings(project_dir, source_path, &self.source_mappings)
     }
 }
 
@@ -61,15 +159,13 @@ pub fn fix_requires(
     src_prefix: &str,
 ) -> Result<FixResult> {
     let ctx = FixContext::for_path(root_dir, aliases, src_prefix);
+    fix_requires_with_context(root_dir, &ctx)
+}
 
-    let files: Vec<PathBuf> = WalkDir::new(root_dir)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file() && is_lua_file(e.path()))
-        .map(|e| e.into_path())
-        .collect();
-
+pub fn fix_requires_with_context(root_dir: &Path, ctx: &FixContext) -> Result<FixResult> {
+    let files = lua_files(root_dir);
     let total_files_scanned = files.len();
+    let module_index = ModuleIndex::from_files(&files);
 
     let mut changes: Vec<FileChange> = Vec::new();
     for path in &files {
@@ -77,15 +173,8 @@ pub fn fix_requires(
         if !content.contains("require(\"") {
             continue;
         }
-        let (new_content, rewrites) = process_file_content(
-            &content,
-            &ctx.sorted_aliases,
-            &ctx.skip_list,
-            src_prefix,
-            Some(root_dir),
-            &ctx.inverted_aliases,
-            &ctx.game_alias_rewrites,
-        );
+        let (new_content, rewrites) =
+            process_file_content_with_index(&content, ctx, Some(&module_index));
         if rewrites.is_empty() {
             continue;
         }
@@ -104,23 +193,17 @@ pub fn fix_requires(
     })
 }
 
-pub fn fix_single_file(
+pub fn fix_single_file_with_index(
     file_path: &Path,
-    aliases: &HashMap<String, String>,
-    src_prefix: &str,
+    ctx: &FixContext,
+    module_index: &ModuleIndex,
 ) -> Result<Option<FileChange>> {
-    let ctx = FixContext::for_path(file_path, aliases, src_prefix);
-
     let content = std::fs::read_to_string(file_path)?;
-    let (new_content, rewrites) = process_file_content(
-        &content,
-        &ctx.sorted_aliases,
-        &ctx.skip_list,
-        src_prefix,
-        Some(Path::new(src_prefix)),
-        &ctx.inverted_aliases,
-        &ctx.game_alias_rewrites,
-    );
+    if !content.contains("require(\"") {
+        return Ok(None);
+    }
+    let (new_content, rewrites) =
+        process_file_content_with_index(&content, ctx, Some(module_index));
 
     if rewrites.is_empty() {
         return Ok(None);
@@ -133,33 +216,96 @@ pub fn fix_single_file(
     }))
 }
 
-pub fn fix_single_file_with_context(
-    file_path: &Path,
-    ctx: &FixContext,
-) -> Result<Option<FileChange>> {
-    let content = std::fs::read_to_string(file_path)?;
-    if !content.contains("require(\"") {
-        return Ok(None);
-    }
-    let (new_content, rewrites) = process_file_content(
-        &content,
-        &ctx.sorted_aliases,
-        &ctx.skip_list,
-        &ctx.src_prefix,
-        Some(Path::new(&ctx.src_prefix)),
-        &ctx.inverted_aliases,
-        &ctx.game_alias_rewrites,
-    );
+fn game_require_from_mappings(
+    project_dir: &Path,
+    source_path: &Path,
+    mappings: &[rojo_project::AliasRojoMapping],
+) -> Option<String> {
+    let source = source_path.strip_prefix(project_dir).unwrap_or(source_path);
+    let source = normalize_separators(&source.to_string_lossy());
+    let mut best_length = 0;
+    let mut best_path = None;
 
-    if rewrites.is_empty() {
-        return Ok(None);
+    for mapping in mappings {
+        let alias_path = mapping.alias_path.trim_end_matches('/');
+        let relative = if source == alias_path {
+            ""
+        } else if let Some(relative) = source.strip_prefix(&format!("{alias_path}/")) {
+            relative
+        } else {
+            continue;
+        };
+        if alias_path.len() <= best_length {
+            continue;
+        }
+        let mut path = mapping.instance_path.clone();
+        path.extend(
+            strip_module_suffix(relative)
+                .split('/')
+                .filter(|component| !component.is_empty())
+                .map(str::to_string),
+        );
+        best_length = alias_path.len();
+        best_path = Some(rojo_project::game_require(&path));
+    }
+    best_path
+}
+
+pub fn rewrite_require_prefixes(
+    root_dir: &Path,
+    replacements: &[(String, String)],
+) -> Result<usize> {
+    if replacements.is_empty() {
+        return Ok(0);
     }
 
-    std::fs::write(file_path, &new_content)?;
-    Ok(Some(FileChange {
-        file: file_path.to_path_buf(),
-        rewrites,
-    }))
+    let replacements = replacements
+        .iter()
+        .map(|(old, new)| (old.as_str(), new.as_str()))
+        .collect::<HashMap<_, _>>();
+    let mut changed = 0;
+    for path in lua_files(root_dir) {
+        let content = std::fs::read_to_string(&path)?;
+        if !content.contains("require(\"") {
+            continue;
+        }
+        let mut rewrites = Vec::new();
+        for captures in require_regex().captures_iter(&content) {
+            let whole = captures.get(0).expect("require match");
+            let path = captures.get(1).expect("require path").as_str();
+            if let Some((old_path, new_path)) = matching_prefix(path, &replacements) {
+                let suffix = &path[old_path.len()..];
+                rewrites.push((
+                    whole.start(),
+                    whole.end(),
+                    format!("require(\"{new_path}{suffix}\")"),
+                ));
+            }
+        }
+        if !rewrites.is_empty() {
+            let mut updated = content;
+            for (start, end, replacement) in rewrites.into_iter().rev() {
+                updated.replace_range(start..end, &replacement);
+            }
+            std::fs::write(&path, updated)?;
+            changed += 1;
+        }
+    }
+    Ok(changed)
+}
+
+fn matching_prefix<'a>(
+    path: &'a str,
+    replacements: &'a HashMap<&str, &str>,
+) -> Option<(&'a str, &'a str)> {
+    let mut candidate = path;
+    loop {
+        if let Some(new_path) = replacements.get(candidate) {
+            return Some((candidate, *new_path));
+        }
+        let slash = candidate.rfind('/')?;
+        candidate = &candidate[..slash];
+    }
 }
 
 fn normalize_separators(s: &str) -> String {
@@ -233,6 +379,15 @@ fn build_skip_list(aliases: &HashMap<String, String>, src_prefix: &str) -> Vec<S
     skip
 }
 
+pub fn lua_files(root_dir: &Path) -> Vec<PathBuf> {
+    WalkDir::new(root_dir)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file() && is_lua_file(entry.path()))
+        .map(|entry| entry.into_path())
+        .collect()
+}
+
 pub fn is_lua_file(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|s| s.to_str()),
@@ -244,33 +399,6 @@ pub fn require_regex() -> &'static Regex {
     static REQUIRE_RE: OnceLock<Regex> = OnceLock::new();
     REQUIRE_RE
         .get_or_init(|| Regex::new(r#"require\("([^"]+)"\)"#).expect("require regex is valid"))
-}
-
-fn find_file_by_name(expected_name: &str, search_dir: &Path) -> Option<PathBuf> {
-    let entries = std::fs::read_dir(search_dir).ok()?;
-    for entry in entries.filter_map(|e| e.ok()) {
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-        let path = entry.path();
-
-        if name_str == expected_name
-            || name_str == format!("{expected_name}.luau")
-            || name_str == format!("{expected_name}.lua")
-        {
-            if path.is_dir() {
-                return Some(path.join("init.luau"));
-            }
-            return Some(path);
-        }
-
-        if path.is_dir() {
-            if let Some(found) = find_file_by_name(expected_name, &path) {
-                return Some(found);
-            }
-        }
-    }
-
-    None
 }
 
 pub fn build_inverted_aliases(aliases: &HashMap<String, String>) -> Vec<(String, String)> {
@@ -290,24 +418,15 @@ pub fn build_inverted_aliases(aliases: &HashMap<String, String>) -> Vec<(String,
     inverted
 }
 
-fn build_game_alias_rewrites(
-    project_root: Option<&Path>,
-    aliases: &HashMap<String, String>,
-    src_prefix: &str,
+fn game_alias_rewrites_from_mappings(
+    mappings: &[rojo_project::AliasRojoMapping],
 ) -> Vec<(String, String)> {
-    let mappings = match project_root {
-        Some(project_root) => {
-            rojo_project::alias_rojo_mappings_for_project_root(project_root, aliases, src_prefix)
-        }
-        None => rojo_project::default_alias_rojo_mappings(aliases, src_prefix),
-    };
-
     let mut rewrites: Vec<(String, String)> = mappings
-        .into_iter()
+        .iter()
         .map(|mapping| {
             (
-                format!("@game/{}", mapping.game_path()),
                 format!("@{}", mapping.alias_name),
+                rojo_project::game_require(&mapping.instance_path),
             )
         })
         .collect();
@@ -321,23 +440,32 @@ fn convert_path_to_alias(file_path: &str, inverted_aliases: &[(String, String)])
     for (real_path, shortcut) in inverted_aliases {
         if converted.contains(real_path.as_str()) {
             converted = converted.replace(real_path.as_str(), shortcut.as_str());
+            if let Some(alias_start) = converted.find('@') {
+                converted = converted[alias_start..].to_string();
+            }
             break;
         }
     }
 
-    if converted.ends_with("/init.luau") {
-        converted.truncate(converted.len() - "/init.luau".len());
-    } else if converted.ends_with("/init.lua") {
-        converted.truncate(converted.len() - "/init.lua".len());
-    } else if converted.ends_with("/init") {
-        converted.truncate(converted.len() - "/init".len());
-    } else if let Some(stripped) = converted.strip_suffix(".luau") {
-        converted = stripped.to_string();
-    } else if let Some(stripped) = converted.strip_suffix(".lua") {
-        converted = stripped.to_string();
+    converted.truncate(strip_module_suffix(&converted).len());
+    converted
+}
+
+fn strip_module_suffix(path: &str) -> &str {
+    for init in ["init.luau", "init.lua", "init"] {
+        if let Some(stem) = path.strip_suffix(init) {
+            if stem.is_empty() {
+                return stem;
+            }
+            if let Some(parent) = stem.strip_suffix('/') {
+                return parent;
+            }
+        }
     }
 
-    converted
+    path.strip_suffix(".luau")
+        .or_else(|| path.strip_suffix(".lua"))
+        .unwrap_or(path)
 }
 
 fn starts_with_ignore_ascii_case(s: &str, prefix: &str) -> bool {
@@ -353,23 +481,23 @@ fn is_builtin_alias_path(required_path: &str) -> bool {
         || required_path.eq_ignore_ascii_case("@game")
 }
 
-fn rewrite_game_alias_path(
+fn rewrite_alias_as_game_path(
     required_path: &str,
     game_alias_rewrites: &[(String, String)],
 ) -> Option<String> {
-    for (game_path, alias_path) in game_alias_rewrites {
-        if required_path == game_path {
-            return Some(alias_path.clone());
+    for (alias_path, game_path) in game_alias_rewrites {
+        if required_path == alias_path {
+            return Some(game_path.clone());
         }
 
-        let Some(remainder) = required_path.strip_prefix(game_path) else {
+        let Some(remainder) = required_path.strip_prefix(alias_path) else {
             continue;
         };
         let Some(remainder) = remainder.strip_prefix('/') else {
             continue;
         };
 
-        return Some(format!("{alias_path}/{remainder}"));
+        return Some(format!("{game_path}/{remainder}"));
     }
 
     None
@@ -377,18 +505,30 @@ fn rewrite_game_alias_path(
 
 fn rewrite_require_path(
     required_path: &str,
-    sorted_aliases: &[(String, String)],
-    skip_list: &[String],
-    src_prefix: &str,
-    root_dir: Option<&Path>,
-    inverted_aliases: &[(String, String)],
-    game_alias_rewrites: &[(String, String)],
+    ctx: &FixContext,
+    module_index: Option<&ModuleIndex>,
 ) -> Option<String> {
-    if let Some(new_path) = rewrite_game_alias_path(required_path, game_alias_rewrites) {
-        return Some(new_path);
+    if required_path.starts_with("@game/") {
+        if let Some(index) = module_index {
+            if let Some(file_name) = required_path.rsplit('/').next() {
+                if let Some(found) = index.find_unique(file_name) {
+                    let found_str = normalize_separators(&found.to_string_lossy());
+                    let alias_path = convert_path_to_alias(&found_str, &ctx.inverted_aliases);
+                    if let Some(game_path) =
+                        rewrite_alias_as_game_path(&alias_path, &ctx.game_alias_rewrites)
+                    {
+                        if game_path != required_path {
+                            return Some(game_path);
+                        }
+                    }
+                }
+            }
+        }
+        return None;
     }
 
-    if skip_list
+    if ctx
+        .skip_list
         .iter()
         .any(|entry| required_path.starts_with(entry.as_str()))
     {
@@ -407,23 +547,24 @@ fn rewrite_require_path(
         return None;
     }
 
-    for (alias_shortcut, real_path) in sorted_aliases {
+    for (alias_shortcut, real_path) in &ctx.sorted_aliases {
         if required_path.starts_with(real_path.as_str()) {
-            return Some(format!(
-                "{}{}",
-                alias_shortcut,
-                &required_path[real_path.len()..]
-            ));
+            let alias_path = format!("{}{}", alias_shortcut, &required_path[real_path.len()..]);
+            return rewrite_alias_as_game_path(&alias_path, &ctx.game_alias_rewrites)
+                .or(Some(alias_path));
         }
     }
 
-    let src_slash = format!("{src_prefix}/");
-    if required_path.starts_with(&src_slash) || required_path == src_prefix {
-        if let Some(root) = root_dir {
+    let src_slash = format!("{}/", ctx.src_prefix);
+    if required_path.starts_with(&src_slash) || required_path == ctx.src_prefix {
+        if let Some(index) = module_index {
             if let Some(file_name) = required_path.rsplit('/').next() {
-                if let Some(found) = find_file_by_name(file_name, root) {
+                if let Some(found) = index.find_unique(file_name) {
                     let found_str = normalize_separators(&found.to_string_lossy());
-                    let converted = convert_path_to_alias(&found_str, inverted_aliases);
+                    let converted = convert_path_to_alias(&found_str, &ctx.inverted_aliases);
+                    let converted =
+                        rewrite_alias_as_game_path(&converted, &ctx.game_alias_rewrites)
+                            .unwrap_or(converted);
                     if converted != required_path {
                         return Some(converted);
                     }
@@ -444,7 +585,7 @@ fn rewrite_require_path(
     }
 
     let mut resolved_path = required_path.to_string();
-    for (shortcut, real_path) in sorted_aliases {
+    for (shortcut, real_path) in &ctx.sorted_aliases {
         if required_path.starts_with(shortcut.as_str()) {
             resolved_path = format!("{}{}", real_path, &required_path[shortcut.len()..]);
             break;
@@ -459,7 +600,7 @@ fn rewrite_require_path(
         return None;
     }
 
-    if let Some(root) = root_dir {
+    if let Some(index) = module_index {
         let as_file_path = resolved_path.replace('.', "/");
         let as_file_path = if as_file_path.ends_with("/luau") {
             &as_file_path[..as_file_path.len() - "/luau".len()]
@@ -472,20 +613,26 @@ fn rewrite_require_path(
         let full_path = format!("{as_file_path}.luau");
         let init_path = format!("{as_file_path}/init.luau");
 
-        if !Path::new(&full_path).is_file() && !Path::new(&init_path).is_file() {
-            if let Some(file_name) = as_file_path.rsplit('/').next() {
-                if let Some(found) = find_file_by_name(file_name, root) {
-                    let found_str = normalize_separators(&found.to_string_lossy());
-                    let converted = convert_path_to_alias(&found_str, inverted_aliases);
-                    if converted != required_path {
-                        return Some(converted);
-                    }
-                } else {
-                    output::warn(&format!(
-                        "could not find file '{}' for require path '{}'",
-                        file_name, required_path
-                    ));
+        if Path::new(&full_path).is_file() || Path::new(&init_path).is_file() {
+            if let Some(game_path) =
+                rewrite_alias_as_game_path(required_path, &ctx.game_alias_rewrites)
+            {
+                return Some(game_path);
+            }
+        } else if let Some(file_name) = as_file_path.rsplit('/').next() {
+            if let Some(found) = index.find_unique(file_name) {
+                let found_str = normalize_separators(&found.to_string_lossy());
+                let converted = convert_path_to_alias(&found_str, &ctx.inverted_aliases);
+                let converted = rewrite_alias_as_game_path(&converted, &ctx.game_alias_rewrites)
+                    .unwrap_or(converted);
+                if converted != required_path {
+                    return Some(converted);
                 }
+            } else {
+                output::warn(&format!(
+                    "could not find file '{}' for require path '{}'",
+                    file_name, required_path
+                ));
             }
         }
     }
@@ -495,12 +642,17 @@ fn rewrite_require_path(
 
 pub fn process_file_content(
     content: &str,
-    sorted_aliases: &[(String, String)],
-    skip_list: &[String],
-    src_prefix: &str,
+    ctx: &FixContext,
     root_dir: Option<&Path>,
-    inverted_aliases: &[(String, String)],
-    game_alias_rewrites: &[(String, String)],
+) -> (String, Vec<RequireRewrite>) {
+    let module_index = root_dir.map(ModuleIndex::build);
+    process_file_content_with_index(content, ctx, module_index.as_ref())
+}
+
+fn process_file_content_with_index(
+    content: &str,
+    ctx: &FixContext,
+    module_index: Option<&ModuleIndex>,
 ) -> (String, Vec<RequireRewrite>) {
     let re = require_regex();
     let mut rewrites: Vec<RequireRewrite> = Vec::new();
@@ -518,15 +670,7 @@ pub fn process_file_content(
         rebuilt.push_str(&content[last_end..whole_match.start()]);
 
         let required_path = path_match.as_str();
-        if let Some(new_path) = rewrite_require_path(
-            required_path,
-            sorted_aliases,
-            skip_list,
-            src_prefix,
-            root_dir,
-            inverted_aliases,
-            game_alias_rewrites,
-        ) {
+        if let Some(new_path) = rewrite_require_path(required_path, ctx, module_index) {
             rebuilt.push_str("require(\"");
             rebuilt.push_str(&new_path);
             rebuilt.push_str("\")");
@@ -565,8 +709,16 @@ mod tests {
         m
     }
 
-    fn game_alias_rewrites_for(aliases: &HashMap<String, String>) -> Vec<(String, String)> {
-        build_game_alias_rewrites(None, aliases, "src")
+    fn ctx_without_game_paths(aliases: &HashMap<String, String>) -> FixContext {
+        FixContext::from_mappings(aliases, "src", Vec::new())
+    }
+
+    fn ctx_with_game_paths(aliases: &HashMap<String, String>) -> FixContext {
+        FixContext::from_mappings(
+            aliases,
+            "src",
+            rojo_project::default_alias_rojo_mappings(aliases, "src"),
+        )
     }
 
     #[test]
@@ -575,11 +727,8 @@ mod tests {
         aliases.insert("Client".to_string(), "src/client/".to_string());
         aliases.insert("SharedClient".to_string(), "src/client/shared/".to_string());
 
-        let sorted = build_sorted_src_aliases(&aliases, "src");
-        let skip = build_skip_list(&aliases, "src");
-
         let content = r#"local m = require("src/client/shared/util")"#;
-        let (_, rewrites) = process_file_content(content, &sorted, &skip, "src", None, &[], &[]);
+        let (_, rewrites) = process_file_content(content, &ctx_without_game_paths(&aliases), None);
 
         assert_eq!(rewrites.len(), 1);
         assert_eq!(
@@ -589,20 +738,19 @@ mod tests {
     }
 
     #[test]
-    fn test_rewrites_game_shared_path_to_alias() {
+    fn test_rewrites_source_path_to_game_path() {
         let aliases = standard_aliases();
-        let sorted = build_sorted_src_aliases(&aliases, "src");
-        let skip = build_skip_list(&aliases, "src");
-        let game_aliases = game_alias_rewrites_for(&aliases);
 
-        let content = r#"local m = require("@game/ReplicatedStorage/Shared/Util")"#;
+        let content = r#"local m = require("src/shared/Util")"#;
         let (new_content, rewrites) =
-            process_file_content(content, &sorted, &skip, "src", None, &[], &game_aliases);
+            process_file_content(content, &ctx_with_game_paths(&aliases), None);
 
-        assert_eq!(rewrites.len(), 1, "shared @game path should be rewritten");
-        assert_eq!(rewrites[0].old, "@game/ReplicatedStorage/Shared/Util");
-        assert_eq!(rewrites[0].new, "@Shared/Util");
-        assert_eq!(new_content, r#"local m = require("@Shared/Util")"#);
+        assert_eq!(rewrites.len(), 1);
+        assert_eq!(rewrites[0].new, "@game/ReplicatedStorage/Shared/Util");
+        assert_eq!(
+            new_content,
+            r#"local m = require("@game/ReplicatedStorage/Shared/Util")"#
+        );
     }
 
     #[test]
@@ -611,14 +759,11 @@ mod tests {
         aliases.insert("Client".to_string(), "src/client/".to_string());
         aliases.insert("Server".to_string(), "src/server/".to_string());
 
-        let sorted = build_sorted_src_aliases(&aliases, "src");
-        let skip = build_skip_list(&aliases, "src");
-
         let content = r#"
 local a = require("src/client/ui")
 local b = require("src/server/api")
 "#;
-        let (_, rewrites) = process_file_content(content, &sorted, &skip, "src", None, &[], &[]);
+        let (_, rewrites) = process_file_content(content, &ctx_without_game_paths(&aliases), None);
 
         assert_eq!(rewrites.len(), 2, "both requires must be rewritten");
         let new_paths: Vec<&str> = rewrites.iter().map(|r| r.new.as_str()).collect();
@@ -686,7 +831,8 @@ local b = require("src/server/api")
 
         let updated = std::fs::read_to_string(&file_path).expect("read updated file");
         assert!(
-            updated.contains(r#"require("@Client/module")"#),
+            updated
+                .contains(r#"require("@game/StarterPlayer/StarterPlayerScripts/Client/module")"#),
             "file content must be updated on disk: {updated}"
         );
     }
@@ -708,8 +854,8 @@ local b = require("src/server/api")
         let consumer_path = dir.path().join("consumer.luau");
         let initial = std::fs::read_to_string(&consumer_path).expect("read initial consumer");
         assert!(
-            initial.contains("@Shared/module"),
-            "initial scan should resolve the consumer to the shared alias: {initial}"
+            initial.contains("@game/ReplicatedStorage/Shared/module"),
+            "initial scan should resolve the consumer to the shared module: {initial}"
         );
 
         std::fs::create_dir_all(dir.path().join("src/server")).expect("create server dir");
@@ -723,7 +869,7 @@ local b = require("src/server/api")
 
         let updated = std::fs::read_to_string(&consumer_path).expect("read updated consumer");
         assert!(
-            updated.contains("@Server/module"),
+            updated.contains("@game/ServerScriptService/Server/module"),
             "rescan must rewrite unchanged dependents after topology changes: {updated}"
         );
     }

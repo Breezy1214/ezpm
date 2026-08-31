@@ -18,6 +18,7 @@ pub enum FileChange {
     MetaChange(PathBuf),
     FileCreated(PathBuf),
     FileDeleted(PathBuf),
+    FileRenamed { from: PathBuf, to: PathBuf },
     DirectoryCreated(PathBuf),
     DirectoryRemoved(PathBuf),
     RojoProjectChange(PathBuf),
@@ -29,7 +30,6 @@ pub struct WatchTargets {
     pub source_root: PathBuf,
     pub project_files: Vec<PathBuf>,
     pub config_file: Option<PathBuf>,
-    pub generated_roots: Vec<PathBuf>,
 }
 
 impl WatchTargets {
@@ -38,7 +38,6 @@ impl WatchTargets {
             source_root: source_root.into(),
             project_files: Vec::new(),
             config_file: None,
-            generated_roots: Vec::new(),
         }
     }
 }
@@ -146,7 +145,6 @@ struct ClassificationRules {
     source_root: Option<PathBuf>,
     project_files: std::collections::HashMap<PathBuf, PathBuf>,
     config_file: Option<(PathBuf, PathBuf)>,
-    generated_roots: Vec<PathBuf>,
 }
 
 impl ClassificationRules {
@@ -162,11 +160,6 @@ impl ClassificationRules {
                 .config_file
                 .as_ref()
                 .map(|p| (clean_path(p), p.clone())),
-            generated_roots: targets
-                .generated_roots
-                .iter()
-                .map(|p| clean_path(p))
-                .collect(),
         }
     }
 
@@ -176,7 +169,6 @@ impl ClassificationRules {
             source_root: None,
             project_files: std::collections::HashMap::new(),
             config_file: None,
-            generated_roots: Vec::new(),
         }
     }
 
@@ -192,12 +184,6 @@ impl ClassificationRules {
                 .get(path)
                 .map(|original| FileChange::RojoProjectChange(original.clone()))
         }
-    }
-
-    fn is_generated(&self, path: &Path) -> bool {
-        self.generated_roots
-            .iter()
-            .any(|root| path.starts_with(root))
     }
 
     fn is_in_source(&self, path: &Path) -> bool {
@@ -236,12 +222,36 @@ fn classify_events_with_rules(
     for debounced in events {
         let kind = &debounced.event.kind;
 
-        for path in &debounced.event.paths {
-            let normalized_path = clean_path(path);
-
-            if rules.is_generated(&normalized_path) {
+        if matches!(
+            kind,
+            EventKind::Modify(ModifyKind::Name(
+                notify_debouncer_full::notify::event::RenameMode::Both
+            ))
+        ) && debounced.event.paths.len() == 2
+        {
+            let first = debounced.event.paths[0].clone();
+            let second = debounced.event.paths[1].clone();
+            let (from, to) = if first.exists() && !second.exists() {
+                (second, first)
+            } else {
+                (first, second)
+            };
+            let normalized_from = clean_path(&from);
+            let normalized_to = clean_path(&to);
+            if rules.is_in_source(&normalized_from)
+                && rules.is_in_source(&normalized_to)
+                && (is_relevant(&from) || is_relevant(&to))
+            {
+                let change = FileChange::FileRenamed { from, to };
+                if seen.insert(change.clone()) {
+                    result.push(change);
+                }
                 continue;
             }
+        }
+
+        for path in &debounced.event.paths {
+            let normalized_path = clean_path(path);
 
             if let Some(change) = rules.control_change(&normalized_path) {
                 if seen.insert(change.clone()) {
@@ -362,6 +372,7 @@ fn classify_events_with_rules(
             }
             FileChange::LuaChange(p)
             | FileChange::MetaChange(p)
+            | FileChange::FileRenamed { to: p, .. }
             | FileChange::FileCreated(p)
             | FileChange::DirectoryCreated(p)
             | FileChange::RojoProjectChange(p)
@@ -615,7 +626,6 @@ mod tests {
             source_root: tmp.path().join("src"),
             project_files: vec![tmp.path().join("default.project.json")],
             config_file: Some(tmp.path().join("ezpm.toml")),
-            generated_roots: vec![tmp.path().join("darklua_build")],
         })
     }
 
@@ -654,13 +664,13 @@ mod tests {
     }
 
     #[test]
-    fn test_generated_output_and_parent_siblings_do_not_loop() {
+    fn test_paths_outside_the_source_root_are_ignored() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let generated = tmp.path().join("darklua_build/generated.luau");
+        let outside = tmp.path().join("build/generated.luau");
         let unrelated = tmp.path().join("README.md");
         let events = vec![make_debounced_event(
             EventKind::Create(CreateKind::File),
-            vec![generated, unrelated],
+            vec![outside, unrelated],
         )];
 
         let result = classify_events_with_rules(&events, &[], &scoped_rules(&tmp));
@@ -680,7 +690,6 @@ mod tests {
             source_root: src,
             project_files: vec![project.clone()],
             config_file: Some(tmp.path().join("ezpm.toml")),
-            generated_roots: vec![tmp.path().join("darklua_build")],
         };
         let (_watcher, mut rx) = FileWatcher::with_targets(targets, &[]).unwrap();
         tokio::time::sleep(Duration::from_millis(100)).await;

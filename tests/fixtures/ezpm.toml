@@ -3,7 +3,6 @@ name = "ez-project-manager"
 
 [paths]
 src = "src"
-darklua_build = "darklua_build"
 
 [display]
 file_changes = true

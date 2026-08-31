@@ -3,7 +3,7 @@ use std::path::Path;
 use std::sync::OnceLock;
 
 const EMBEDDED_ROKIT_TOML: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/rokit.toml"));
-const REQUIRED_RUNTIME_TOOL_NAMES: &[&str] = &["wally-package-types", "wally", "rojo", "darklua"];
+const REQUIRED_RUNTIME_TOOL_NAMES: &[&str] = &["wally-package-types", "wally", "rojo"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolSpec {

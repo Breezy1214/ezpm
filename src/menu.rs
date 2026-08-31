@@ -5,10 +5,10 @@ use crate::output;
 
 const MENU_ITEMS: &[(&str, &str, &str)] = &[
     ("init", "Create a new EZPM project", "init"),
-    ("serve", "Start file watcher + DarkLua + Rojo", "serve"),
+    ("serve", "Start require watcher + Rojo", "serve"),
     (
         "fix-requires",
-        "Rewrite require paths to @alias notation",
+        "Resolve shorthand require paths",
         "fix-requires",
     ),
     ("install", "Install tools and packages", "install"),

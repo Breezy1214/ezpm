@@ -90,22 +90,9 @@ pub fn alias_add() -> Result<()> {
         .and_then(|p| p.src.as_deref())
         .unwrap_or("src")
         .to_string();
-    let darklua_build = cfg
-        .paths
-        .as_ref()
-        .and_then(|p| p.darklua_build.as_deref())
-        .unwrap_or("darklua_build")
-        .to_string();
+    config::save_aliases_preserving_config(Path::new("."), &project_name, &src_dir, &aliases)?;
 
-    config::save_aliases_preserving_config(
-        Path::new("."),
-        &project_name,
-        &src_dir,
-        &darklua_build,
-        &aliases,
-    )?;
-
-    config_gen::write_config_files(Path::new("."), &aliases, cfg.darklua.as_ref())?;
+    config_gen::write_config_files(Path::new("."), &aliases)?;
 
     let path_no_slash = path.trim_end_matches('/');
     if !Path::new(path_no_slash).exists() {
@@ -175,22 +162,9 @@ pub fn alias_remove() -> Result<()> {
         .and_then(|p| p.src.as_deref())
         .unwrap_or("src")
         .to_string();
-    let darklua_build = cfg
-        .paths
-        .as_ref()
-        .and_then(|p| p.darklua_build.as_deref())
-        .unwrap_or("darklua_build")
-        .to_string();
+    config::save_aliases_preserving_config(Path::new("."), &project_name, &src_dir, &aliases)?;
 
-    config::save_aliases_preserving_config(
-        Path::new("."),
-        &project_name,
-        &src_dir,
-        &darklua_build,
-        &aliases,
-    )?;
-
-    config_gen::write_config_files(Path::new("."), &aliases, cfg.darklua.as_ref())?;
+    config_gen::write_config_files(Path::new("."), &aliases)?;
 
     output::success(&format!("Removed {} alias(es).", names_to_remove.len()));
     for name in &names_to_remove {
@@ -238,9 +212,9 @@ pub fn alias_sync() -> Result<()> {
         }
     };
 
-    config_gen::write_config_files(Path::new("."), aliases, cfg.darklua.as_ref())?;
+    config_gen::write_config_files(Path::new("."), aliases)?;
 
     output::success(&format!("Synced {} aliases from ezpm.toml", aliases.len()));
-    output::info("Regenerated .darklua.json and .luaurc");
+    output::info("Regenerated .luaurc");
     Ok(())
 }

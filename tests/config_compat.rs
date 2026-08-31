@@ -1,14 +1,4 @@
-use ezpm::config::{import_aliases_from_dir, load_config_from_str};
-use std::fs;
-use tempfile::TempDir;
-
-fn make_temp_dir(files: &[(&str, &str)]) -> TempDir {
-    let dir = TempDir::new().expect("failed to create temp dir");
-    for (name, content) in files {
-        fs::write(dir.path().join(name), content).expect("failed to write file");
-    }
-    dir
-}
+use ezpm::config::load_config_from_str;
 
 #[test]
 fn luau_format_ezpm_toml_loads_without_error() {
@@ -56,7 +46,6 @@ name = "my-game"
 
 [paths]
 src = "src"
-darklua_build = "darklua_build"
 
 [display]
 file_changes = true
@@ -81,7 +70,6 @@ port = 34872
 
     let paths = config.paths.expect("paths section");
     assert_eq!(paths.src, Some("src".to_string()));
-    assert_eq!(paths.darklua_build, Some("darklua_build".to_string()));
 
     let display = config.display.expect("display section");
     assert_eq!(display.file_changes, Some(true));
@@ -97,77 +85,14 @@ port = 34872
 }
 
 #[test]
-fn rojo_section_and_path_maps_parse_without_warnings() {
+fn rojo_project_path_parses_without_warnings() {
     let toml = r#"
 [rojo]
 project = "config/game.project.json"
-generated_project = "build/game.project.json"
-
-[[rojo.path_maps]]
-source = "src"
-build = "darklua_build"
-
-[[rojo.path_maps]]
-source = "common"
-build = "darklua_build/common"
 "#;
 
     let (config, warnings) = load_config_from_str(toml).expect("rojo config should parse");
     assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
     let rojo = config.rojo.expect("rojo section");
     assert_eq!(rojo.project.as_deref(), Some("config/game.project.json"));
-    assert_eq!(
-        rojo.generated_project.as_deref(),
-        Some("build/game.project.json")
-    );
-    let maps = rojo.path_maps.expect("path maps");
-    assert_eq!(maps.len(), 2);
-    assert_eq!(maps[1].source, "common");
-    assert_eq!(maps[1].build, "darklua_build/common");
-}
-
-#[test]
-fn luaurc_alias_import_preferred_over_darklua() {
-    let luaurc = r#"{
-        "aliases": {
-            "Client": "src/client/",
-            "lune": "~/.lune/.typedefs/0.8"
-        }
-    }"#;
-
-    let darklua_json = r#"{
-        "process": [{
-            "rule": "convert_require",
-            "current": {
-                "name": "luau",
-                "sources": {
-                    "@Client": "src/client/",
-                    "@Server": "src/server/"
-                }
-            },
-            "target": {
-                "name": "roblox",
-                "rojo_sourcemap": "sourcemap.json"
-            }
-        }]
-    }"#;
-
-    let dir = make_temp_dir(&[(".luaurc", luaurc), (".darklua.json", darklua_json)]);
-
-    let aliases = import_aliases_from_dir(dir.path());
-
-    assert_eq!(aliases.len(), 1, "should have 1 alias (lune skipped)");
-    assert_eq!(
-        aliases.get("Client"),
-        Some(&"src/client/".to_string()),
-        "Client alias from .luaurc"
-    );
-    assert!(
-        !aliases.contains_key("lune"),
-        "lune typedef path should be skipped"
-    );
-    assert!(
-        !aliases.contains_key("Server"),
-        ".darklua.json should not be used when .luaurc exists"
-    );
 }
