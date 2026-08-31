@@ -27,7 +27,7 @@ pub enum FileChange {
 
 #[derive(Debug, Clone)]
 pub struct WatchTargets {
-    pub source_root: PathBuf,
+    pub source_roots: Vec<PathBuf>,
     pub project_files: Vec<PathBuf>,
     pub config_file: Option<PathBuf>,
 }
@@ -35,7 +35,7 @@ pub struct WatchTargets {
 impl WatchTargets {
     pub fn source_only(source_root: impl Into<PathBuf>) -> Self {
         Self {
-            source_root: source_root.into(),
+            source_roots: vec![source_root.into()],
             project_files: Vec::new(),
             config_file: None,
         }
@@ -98,7 +98,12 @@ impl FileWatcher {
 
         let mut debouncer = new_debouncer(Duration::from_millis(100), None, callback)?;
 
-        debouncer.watch(&targets.source_root, RecursiveMode::Recursive)?;
+        let mut watched_roots = HashSet::new();
+        for source_root in &targets.source_roots {
+            if watched_roots.insert(clean_path(source_root)) {
+                debouncer.watch(source_root, RecursiveMode::Recursive)?;
+            }
+        }
 
         let mut watched_parents = HashSet::new();
         for control_file in targets
@@ -106,7 +111,11 @@ impl FileWatcher {
             .iter()
             .chain(targets.config_file.iter())
         {
-            if control_file.starts_with(&targets.source_root) {
+            if targets
+                .source_roots
+                .iter()
+                .any(|root| control_file.starts_with(root))
+            {
                 continue;
             }
             if let Some(parent) = control_file.parent() {
@@ -123,7 +132,12 @@ impl FileWatcher {
 
         output::verbose_line(&format!(
             "Watching {} recursively for .lua, .luau, init.meta.json, *.model.json",
-            targets.source_root.display()
+            targets
+                .source_roots
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
         ));
 
         Ok((
@@ -142,7 +156,7 @@ fn classify_events(events: &[DebouncedEvent], ignore_patterns: &[String]) -> Vec
 
 #[derive(Debug, Clone)]
 struct ClassificationRules {
-    source_root: Option<PathBuf>,
+    source_roots: Option<Vec<PathBuf>>,
     project_files: std::collections::HashMap<PathBuf, PathBuf>,
     config_file: Option<(PathBuf, PathBuf)>,
 }
@@ -150,7 +164,13 @@ struct ClassificationRules {
 impl ClassificationRules {
     fn new(targets: &WatchTargets) -> Self {
         Self {
-            source_root: Some(clean_path(&targets.source_root)),
+            source_roots: Some(
+                targets
+                    .source_roots
+                    .iter()
+                    .map(|path| clean_path(path))
+                    .collect(),
+            ),
             project_files: targets
                 .project_files
                 .iter()
@@ -166,7 +186,7 @@ impl ClassificationRules {
     #[cfg(test)]
     fn unscoped() -> Self {
         Self {
-            source_root: None,
+            source_roots: None,
             project_files: std::collections::HashMap::new(),
             config_file: None,
         }
@@ -187,9 +207,9 @@ impl ClassificationRules {
     }
 
     fn is_in_source(&self, path: &Path) -> bool {
-        self.source_root
+        self.source_roots
             .as_ref()
-            .is_none_or(|root| path.starts_with(root))
+            .is_none_or(|roots| roots.iter().any(|root| path.starts_with(root)))
     }
 }
 
@@ -623,7 +643,7 @@ mod tests {
 
     fn scoped_rules(tmp: &tempfile::TempDir) -> ClassificationRules {
         ClassificationRules::new(&WatchTargets {
-            source_root: tmp.path().join("src"),
+            source_roots: vec![tmp.path().join("src")],
             project_files: vec![tmp.path().join("default.project.json")],
             config_file: Some(tmp.path().join("ezpm.toml")),
         })
@@ -687,7 +707,7 @@ mod tests {
         std::fs::write(&project, b"{}").unwrap();
 
         let targets = WatchTargets {
-            source_root: src,
+            source_roots: vec![src],
             project_files: vec![project.clone()],
             config_file: Some(tmp.path().join("ezpm.toml")),
         };

@@ -54,16 +54,6 @@ pub struct DisplayConfig {
 #[derive(Debug, Deserialize, Serialize, Default)]
 pub struct ServeConfig {
     pub port: Option<u16>,
-    pub require_fix_mode: Option<RequireFixMode>,
-}
-
-#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum RequireFixMode {
-    Strict,
-    #[default]
-    Hybrid,
-    Fast,
 }
 
 #[derive(Serialize)]

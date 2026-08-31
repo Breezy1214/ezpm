@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use ezpm::config::load_config_from_str;
 use ezpm::services::config_gen::generate_luaurc;
-use ezpm::services::require_fixer::{self, process_file_content, FixContext};
+use ezpm::services::require_fixer::{process_file_content, FixContext};
 
 fn bench<F: FnMut()>(name: &str, iterations: u64, mut f: F) {
     for _ in 0..100 {
@@ -140,30 +140,6 @@ fn large_luau_file() -> String {
     content
 }
 
-fn create_temp_lua_tree(count: usize) -> tempfile::TempDir {
-    let dir = tempfile::TempDir::new().expect("create temp dir");
-    let src = dir.path().join("src");
-    std::fs::create_dir_all(src.join("client")).unwrap();
-    std::fs::create_dir_all(src.join("server")).unwrap();
-    std::fs::create_dir_all(src.join("shared")).unwrap();
-
-    let subdirs = ["client", "server", "shared"];
-    for i in 0..count {
-        let subdir = subdirs[i % subdirs.len()];
-        let content = if i % 3 == 0 {
-            format!(
-                "local mod = require(\"src/{}/Module{}\")\nreturn {{}}\n",
-                subdirs[(i + 1) % subdirs.len()],
-                i
-            )
-        } else {
-            "local x = 42\nreturn {}\n".to_string()
-        };
-        std::fs::write(src.join(subdir).join(format!("Module{}.luau", i)), content).unwrap();
-    }
-    dir
-}
-
 fn main() {
     println!();
     println!("╔══════════════════════════════════════════════════════════════════════╗");
@@ -196,8 +172,15 @@ fn main() {
 
     println!("── Require Path Rewriting ─────────────────────────────────────────");
     let aliases = sample_aliases();
-    let src_prefix = "src";
-    let fix_ctx = FixContext::from_mappings(&aliases, src_prefix, Vec::new());
+    let context_dir = tempfile::TempDir::new().expect("context temp dir");
+    let parse_sourcemap = || {
+        ezpm::services::sourcemap::SourcemapIndex::parse(
+            context_dir.path(),
+            br#"{"name":"Game","className":"DataModel"}"#,
+        )
+        .expect("parse sourcemap")
+    };
+    let fix_ctx = FixContext::new(context_dir.path(), &aliases, parse_sourcemap());
 
     let small_content = small_luau_file();
     bench("process_file_content (6 requires)", iterations, || {
@@ -237,27 +220,13 @@ fn main() {
         "fix_single_file rebuild vs cached (6 requires)",
         iterations,
         || {
-            let rebuilt = FixContext::from_mappings(&aliases, src_prefix, Vec::new());
+            let rebuilt = FixContext::new(context_dir.path(), &aliases, parse_sourcemap());
             let _ = process_file_content(small_content, &rebuilt, None);
         },
         || {
             let _ = process_file_content(small_content, &fix_ctx, None);
         },
     );
-
-    println!();
-
-    println!("── fix_requires 200 files ───────────────────────────────────────────");
-    let fix_context = require_fixer::FixContext::from_mappings(
-        &aliases,
-        "src",
-        ezpm::services::rojo_project::default_alias_rojo_mappings(&aliases, "src"),
-    );
-    bench("fix_requires 200 files", large_iterations, || {
-        let dir = create_temp_lua_tree(200);
-        let src_dir = dir.path().join("src");
-        let _ = require_fixer::fix_requires_with_context(&src_dir, &fix_context);
-    });
 
     println!();
 

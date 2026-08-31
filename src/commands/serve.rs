@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use crate::{
-    config::{self, EzpmConfig, RequireFixMode},
+    config::{self, EzpmConfig},
     output,
     services::{
         config_gen,
@@ -94,14 +94,12 @@ fn sync_toolchain_versions(project_dir: &Path) -> anyhow::Result<()> {
     }
 }
 
-async fn run_fix_requires(src: &str, context: &require_fixer::FixContext) -> bool {
-    let src_clone = src.to_string();
+async fn run_fix_requires(context: &require_fixer::FixContext) -> bool {
     let context = context.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        require_fixer::fix_requires_with_context(&PathBuf::from(&src_clone), &context)
-    })
-    .await
-    .unwrap_or_else(|e| Err(anyhow::anyhow!("task panicked: {}", e)));
+    let result =
+        tokio::task::spawn_blocking(move || require_fixer::fix_requires_with_context(&context))
+            .await
+            .unwrap_or_else(|e| Err(anyhow::anyhow!("task panicked: {}", e)));
 
     match result {
         Ok(_) => true,
@@ -112,22 +110,10 @@ async fn run_fix_requires(src: &str, context: &require_fixer::FixContext) -> boo
     }
 }
 
-fn fix_context(
-    project_dir: &Path,
-    settings: &RojoProjectSettings,
-    aliases: &HashMap<String, String>,
-    src: &str,
-) -> require_fixer::FixContext {
-    require_fixer::FixContext::new_for_project(project_dir, &settings.project, aliases, src)
-}
-
 struct ChangeContext<'a> {
-    src_prefix: &'a str,
-    require_fix_mode: RequireFixMode,
-    project_dir: &'a Path,
-    source_project: &'a Path,
     file_changes_enabled: bool,
     fix_ctx: &'a require_fixer::FixContext,
+    previous_fix_ctx: Option<&'a require_fixer::FixContext>,
     module_index: &'a require_fixer::ModuleIndex,
 }
 
@@ -219,21 +205,16 @@ fn refresh_changed_modules(snapshot: &mut ModuleSnapshot, changes: &[FileChange]
     }
 }
 
-fn needs_full_require_fix(mode: RequireFixMode, changes: &[FileChange]) -> bool {
-    match mode {
-        RequireFixMode::Strict => changes
-            .iter()
-            .any(|change| !matches!(change, FileChange::MetaChange(_))),
-        RequireFixMode::Hybrid => changes.iter().any(|change| {
-            matches!(
-                change,
-                FileChange::FileDeleted(_)
-                    | FileChange::FileRenamed { .. }
-                    | FileChange::DirectoryRemoved(_)
-            )
-        }),
-        RequireFixMode::Fast => false,
-    }
+fn needs_full_require_fix(changes: &[FileChange]) -> bool {
+    changes.iter().any(|change| {
+        matches!(
+            change,
+            FileChange::MetaChange(_)
+                | FileChange::FileDeleted(_)
+                | FileChange::FileRenamed { .. }
+                | FileChange::DirectoryRemoved(_)
+        )
+    })
 }
 
 fn changes_project_topology(changes: &[FileChange]) -> bool {
@@ -241,6 +222,7 @@ fn changes_project_topology(changes: &[FileChange]) -> bool {
         matches!(
             change,
             FileChange::FileCreated(_)
+                | FileChange::MetaChange(_)
                 | FileChange::FileDeleted(_)
                 | FileChange::FileRenamed { .. }
                 | FileChange::DirectoryCreated(_)
@@ -308,30 +290,25 @@ fn detected_renames(changes: &[FileChange]) -> Vec<(PathBuf, PathBuf)> {
     file_move.or_else(dir_move).into_iter().collect()
 }
 
-async fn refresh_sourcemap(project_dir: &Path, project_file: &Path) -> bool {
+async fn refresh_sourcemap(
+    project_dir: &Path,
+    project_file: &Path,
+) -> Option<sourcemap::SourcemapIndex> {
     let project_dir = project_dir.to_path_buf();
     let project_file = project_file.to_path_buf();
-    let result = tokio::task::spawn_blocking(move || {
-        sourcemap::generate_sourcemap_for_project(&project_dir, &project_file)
-    })
-    .await;
+    let result =
+        tokio::task::spawn_blocking(move || sourcemap::generate_index(&project_dir, &project_file))
+            .await;
 
     match result {
-        Ok(Ok(result)) if result.success => true,
-        Ok(Ok(result)) => {
-            output::error(&format!(
-                "Sourcemap update failed: {}",
-                result.stderr.trim()
-            ));
-            false
-        }
+        Ok(Ok(index)) => Some(index),
         Ok(Err(error)) => {
             output::error(&format!("Sourcemap update failed: {error}"));
-            false
+            None
         }
         Err(error) => {
             output::error(&format!("Sourcemap task panicked: {error}"));
-            false
+            None
         }
     }
 }
@@ -344,34 +321,28 @@ async fn handle_changes(
     let t0 = Instant::now();
     let is_batch = changes.len() > 1;
 
-    if changes_project_topology(changes) {
-        refresh_sourcemap(context.project_dir, context.source_project).await;
-    }
-
     let mut replacements = detected_renames(changes)
         .into_iter()
-        .filter_map(|(from, to)| {
-            let old_path = context
-                .fix_ctx
-                .game_require_for_source(context.project_dir, &from)?;
-            let new_path = context
-                .fix_ctx
-                .game_require_for_source(context.project_dir, &to)?;
-            (old_path != new_path).then_some((old_path, new_path))
+        .flat_map(|(from, to)| {
+            context
+                .previous_fix_ctx
+                .unwrap_or(context.fix_ctx)
+                .relocation_rewrites(context.fix_ctx, &from, &to)
         })
         .collect::<Vec<_>>();
     replacements.sort();
     replacements.dedup();
 
     if !replacements.is_empty() {
-        let source_root = context.project_dir.join(context.src_prefix);
-        if let Err(error) = require_fixer::rewrite_require_prefixes(&source_root, &replacements) {
+        if let Err(error) =
+            require_fixer::rewrite_require_prefixes(context.fix_ctx.script_files(), &replacements)
+        {
             output::error(&format!("Could not update renamed requires: {error}"));
         }
     }
 
-    let full_fix_performed = needs_full_require_fix(context.require_fix_mode, changes);
-    if full_fix_performed && !run_fix_requires(context.src_prefix, context.fix_ctx).await {
+    let full_fix_performed = needs_full_require_fix(changes);
+    if full_fix_performed && !run_fix_requires(context.fix_ctx).await {
         return;
     }
 
@@ -430,7 +401,7 @@ async fn handle_lua_file(
 ) {
     let t0 = Instant::now();
 
-    if !full_fix_performed && !matches!(context.require_fix_mode, RequireFixMode::Strict) {
+    if !full_fix_performed {
         if let Err(e) =
             require_fixer::fix_single_file_with_index(path, context.fix_ctx, context.module_index)
         {
@@ -496,11 +467,21 @@ async fn handle_process_event(
 
 fn watch_targets(
     project_dir: &Path,
-    source_root: &Path,
     settings: &RojoProjectSettings,
+    fix_context: &require_fixer::FixContext,
 ) -> WatchTargets {
+    let mut source_roots = vec![project_dir.to_path_buf()];
+    source_roots.extend(
+        fix_context
+            .script_files()
+            .iter()
+            .filter(|path| !path.starts_with(project_dir))
+            .filter_map(|path| path.parent().map(Path::to_path_buf)),
+    );
+    source_roots.sort();
+    source_roots.dedup();
     WatchTargets {
-        source_root: source_root.to_path_buf(),
+        source_roots,
         project_files: vec![project_dir.join(&settings.project)],
         config_file: Some(project_dir.join("ezpm.toml")),
     }
@@ -539,12 +520,6 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
         .as_ref()
         .and_then(|d| d.file_changes)
         .unwrap_or(true);
-    let require_fix_mode = config
-        .serve
-        .as_ref()
-        .and_then(|s| s.require_fix_mode)
-        .unwrap_or_default();
-
     let port: u16 = cli_port
         .or_else(|| config.serve.as_ref().and_then(|s| s.port))
         .unwrap_or(34872);
@@ -566,45 +541,41 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
         .context("failed to generate .luaurc from ezpm.toml")?;
 
     sync_toolchain_versions(&project_dir)?;
-    {
+    let initial_sourcemap = {
         let pb = output::start_spinner("Generating sourcemap...");
         let t0 = Instant::now();
         let project_dir_clone = project_dir.clone();
         let source_project = rojo_settings.project.clone();
         let result = tokio::task::spawn_blocking(move || {
-            sourcemap::generate_sourcemap_for_project(&project_dir_clone, &source_project)
+            sourcemap::generate_index(&project_dir_clone, &source_project)
         })
         .await
         .context("sourcemap task panicked")?;
         pb.finish_and_clear();
         match result {
-            Ok(r) if r.success => output::success(&format!(
-                "Sourcemap generated ({:.0}ms)",
-                t0.elapsed().as_millis()
-            )),
-            Ok(r) => {
-                let detail = r.stderr.trim().to_string();
-                output::error(&format!("Generate sourcemap failed: {}", detail));
-                return Err(anyhow::anyhow!("sourcemap generation failed"));
+            Ok(index) => {
+                output::success(&format!(
+                    "Sourcemap generated ({:.0}ms)",
+                    t0.elapsed().as_millis()
+                ));
+                index
             }
             Err(e) => {
                 output::error(&format!("Generate sourcemap failed: {}", e));
                 return Err(e);
             }
         }
-    }
+    };
 
-    let mut fix_ctx = fix_context(&project_dir, &rojo_settings, &aliases, &src);
+    let mut fix_ctx = require_fixer::FixContext::new(&project_dir, &aliases, initial_sourcemap);
     {
         let pb = output::start_spinner("Fixing require paths...");
         let t0 = Instant::now();
-        let src_clone = src.clone();
         let context = fix_ctx.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            require_fixer::fix_requires_with_context(&PathBuf::from(&src_clone), &context)
-        })
-        .await
-        .context("require-fixer task panicked")?;
+        let result =
+            tokio::task::spawn_blocking(move || require_fixer::fix_requires_with_context(&context))
+                .await
+                .context("require-fixer task panicked")?;
         pb.finish_and_clear();
         match result {
             Ok(fix_result) => output::success(&format!(
@@ -623,7 +594,7 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
         let pb = output::start_spinner("Starting file watcher...");
         let t0 = Instant::now();
         let result =
-            FileWatcher::with_targets(watch_targets(&project_dir, &src_path, &rojo_settings), &[]);
+            FileWatcher::with_targets(watch_targets(&project_dir, &rojo_settings, &fix_ctx), &[]);
         pb.finish_and_clear();
         match result {
             Ok((watcher, rx)) => {
@@ -676,11 +647,7 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
     }
     output::print_line("");
     output::info(&format!("Rojo serving on port {}", port));
-    output::info(&format!(
-        "Watching {}/ for changes (.lua, .luau, init.meta.json, *.model.json)",
-        src
-    ));
-    output::info(&format!("Require-fix mode: {:?}", require_fix_mode).to_lowercase());
+    output::info("Watching Rojo source files (.lua, .luau, init.meta.json, *.model.json)");
     output::info("Press Ctrl-C to stop");
     output::print_line("");
 
@@ -688,7 +655,7 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
     let mut rojo_restart_count: u32 = 0;
     let source_files = require_fixer::lua_files(&src_path);
     let mut module_snapshot = snapshot_modules(&source_files);
-    let mut module_index = require_fixer::ModuleIndex::from_files(&source_files);
+    let mut module_index = fix_ctx.module_index();
 
     #[cfg(unix)]
     let mut sig_hup = {
@@ -727,7 +694,6 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
                                     changes.push(inferred);
                                 }
                             }
-                            module_index = require_fixer::ModuleIndex::from_files(&files);
                         }
                         let config_changed = changes
                             .iter()
@@ -761,20 +727,29 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
                                     } else {
                                         if new_aliases != aliases {
                                             aliases = new_aliases;
-                                            fix_ctx = fix_context(
-                                                &project_dir,
-                                                &rojo_settings,
-                                                &aliases,
-                                                &src,
-                                            );
-                                            run_fix_requires(&src, &fix_ctx).await;
+                                            fix_ctx = fix_ctx.with_aliases(&aliases);
+                                            module_index = fix_ctx.module_index();
+                                            run_fix_requires(&fix_ctx).await;
                                         }
                                         let new_settings = RojoProjectSettings::from_config(&new_config);
                                         if new_settings != rojo_settings {
+                                            let Some(index) = refresh_sourcemap(
+                                                &project_dir,
+                                                &new_settings.project,
+                                            )
+                                            .await
+                                            else {
+                                                continue;
+                                            };
+                                            let new_fix_ctx = require_fixer::FixContext::new(
+                                                &project_dir,
+                                                &aliases,
+                                                index,
+                                            );
                                             let new_targets = watch_targets(
                                                 &project_dir,
-                                                &src_path,
                                                 &new_settings,
+                                                &new_fix_ctx,
                                             );
                                             match FileWatcher::with_targets(new_targets, &[]) {
                                                 Ok((new_watcher, new_rx)) => {
@@ -793,12 +768,8 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
                                                     watcher = new_watcher;
                                                     watcher_rx = new_rx;
                                                     rojo_settings = new_settings;
-                                                    fix_ctx = fix_context(
-                                                        &project_dir,
-                                                        &rojo_settings,
-                                                        &aliases,
-                                                        &src,
-                                                    );
+                                                    fix_ctx = new_fix_ctx;
+                                                    module_index = fix_ctx.module_index();
                                                     output::info("Reloaded Rojo project settings; alias changes take effect after restart.");
                                                 }
                                                 Err(error) => output::error(&format!(
@@ -818,10 +789,28 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
                             }
                         }
                         if project_changed {
-                            if refresh_sourcemap(&project_dir, &rojo_settings.project).await {
-                                fix_ctx =
-                                    fix_context(&project_dir, &rojo_settings, &aliases, &src);
-                                run_fix_requires(&src, &fix_ctx).await;
+                            if let Some(index) =
+                                refresh_sourcemap(&project_dir, &rojo_settings.project).await
+                            {
+                                fix_ctx = require_fixer::FixContext::new(
+                                    &project_dir,
+                                    &aliases,
+                                    index,
+                                );
+                                module_index = fix_ctx.module_index();
+                                match FileWatcher::with_targets(
+                                    watch_targets(&project_dir, &rojo_settings, &fix_ctx),
+                                    &[],
+                                ) {
+                                    Ok((new_watcher, new_rx)) => {
+                                        watcher = new_watcher;
+                                        watcher_rx = new_rx;
+                                    }
+                                    Err(error) => output::error(&format!(
+                                        "Could not update file watcher: {error}"
+                                    )),
+                                }
+                                run_fix_requires(&fix_ctx).await;
                             }
                             if let Err(error) = restart_rojo(
                                 &mut process_manager,
@@ -847,13 +836,24 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
                             })
                             .collect::<Vec<_>>();
                         if !source_changes.is_empty() {
+                            let previous_fix_ctx = topology_changed.then(|| fix_ctx.clone());
+                            if topology_changed {
+                                let Some(index) =
+                                    refresh_sourcemap(&project_dir, &rojo_settings.project).await
+                                else {
+                                    continue;
+                                };
+                                fix_ctx = require_fixer::FixContext::new(
+                                    &project_dir,
+                                    &aliases,
+                                    index,
+                                );
+                                module_index = fix_ctx.module_index();
+                            }
                             let context = ChangeContext {
-                                src_prefix: &src,
-                                require_fix_mode,
-                                project_dir: &project_dir,
-                                source_project: &rojo_settings.project,
                                 file_changes_enabled,
                                 fix_ctx: &fix_ctx,
+                                previous_fix_ctx: previous_fix_ctx.as_ref(),
                                 module_index: &module_index,
                             };
                             handle_changes(

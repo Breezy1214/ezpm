@@ -19,4 +19,3 @@ ServerPackages = "ServerPackages/"
 
 [serve]
 port = 34872
-require_fix_mode = "hybrid"

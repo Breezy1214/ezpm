@@ -141,40 +141,7 @@ fn run_command(cmd: &str) -> Result<()> {
                 .unwrap_or(false);
             crate::commands::quality::docs(docs_enabled)
         }
-        "fix-requires" => {
-            let rojo = crate::services::rojo_project::RojoProjectSettings::from_config(&cfg);
-            let aliases = cfg.aliases.clone().unwrap_or_default();
-            let context = crate::services::require_fixer::FixContext::new_for_project(
-                std::path::Path::new("."),
-                &rojo.project,
-                &aliases,
-                src,
-            );
-            let result = crate::services::require_fixer::fix_requires_with_context(
-                std::path::Path::new(src),
-                &context,
-            )?;
-            if result.files_changed == 0 {
-                output::success(&format!(
-                    "All requires up to date. 0 changes across {} files.",
-                    result.total_files_scanned
-                ));
-            } else {
-                let total_rewrites: usize = result.changes.iter().map(|c| c.rewrites.len()).sum();
-                for file_change in &result.changes {
-                    output::print_line(&format!("{}:", file_change.file.display()));
-                    for rw in &file_change.rewrites {
-                        output::print_line(&format!("  {} -> {}", rw.old, rw.new));
-                    }
-                }
-                output::print_line("");
-                output::success(&format!(
-                    "Fixed {} requires across {} files",
-                    total_rewrites, result.files_changed
-                ));
-            }
-            Ok(())
-        }
+        "fix-requires" => crate::commands::fix_requires::run(&cfg),
         "serve" => {
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()

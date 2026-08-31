@@ -6,6 +6,18 @@ use std::time::{Duration, Instant};
 #[test]
 fn serve_fixes_changed_lua_file_without_a_build_tree() {
     let dir = common::create_project();
+    std::fs::write(
+        dir.path().join("ezpm.toml"),
+        r#"[paths]
+src = "src/shared"
+
+[aliases]
+Client = "src/client/"
+Server = "src/server/"
+Shared = "src/shared/"
+"#,
+    )
+    .expect("write config with a narrow source root");
     let source = dir.path().join("src/client/init.luau");
 
     let mut child = Command::new(common::ezpm_bin())
@@ -30,12 +42,34 @@ fn serve_fixes_changed_lua_file_without_a_build_tree() {
         !dir.path().join("build").exists(),
         "serve created a build tree"
     );
+    assert!(
+        !dir.path().join("sourcemap.json").exists(),
+        "serve persisted its in-memory sourcemap"
+    );
     let luaurc = std::fs::read_to_string(dir.path().join(".luaurc"))
         .expect("serve should generate .luaurc from ezpm.toml");
     let luaurc: serde_json::Value = serde_json::from_str(&luaurc).expect("valid .luaurc");
     assert_eq!(luaurc["aliases"]["Shared"], "src/shared/");
     let initial_source = std::fs::read_to_string(&source).expect("read fixed source");
     assert!(initial_source.contains("@game/ReplicatedStorage/Shared/util"));
+
+    let server_script = dir.path().join("src/server/main.server.luau");
+    let client_script = dir.path().join("src/client/main.client.lua");
+    std::fs::write(&server_script, "return require(\"util\")\n").expect("write server script");
+    std::fs::write(&client_script, "return require(\"util\")\n").expect("write client script");
+    let suffixed_deadline = Instant::now() + Duration::from_secs(10);
+    let mut suffixed_scripts_fixed = false;
+    while Instant::now() < suffixed_deadline {
+        let server_fixed = std::fs::read_to_string(&server_script)
+            .is_ok_and(|contents| contents.contains("@game/ReplicatedStorage/Shared/util"));
+        let client_fixed = std::fs::read_to_string(&client_script)
+            .is_ok_and(|contents| contents.contains("@game/ReplicatedStorage/Shared/util"));
+        if server_fixed && client_fixed {
+            suffixed_scripts_fixed = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
 
     std::fs::write(
         &source,
@@ -74,6 +108,10 @@ fn serve_fixes_changed_lua_file_without_a_build_tree() {
     let _ = child.wait();
 
     assert!(rebuilt, "changed Lua file was not fixed");
+    assert!(
+        suffixed_scripts_fixed,
+        "requires inside .server/.client scripts were not fixed"
+    );
     assert!(
         rename_fixed,
         "requires were not repaired after module rename"
