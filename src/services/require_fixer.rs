@@ -87,21 +87,27 @@ impl ModuleIndex {
 
     fn find_unique(&self, name: &str) -> Option<&Path> {
         let matches = self.by_name.get(name)?;
-        if matches.len() == 1 {
-            return matches
-                .first()
-                .and_then(|index| self.files.get(*index))
-                .map(PathBuf::as_path);
+        let public_matches = matches
+            .iter()
+            .filter_map(|index| self.files.get(*index))
+            .filter(|path| !is_wally_index_path(path))
+            .collect::<Vec<_>>();
+
+        let candidates = if public_matches.is_empty() {
+            matches
+                .iter()
+                .filter_map(|index| self.files.get(*index))
+                .collect::<Vec<_>>()
+        } else {
+            public_matches
+        };
+
+        if candidates.len() == 1 {
+            return candidates.first().map(|path| path.as_path());
         }
 
         if let Ok(mut ambiguities) = self.ambiguities.lock() {
-            ambiguities.insert(
-                name.to_string(),
-                matches
-                    .iter()
-                    .filter_map(|index| self.files.get(*index).cloned())
-                    .collect(),
-            );
+            ambiguities.insert(name.to_string(), candidates.into_iter().cloned().collect());
         }
         None
     }
@@ -131,6 +137,11 @@ impl ModuleIndex {
             "ambiguous module name; use an alias or source path: {details}"
         ))
     }
+}
+
+fn is_wally_index_path(path: &Path) -> bool {
+    path.components()
+        .any(|component| component.as_os_str() == "_Index")
 }
 
 impl FixContext {
@@ -718,4 +729,5 @@ mod tests {
             "return require(\"Config\")\n"
         );
     }
+
 }
