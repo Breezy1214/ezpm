@@ -204,7 +204,14 @@ impl SourcemapIndex {
 }
 
 fn normalize_source_path(path: &Path) -> PathBuf {
-    dunce::simplified(path).to_path_buf()
+    #[cfg(windows)]
+    let path = path
+        .to_str()
+        .and_then(|path| path.strip_prefix("//?/"))
+        .map(|path| PathBuf::from(format!(r"\\?\{}", path.replace('/', r"\"))))
+        .unwrap_or_else(|| path.to_path_buf());
+
+    dunce::simplified(&path).to_path_buf()
 }
 
 fn is_lua_file(path: &Path) -> bool {
