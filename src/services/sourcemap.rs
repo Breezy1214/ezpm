@@ -91,7 +91,9 @@ impl SourcemapIndex {
     }
 
     pub fn game_path(&self, source_path: &Path) -> Option<&str> {
-        self.source_to_game.get(source_path).map(String::as_str)
+        self.source_to_game
+            .get(&normalize_source_path(source_path))
+            .map(String::as_str)
     }
 
     pub fn contains_game_path(&self, game_path: &str) -> bool {
@@ -135,11 +137,12 @@ impl SourcemapIndex {
             .iter()
             .filter(|path| is_lua_file(path))
             .map(|file_path| {
-                if file_path.is_absolute() {
+                let source_path = if file_path.is_absolute() {
                     file_path.clone()
                 } else {
                     project_dir.join(file_path)
-                }
+                };
+                normalize_source_path(&source_path)
             })
             .collect::<Vec<_>>();
 
@@ -198,6 +201,10 @@ impl SourcemapIndex {
         self.script_files.sort();
         self.script_files.dedup();
     }
+}
+
+fn normalize_source_path(path: &Path) -> PathBuf {
+    dunce::simplified(path).to_path_buf()
 }
 
 fn is_lua_file(path: &Path) -> bool {

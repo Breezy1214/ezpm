@@ -178,7 +178,8 @@ pub fn load_config_from_str(input: &str) -> Result<(EzpmConfig, Vec<String>)> {
 
     let mut unknown_fields: BTreeSet<String> = BTreeSet::new();
 
-    let de = toml::Deserializer::new(input);
+    let de = toml::Deserializer::parse(input)
+        .map_err(|e| anyhow::anyhow!("Failed to parse ezpm.toml: {}", e))?;
     let config: EzpmConfig = serde_ignored::deserialize(de, |path| {
         unknown_fields.insert(path.to_string());
     })
