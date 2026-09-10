@@ -50,7 +50,7 @@ ezpm init [--dry-run]     Create or adopt a project
 ezpm check [--json]       Dependency analysis (cycles, layer rules, unused modules)
 ezpm fix-requires         Rewrite requires across the source tree to @game/... form
 ezpm install              Rokit tools + Wally packages + type generation
-ezpm setup-wally-packages Clean reinstall of Wally deps + sourcemap/types
+ezpm setup-wally-packages Staged reinstall of Wally deps + sourcemap/types
 ezpm lint                 Selene + StyLua --check
 ezpm format [--check]     StyLua format (or verify only, for CI)
 ezpm alias <add|remove|list|sync>   Manage path aliases
@@ -163,7 +163,7 @@ Managed through [Rokit](https://github.com/rojo-rbx/rokit). `ezpm serve` bumps a
 | [Selene](https://github.com/Kampfkarren/selene) | Linter | 0.31.0 |
 | [StyLua](https://github.com/JohnnyMorganz/StyLua) | Formatter | 2.5.2 |
 
-`setup-wally-packages` wipes and reinstalls package directories, so it refuses to touch anything that is not a real top-level directory in the project root — no symlinks, no paths inside your source tree.
+`setup-wally-packages` installs into a temporary directory before updating package files in place, preserving existing directories and unchanged files for Rojo watchers.
 
 ## VS Code extension
 
