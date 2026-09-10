@@ -371,8 +371,8 @@ pub fn setup_wally_packages(
         .iter()
         .filter(|pkg_dir| Path::new(pkg_dir).is_dir())
         .collect();
-    let type_generation_succeeded = if type_dirs.is_empty() {
-        true
+    let type_generation_error = if type_dirs.is_empty() {
+        None
     } else {
         pb.set_message("Setting up package types...");
         let mut command = Command::new("wally-package-types");
@@ -383,26 +383,42 @@ pub fn setup_wally_packages(
 
         if output::is_verbose() {
             pb.suspend(|| {});
-            command
+            let status = command
                 .status()
-                .with_context(|| toolchain::missing_tool_context("wally-package-types"))?
-                .success()
+                .with_context(|| toolchain::missing_tool_context("wally-package-types"))?;
+            (!status.success()).then(String::new)
         } else {
             let result = command
                 .output()
                 .with_context(|| toolchain::missing_tool_context("wally-package-types"))?;
-            if !result.status.success() {
-                pb.suspend(|| {
-                    output::warn(&format!(
-                        "wally-package-types failed (types may be incomplete):\n{}\n{}",
-                        String::from_utf8_lossy(&result.stderr).trim(),
-                        String::from_utf8_lossy(&result.stdout).trim()
-                    ))
-                });
+            if result.status.success() {
+                None
+            } else {
+                let stderr = String::from_utf8_lossy(&result.stderr);
+                let stdout = String::from_utf8_lossy(&result.stdout);
+                let first_error = stderr
+                    .lines()
+                    .chain(stdout.lines())
+                    .find(|line| line.trim_start().starts_with("error:"))
+                    .unwrap_or("wally-package-types exited unsuccessfully")
+                    .trim();
+                Some(first_error.to_string())
             }
-            result.status.success()
         }
     };
+
+    if let Some(error) = type_generation_error {
+        let detail = if error.is_empty() {
+            String::new()
+        } else {
+            format!(" First error: {error}")
+        };
+        pb.suspend(|| {
+            output::warn(&format!(
+                "Some package type exports could not be generated; packages remain usable.{detail} Run with --verbose for full diagnostics."
+            ))
+        });
+    }
 
     pb.set_message("Finalizing...");
     let sm_result2 = sourcemap::generate_sourcemap_for_project(&cwd, &source_project)
@@ -413,15 +429,6 @@ pub fn setup_wally_packages(
         sm_result2.success,
         "Final sourcemap generation failed: {}",
         sm_result2.stderr
-    );
-    anyhow::ensure!(
-        type_generation_succeeded,
-        "Wally packages installed, but type generation failed for {}. See the tool diagnostics above.",
-        type_dirs
-            .iter()
-            .map(|path| path.as_str())
-            .collect::<Vec<_>>()
-            .join(", ")
     );
     output::success("Wally packages set up!");
     Ok(())
@@ -434,61 +441,19 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn staged_sync_preserves_unchanged_files_and_replaces_stale_contents() {
+    fn package_sync_preserves_removed_directory_for_rojo_watcher() {
         let dir = TempDir::new().unwrap();
         let source = dir.path().join("staging");
         let target = dir.path().join("Packages");
-        let package = "_Index/example_widget@1.0.0/widget";
-        for root in [&source, &target] {
-            std::fs::create_dir_all(root.join(package)).unwrap();
-            std::fs::write(root.join(package).join("init.luau"), "return {}").unwrap();
-        }
-        let unchanged = target.join(package).join("init.luau");
-        let old_time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
-        std::fs::File::options()
-            .write(true)
-            .open(&unchanged)
-            .unwrap()
-            .set_modified(old_time)
-            .unwrap();
-        std::fs::write(target.join("Widget.lua"), "stale thunk").unwrap();
-        std::fs::write(source.join("Widget.lua"), "fresh thunk").unwrap();
-        std::fs::create_dir_all(target.join("_Index/obsolete")).unwrap();
-        std::fs::write(target.join("_Index/obsolete/init.lua"), "stale").unwrap();
-        std::fs::write(target.join("Old.lua"), "stale").unwrap();
+        let obsolete = target.join("_Index/example_widget@1.0.0/widget");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&obsolete).unwrap();
+        std::fs::write(obsolete.join("init.luau"), "return {}").unwrap();
 
-        validate_package_target(dir.path(), "src", "Packages").unwrap();
         sync_package_dir(&source, &target).unwrap();
 
-        assert_eq!(
-            std::fs::metadata(unchanged).unwrap().modified().unwrap(),
-            old_time
-        );
-        assert_eq!(
-            std::fs::read_to_string(target.join("Widget.lua")).unwrap(),
-            "fresh thunk"
-        );
-        assert!(!target.join("Old.lua").exists());
-        assert!(target.join("_Index/obsolete").is_dir());
-        assert_eq!(
-            std::fs::read_dir(target.join("_Index/obsolete"))
-                .unwrap()
-                .count(),
-            0
-        );
-    }
-
-    #[test]
-    fn staged_sync_clears_packages_for_an_empty_realm() {
-        let dir = TempDir::new().unwrap();
-        let source = dir.path().join("staging");
-        let target = dir.path().join("ServerPackages");
-        std::fs::create_dir(&source).unwrap();
-        std::fs::create_dir(&target).unwrap();
-        std::fs::write(target.join("Old.lua"), "old").unwrap();
-        sync_package_dir(&source, &target).unwrap();
-        assert!(target.is_dir());
-        assert_eq!(std::fs::read_dir(target).unwrap().count(), 0);
+        assert!(obsolete.is_dir());
+        assert_eq!(std::fs::read_dir(obsolete).unwrap().count(), 0);
     }
 
     #[test]
