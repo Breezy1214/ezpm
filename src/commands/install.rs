@@ -19,28 +19,17 @@ pub fn get_package_dirs(
     aliases: Option<&HashMap<String, String>>,
     src_prefix: &str,
 ) -> Vec<String> {
-    let aliases = match aliases {
-        Some(a) if !a.is_empty() => a,
-        _ => return vec!["Packages".to_string(), "ServerPackages".to_string()],
-    };
-
     let mut dirs = BTreeSet::new();
 
     for alias_name in ["Packages", "ServerPackages"] {
-        let Some(path) = aliases.get(alias_name) else {
-            continue;
-        };
-
-        if let Some(top_dir) = safe_top_level_package_dir(path, src_prefix) {
-            dirs.insert(top_dir);
-        }
+        let package_dir = aliases
+            .and_then(|aliases| aliases.get(alias_name))
+            .and_then(|path| safe_top_level_package_dir(path, src_prefix))
+            .unwrap_or_else(|| alias_name.to_string());
+        dirs.insert(package_dir);
     }
 
-    if dirs.is_empty() {
-        vec!["Packages".to_string(), "ServerPackages".to_string()]
-    } else {
-        dirs.into_iter().collect()
-    }
+    dirs.into_iter().collect()
 }
 
 fn safe_top_level_package_dir(candidate: &str, src_prefix: &str) -> Option<String> {
@@ -457,7 +446,7 @@ mod tests {
     }
 
     #[test]
-    fn package_dirs_ignore_aliases_that_resolve_outside_project_children() {
+    fn package_dirs_default_missing_or_unsafe_aliases() {
         let mut aliases = HashMap::new();
         aliases.insert("ProjectRoot".to_string(), ".".to_string());
         aliases.insert("ExplicitRoot".to_string(), "./".to_string());
@@ -465,11 +454,6 @@ mod tests {
         aliases.insert("Absolute".to_string(), "/tmp/Packages".to_string());
         aliases.insert("Client".to_string(), "src/client/".to_string());
         aliases.insert("Packages".to_string(), "Packages/".to_string());
-        aliases.insert(
-            "ServerPackages".to_string(),
-            "./ServerPackages/".to_string(),
-        );
-
         let package_dirs = get_package_dirs(Some(&aliases), "src");
 
         assert_eq!(
