@@ -18,6 +18,7 @@ pub enum FileChange {
     MetaChange(PathBuf),
     FileCreated(PathBuf),
     FileDeleted(PathBuf),
+    FileRenamed { from: PathBuf, to: PathBuf },
     DirectoryCreated(PathBuf),
     DirectoryRemoved(PathBuf),
     RojoProjectChange(PathBuf),
@@ -26,19 +27,17 @@ pub enum FileChange {
 
 #[derive(Debug, Clone)]
 pub struct WatchTargets {
-    pub source_root: PathBuf,
+    pub source_roots: Vec<PathBuf>,
     pub project_files: Vec<PathBuf>,
     pub config_file: Option<PathBuf>,
-    pub generated_roots: Vec<PathBuf>,
 }
 
 impl WatchTargets {
     pub fn source_only(source_root: impl Into<PathBuf>) -> Self {
         Self {
-            source_root: source_root.into(),
+            source_roots: vec![source_root.into()],
             project_files: Vec::new(),
             config_file: None,
-            generated_roots: Vec::new(),
         }
     }
 }
@@ -99,7 +98,12 @@ impl FileWatcher {
 
         let mut debouncer = new_debouncer(Duration::from_millis(100), None, callback)?;
 
-        debouncer.watch(&targets.source_root, RecursiveMode::Recursive)?;
+        let mut watched_roots = HashSet::new();
+        for source_root in &targets.source_roots {
+            if watched_roots.insert(clean_path(source_root)) {
+                debouncer.watch(source_root, RecursiveMode::Recursive)?;
+            }
+        }
 
         let mut watched_parents = HashSet::new();
         for control_file in targets
@@ -107,7 +111,11 @@ impl FileWatcher {
             .iter()
             .chain(targets.config_file.iter())
         {
-            if control_file.starts_with(&targets.source_root) {
+            if targets
+                .source_roots
+                .iter()
+                .any(|root| control_file.starts_with(root))
+            {
                 continue;
             }
             if let Some(parent) = control_file.parent() {
@@ -124,7 +132,12 @@ impl FileWatcher {
 
         output::verbose_line(&format!(
             "Watching {} recursively for .lua, .luau, init.meta.json, *.model.json",
-            targets.source_root.display()
+            targets
+                .source_roots
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
         ));
 
         Ok((
@@ -143,16 +156,21 @@ fn classify_events(events: &[DebouncedEvent], ignore_patterns: &[String]) -> Vec
 
 #[derive(Debug, Clone)]
 struct ClassificationRules {
-    source_root: Option<PathBuf>,
+    source_roots: Option<Vec<PathBuf>>,
     project_files: std::collections::HashMap<PathBuf, PathBuf>,
     config_file: Option<(PathBuf, PathBuf)>,
-    generated_roots: Vec<PathBuf>,
 }
 
 impl ClassificationRules {
     fn new(targets: &WatchTargets) -> Self {
         Self {
-            source_root: Some(clean_path(&targets.source_root)),
+            source_roots: Some(
+                targets
+                    .source_roots
+                    .iter()
+                    .map(|path| clean_path(path))
+                    .collect(),
+            ),
             project_files: targets
                 .project_files
                 .iter()
@@ -162,21 +180,15 @@ impl ClassificationRules {
                 .config_file
                 .as_ref()
                 .map(|p| (clean_path(p), p.clone())),
-            generated_roots: targets
-                .generated_roots
-                .iter()
-                .map(|p| clean_path(p))
-                .collect(),
         }
     }
 
     #[cfg(test)]
     fn unscoped() -> Self {
         Self {
-            source_root: None,
+            source_roots: None,
             project_files: std::collections::HashMap::new(),
             config_file: None,
-            generated_roots: Vec::new(),
         }
     }
 
@@ -194,16 +206,10 @@ impl ClassificationRules {
         }
     }
 
-    fn is_generated(&self, path: &Path) -> bool {
-        self.generated_roots
-            .iter()
-            .any(|root| path.starts_with(root))
-    }
-
     fn is_in_source(&self, path: &Path) -> bool {
-        self.source_root
+        self.source_roots
             .as_ref()
-            .is_none_or(|root| path.starts_with(root))
+            .is_none_or(|roots| roots.iter().any(|root| path.starts_with(root)))
     }
 }
 
@@ -236,12 +242,36 @@ fn classify_events_with_rules(
     for debounced in events {
         let kind = &debounced.event.kind;
 
-        for path in &debounced.event.paths {
-            let normalized_path = clean_path(path);
-
-            if rules.is_generated(&normalized_path) {
+        if matches!(
+            kind,
+            EventKind::Modify(ModifyKind::Name(
+                notify_debouncer_full::notify::event::RenameMode::Both
+            ))
+        ) && debounced.event.paths.len() == 2
+        {
+            let first = debounced.event.paths[0].clone();
+            let second = debounced.event.paths[1].clone();
+            let (from, to) = if first.exists() && !second.exists() {
+                (second, first)
+            } else {
+                (first, second)
+            };
+            let normalized_from = clean_path(&from);
+            let normalized_to = clean_path(&to);
+            if rules.is_in_source(&normalized_from)
+                && rules.is_in_source(&normalized_to)
+                && (is_relevant(&from) || is_relevant(&to))
+            {
+                let change = FileChange::FileRenamed { from, to };
+                if seen.insert(change.clone()) {
+                    result.push(change);
+                }
                 continue;
             }
+        }
+
+        for path in &debounced.event.paths {
+            let normalized_path = clean_path(path);
 
             if let Some(change) = rules.control_change(&normalized_path) {
                 if seen.insert(change.clone()) {
@@ -362,6 +392,7 @@ fn classify_events_with_rules(
             }
             FileChange::LuaChange(p)
             | FileChange::MetaChange(p)
+            | FileChange::FileRenamed { to: p, .. }
             | FileChange::FileCreated(p)
             | FileChange::DirectoryCreated(p)
             | FileChange::RojoProjectChange(p)
@@ -612,10 +643,9 @@ mod tests {
 
     fn scoped_rules(tmp: &tempfile::TempDir) -> ClassificationRules {
         ClassificationRules::new(&WatchTargets {
-            source_root: tmp.path().join("src"),
+            source_roots: vec![tmp.path().join("src")],
             project_files: vec![tmp.path().join("default.project.json")],
             config_file: Some(tmp.path().join("ezpm.toml")),
-            generated_roots: vec![tmp.path().join("darklua_build")],
         })
     }
 
@@ -654,13 +684,13 @@ mod tests {
     }
 
     #[test]
-    fn test_generated_output_and_parent_siblings_do_not_loop() {
+    fn test_paths_outside_the_source_root_are_ignored() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let generated = tmp.path().join("darklua_build/generated.luau");
+        let outside = tmp.path().join("build/generated.luau");
         let unrelated = tmp.path().join("README.md");
         let events = vec![make_debounced_event(
             EventKind::Create(CreateKind::File),
-            vec![generated, unrelated],
+            vec![outside, unrelated],
         )];
 
         let result = classify_events_with_rules(&events, &[], &scoped_rules(&tmp));
@@ -677,10 +707,9 @@ mod tests {
         std::fs::write(&project, b"{}").unwrap();
 
         let targets = WatchTargets {
-            source_root: src,
+            source_roots: vec![src],
             project_files: vec![project.clone()],
             config_file: Some(tmp.path().join("ezpm.toml")),
-            generated_roots: vec![tmp.path().join("darklua_build")],
         };
         let (_watcher, mut rx) = FileWatcher::with_targets(targets, &[]).unwrap();
         tokio::time::sleep(Duration::from_millis(100)).await;

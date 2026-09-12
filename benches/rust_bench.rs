@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use ezpm::config::load_config_from_str;
-use ezpm::services::config_gen::{generate_darklua_json, generate_luaurc};
-use ezpm::services::require_fixer::{self, process_file_content};
+use ezpm::services::config_gen::generate_luaurc;
+use ezpm::services::require_fixer::{process_file_content, FixContext};
 
 fn bench<F: FnMut()>(name: &str, iterations: u64, mut f: F) {
     for _ in 0..100 {
@@ -83,7 +83,6 @@ name = "ez-project-manager"
 
 [paths]
 src = "src"
-darklua_build = "darklua_build"
 
 [display]
 file_changes = true
@@ -141,83 +140,6 @@ fn large_luau_file() -> String {
     content
 }
 
-fn build_sorted_src_aliases(
-    aliases: &HashMap<String, String>,
-    src_prefix: &str,
-) -> Vec<(String, String)> {
-    let prefix = format!("{src_prefix}/");
-    let mut list: Vec<(String, String)> = aliases
-        .iter()
-        .filter(|(_, path)| path.starts_with(&prefix) || *path == src_prefix)
-        .map(|(name, path)| {
-            let real_path = if path.ends_with('/') {
-                path.clone()
-            } else {
-                format!("{path}/")
-            };
-            (format!("@{name}/"), real_path)
-        })
-        .collect();
-    list.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(&b.0)));
-    list
-}
-
-fn build_skip_list(aliases: &HashMap<String, String>, src_prefix: &str) -> Vec<String> {
-    let prefix = format!("{src_prefix}/");
-    let mut skip = vec![
-        "@self/".to_string(),
-        "@self".to_string(),
-        "@game/".to_string(),
-        "@game".to_string(),
-    ];
-    for (name, path) in aliases {
-        if !path.starts_with(&prefix) && path != src_prefix {
-            skip.push(format!("@{name}/"));
-        }
-    }
-    skip
-}
-
-fn build_inverted_aliases(aliases: &HashMap<String, String>) -> Vec<(String, String)> {
-    let mut inverted: Vec<(String, String)> = aliases
-        .iter()
-        .map(|(name, path)| {
-            let real_path = if path.ends_with('/') {
-                path.clone()
-            } else {
-                format!("{path}/")
-            };
-            (real_path, format!("@{name}/"))
-        })
-        .collect();
-    inverted.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
-    inverted
-}
-
-fn create_temp_lua_tree(count: usize) -> tempfile::TempDir {
-    let dir = tempfile::TempDir::new().expect("create temp dir");
-    let src = dir.path().join("src");
-    std::fs::create_dir_all(src.join("client")).unwrap();
-    std::fs::create_dir_all(src.join("server")).unwrap();
-    std::fs::create_dir_all(src.join("shared")).unwrap();
-
-    let subdirs = ["client", "server", "shared"];
-    for i in 0..count {
-        let subdir = subdirs[i % subdirs.len()];
-        let content = if i % 3 == 0 {
-            format!(
-                "local mod = require(\"src/{}/Module{}\")\nreturn {{}}\n",
-                subdirs[(i + 1) % subdirs.len()],
-                i
-            )
-        } else {
-            "local x = 42\nreturn {}\n".to_string()
-        };
-        std::fs::write(src.join(subdir).join(format!("Module{}.luau", i)), content).unwrap();
-    }
-    dir
-}
-
 fn main() {
     println!();
     println!("╔══════════════════════════════════════════════════════════════════════╗");
@@ -250,22 +172,19 @@ fn main() {
 
     println!("── Require Path Rewriting ─────────────────────────────────────────");
     let aliases = sample_aliases();
-    let src_prefix = "src";
-    let sorted_aliases = build_sorted_src_aliases(&aliases, src_prefix);
-    let skip_list = build_skip_list(&aliases, src_prefix);
-    let inverted_aliases = build_inverted_aliases(&aliases);
+    let context_dir = tempfile::TempDir::new().expect("context temp dir");
+    let parse_sourcemap = || {
+        ezpm::services::sourcemap::SourcemapIndex::parse(
+            context_dir.path(),
+            br#"{"name":"Game","className":"DataModel"}"#,
+        )
+        .expect("parse sourcemap")
+    };
+    let fix_ctx = FixContext::new(context_dir.path(), &aliases, parse_sourcemap());
 
     let small_content = small_luau_file();
     bench("process_file_content (6 requires)", iterations, || {
-        let _ = process_file_content(
-            small_content,
-            &sorted_aliases,
-            &skip_list,
-            src_prefix,
-            None,
-            &inverted_aliases,
-            &[],
-        );
+        let _ = process_file_content(small_content, &fix_ctx, None);
     });
 
     let large_content = large_luau_file();
@@ -273,25 +192,13 @@ fn main() {
         "process_file_content (200 requires)",
         large_iterations,
         || {
-            let _ = process_file_content(
-                &large_content,
-                &sorted_aliases,
-                &skip_list,
-                src_prefix,
-                None,
-                &inverted_aliases,
-                &[],
-            );
+            let _ = process_file_content(&large_content, &fix_ctx, None);
         },
     );
 
     println!();
 
     println!("── Config File Generation ─────────────────────────────────────────");
-
-    bench("generate .darklua.json", iterations, || {
-        let _ = generate_darklua_json(None);
-    });
 
     bench("generate .luaurc (5 aliases)", iterations, || {
         let _ = generate_luaurc(&aliases);
@@ -313,40 +220,13 @@ fn main() {
         "fix_single_file rebuild vs cached (6 requires)",
         iterations,
         || {
-            let _sorted = build_sorted_src_aliases(&aliases, src_prefix);
-            let _skip = build_skip_list(&aliases, src_prefix);
-            let _inv = build_inverted_aliases(&aliases);
-            let _ = process_file_content(
-                small_content,
-                &_sorted,
-                &_skip,
-                src_prefix,
-                None,
-                &_inv,
-                &[],
-            );
+            let rebuilt = FixContext::new(context_dir.path(), &aliases, parse_sourcemap());
+            let _ = process_file_content(small_content, &rebuilt, None);
         },
         || {
-            let _ = process_file_content(
-                small_content,
-                &sorted_aliases,
-                &skip_list,
-                src_prefix,
-                None,
-                &inverted_aliases,
-                &[],
-            );
+            let _ = process_file_content(small_content, &fix_ctx, None);
         },
     );
-
-    println!();
-
-    println!("── fix_requires 200 files ───────────────────────────────────────────");
-    bench("fix_requires 200 files", large_iterations, || {
-        let dir = create_temp_lua_tree(200);
-        let src_dir = dir.path().join("src");
-        let _ = require_fixer::fix_requires(&src_dir, &aliases, "src");
-    });
 
     println!();
 
@@ -357,16 +237,7 @@ fn main() {
         large_iterations,
         || {
             let _ = load_config_from_str(sample_toml());
-            let _ = process_file_content(
-                &large_content,
-                &sorted_aliases,
-                &skip_list,
-                src_prefix,
-                None,
-                &inverted_aliases,
-                &[],
-            );
-            let _ = generate_darklua_json(None);
+            let _ = process_file_content(&large_content, &fix_ctx, None);
             let _ = generate_luaurc(&aliases);
         },
     );

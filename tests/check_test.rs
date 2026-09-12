@@ -53,7 +53,6 @@ name = "test-project"
 
 [paths]
 src = "src"
-darklua_build = "darklua_build"
 
 [aliases]
 Client = "src/client/"

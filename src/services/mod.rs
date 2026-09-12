@@ -1,8 +1,6 @@
 pub mod config_gen;
-pub mod darklua_runner;
 pub mod file_watcher;
 pub mod graph;
-pub mod meta_copier;
 pub mod process_manager;
 pub mod require_fixer;
 pub mod rojo_project;

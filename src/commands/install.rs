@@ -19,28 +19,17 @@ pub fn get_package_dirs(
     aliases: Option<&HashMap<String, String>>,
     src_prefix: &str,
 ) -> Vec<String> {
-    let aliases = match aliases {
-        Some(a) if !a.is_empty() => a,
-        _ => return vec!["Packages".to_string(), "ServerPackages".to_string()],
-    };
-
     let mut dirs = BTreeSet::new();
 
     for alias_name in ["Packages", "ServerPackages"] {
-        let Some(path) = aliases.get(alias_name) else {
-            continue;
-        };
-
-        if let Some(top_dir) = safe_top_level_package_dir(path, src_prefix) {
-            dirs.insert(top_dir);
-        }
+        let package_dir = aliases
+            .and_then(|aliases| aliases.get(alias_name))
+            .and_then(|path| safe_top_level_package_dir(path, src_prefix))
+            .unwrap_or_else(|| alias_name.to_string());
+        dirs.insert(package_dir);
     }
 
-    if dirs.is_empty() {
-        vec!["Packages".to_string(), "ServerPackages".to_string()]
-    } else {
-        dirs.into_iter().collect()
-    }
+    dirs.into_iter().collect()
 }
 
 fn safe_top_level_package_dir(candidate: &str, src_prefix: &str) -> Option<String> {
@@ -83,14 +72,14 @@ fn path_is_under_src(path: &str, src_prefix: &str) -> bool {
 
 fn safe_package_dir_path(project_root: &Path, src_prefix: &str, pkg_dir: &str) -> Result<PathBuf> {
     let pkg_dir = safe_top_level_package_dir(pkg_dir, src_prefix)
-        .with_context(|| format!("Refusing to clear unsafe package directory '{pkg_dir}'"))?;
+        .with_context(|| format!("Refusing to update unsafe package directory '{pkg_dir}'"))?;
     let target = project_root.join(&pkg_dir);
 
     let target_metadata = std::fs::symlink_metadata(&target)
         .with_context(|| format!("Failed to inspect package directory '{}'", target.display()))?;
     if target_metadata.file_type().is_symlink() || !target_metadata.is_dir() {
         anyhow::bail!(
-            "Refusing to clear package path that is not a real directory: '{}'",
+            "Refusing to update package path that is not a real directory: '{}'",
             target.display()
         );
     }
@@ -110,7 +99,7 @@ fn safe_package_dir_path(project_root: &Path, src_prefix: &str, pkg_dir: &str) -
         || canonical_target.parent() != Some(canonical_root.as_path())
     {
         anyhow::bail!(
-            "Refusing to clear unsafe package directory '{}'",
+            "Refusing to update unsafe package directory '{}'",
             target.display()
         );
     }
@@ -118,38 +107,81 @@ fn safe_package_dir_path(project_root: &Path, src_prefix: &str, pkg_dir: &str) -
     Ok(target)
 }
 
-fn clear_package_dir(project_root: &Path, src_prefix: &str, pkg_dir: &str) -> Result<()> {
-    let target = project_root.join(pkg_dir);
-
-    if !target.exists() {
-        let safe_name = safe_top_level_package_dir(pkg_dir, src_prefix)
-            .with_context(|| format!("Refusing to clear unsafe package directory '{pkg_dir}'"))?;
-        let target = project_root.join(safe_name);
-        std::fs::create_dir(&target).with_context(|| {
-            format!("Failed to create package directory '{}'", target.display())
-        })?;
-        return Ok(());
-    }
-
-    let target = safe_package_dir_path(project_root, src_prefix, pkg_dir)?;
-    for entry in std::fs::read_dir(&target)
-        .with_context(|| format!("Failed to read package directory '{}'", target.display()))?
-    {
-        let path = entry
-            .with_context(|| format!("Failed to read an entry in '{}'", target.display()))?
-            .path();
-        let metadata = std::fs::symlink_metadata(&path)
-            .with_context(|| format!("Failed to inspect package entry '{}'", path.display()))?;
-
-        if metadata.file_type().is_dir() {
-            std::fs::remove_dir_all(&path)
-                .with_context(|| format!("Failed to remove package entry '{}'", path.display()))?;
+fn clear_package_files(target: &Path) -> Result<()> {
+    for entry in std::fs::read_dir(target)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            clear_package_files(&entry.path())?;
         } else {
-            std::fs::remove_file(&path)
-                .with_context(|| format!("Failed to remove package entry '{}'", path.display()))?;
+            std::fs::remove_file(entry.path())?;
         }
     }
+    Ok(())
+}
 
+fn sync_package_dir(source: &Path, target: &Path) -> Result<()> {
+    std::fs::create_dir_all(target)?;
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        let dest = target.join(entry.file_name());
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
+            if dest.is_file() {
+                std::fs::remove_file(&dest)?;
+            }
+            sync_package_dir(&entry.path(), &dest)?;
+        } else if kind.is_file() {
+            if dest.is_dir() {
+                std::fs::remove_dir_all(&dest)?;
+            }
+            let contents = std::fs::read(entry.path())?;
+            match std::fs::read(&dest) {
+                Ok(existing) if existing == contents => {}
+                Ok(_) => std::fs::write(&dest, contents)?,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    std::fs::write(&dest, contents)?;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        } else {
+            anyhow::bail!(
+                "Unsupported staged package entry: {}",
+                entry.path().display()
+            );
+        }
+    }
+    for entry in std::fs::read_dir(target)? {
+        let entry = entry?;
+        if !source.join(entry.file_name()).exists() {
+            if entry.file_type()?.is_dir() {
+                clear_package_files(&entry.path())?;
+            } else {
+                std::fs::remove_file(entry.path())?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_package_target(project_root: &Path, src_prefix: &str, pkg_dir: &str) -> Result<()> {
+    safe_top_level_package_dir(pkg_dir, src_prefix)
+        .with_context(|| format!("Unsafe package directory '{pkg_dir}'"))?;
+    let target = project_root.join(pkg_dir);
+    match std::fs::symlink_metadata(&target) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.into()),
+        Ok(_) => {}
+    }
+    safe_package_dir_path(project_root, src_prefix, pkg_dir)?;
+    // Validate the entire target before writing anything, including nested links.
+    for entry in walkdir::WalkDir::new(&target).follow_links(false) {
+        let entry = entry?;
+        anyhow::ensure!(
+            entry.file_type().is_dir() || entry.file_type().is_file(),
+            "Refusing to update linked or special package entry: {}",
+            entry.path().display()
+        );
+    }
     Ok(())
 }
 
@@ -260,22 +292,13 @@ pub fn setup_wally_packages(
     let source_project = source_rojo_project();
 
     let pb = output::start_spinner("Setting up Wally packages...");
-    pb.set_message("Clearing current systems...");
-
-    if Path::new("sourcemap.json").exists() {
-        std::fs::remove_file("sourcemap.json").context("Failed to remove sourcemap.json")?;
-    }
-
-    if Path::new("wally.lock").exists() {
-        std::fs::remove_file("wally.lock").context("Failed to remove wally.lock")?;
-    }
-
     let cwd = std::env::current_dir().context("Failed to determine current directory")?;
-
     for pkg_dir in &package_dirs {
-        clear_package_dir(&cwd, src_prefix, pkg_dir)
-            .with_context(|| format!("Failed to clear {pkg_dir}/"))?;
+        validate_package_target(&cwd, src_prefix, pkg_dir)?;
     }
+
+    let staging = tempfile::tempdir().context("Failed to create Wally staging directory")?;
+    std::fs::copy(cwd.join("wally.toml"), staging.path().join("wally.toml"))?;
 
     pb.set_message("Installing Wally packages...");
 
@@ -283,6 +306,8 @@ pub fn setup_wally_packages(
         pb.suspend(|| {});
         let wally_status = Command::new("wally")
             .arg("install")
+            .arg("--project-path")
+            .arg(staging.path())
             .status()
             .with_context(|| toolchain::missing_tool_context("wally"))?;
 
@@ -296,17 +321,31 @@ pub fn setup_wally_packages(
     } else {
         let wally_out = Command::new("wally")
             .arg("install")
+            .arg("--project-path")
+            .arg(staging.path())
             .output()
             .with_context(|| toolchain::missing_tool_context("wally"))?;
 
         if !wally_out.status.success() {
             pb.finish_and_clear();
             anyhow::bail!(
-                "wally install failed with exit code: {:?}",
-                wally_out.status.code()
+                "wally install failed with exit code: {:?}: {}",
+                wally_out.status.code(),
+                String::from_utf8_lossy(&wally_out.stderr).trim()
             );
         }
     }
+
+    pb.set_message("Updating package files...");
+    for pkg_dir in &package_dirs {
+        validate_package_target(&cwd, src_prefix, pkg_dir)?;
+        let source = staging.path().join(pkg_dir);
+        std::fs::create_dir_all(&source)?;
+        sync_package_dir(&source, &cwd.join(pkg_dir))
+            .with_context(|| format!("Failed to update {pkg_dir}"))?;
+    }
+    std::fs::copy(staging.path().join("wally.lock"), cwd.join("wally.lock"))
+        .context("Failed to update wally.lock")?;
 
     pb.set_message("Generating source map...");
 
@@ -314,67 +353,72 @@ pub fn setup_wally_packages(
         .context("Failed to generate sourcemap")?;
 
     if !sm_result.success {
-        pb.suspend(|| {
-            output::warn(&format!(
-                "Warning: sourcemap generation failed: {}",
-                sm_result.stderr
-            ))
-        });
+        pb.finish_and_clear();
+        anyhow::bail!("Sourcemap generation failed: {}", sm_result.stderr);
     }
+    let type_dirs: Vec<_> = package_dirs
+        .iter()
+        .filter(|pkg_dir| Path::new(pkg_dir).is_dir())
+        .collect();
+    let type_generation_error = if type_dirs.is_empty() {
+        None
+    } else {
+        pb.set_message("Setting up package types...");
+        let mut command = Command::new("wally-package-types");
+        command
+            .arg("--sourcemap")
+            .arg("sourcemap.json")
+            .args(&type_dirs);
 
-    for pkg_dir in &package_dirs {
-        if Path::new(pkg_dir).exists() {
-            pb.set_message(format!("Setting up types for {pkg_dir}..."));
-
-            if output::is_verbose() {
-                pb.suspend(|| {});
-                let wpt_status = Command::new("wally-package-types")
-                    .arg("--sourcemap")
-                    .arg("sourcemap.json")
-                    .arg(pkg_dir.as_str())
-                    .status()
-                    .with_context(|| toolchain::missing_tool_context("wally-package-types"))?;
-
-                if !wpt_status.success() {
-                    pb.suspend(|| {
-                        output::warn(&format!(
-                            "wally-package-types failed for {pkg_dir} (types may be incomplete)"
-                        ))
-                    });
-                }
+        if output::is_verbose() {
+            pb.suspend(|| {});
+            let status = command
+                .status()
+                .with_context(|| toolchain::missing_tool_context("wally-package-types"))?;
+            (!status.success()).then(String::new)
+        } else {
+            let result = command
+                .output()
+                .with_context(|| toolchain::missing_tool_context("wally-package-types"))?;
+            if result.status.success() {
+                None
             } else {
-                let wpt_out = Command::new("wally-package-types")
-                    .arg("--sourcemap")
-                    .arg("sourcemap.json")
-                    .arg(pkg_dir.as_str())
-                    .output()
-                    .with_context(|| toolchain::missing_tool_context("wally-package-types"))?;
-
-                if !wpt_out.status.success() {
-                    pb.suspend(|| {
-                        output::warn(&format!(
-                            "wally-package-types failed for {pkg_dir} (types may be incomplete)"
-                        ))
-                    });
-                }
+                let stderr = String::from_utf8_lossy(&result.stderr);
+                let stdout = String::from_utf8_lossy(&result.stdout);
+                let first_error = stderr
+                    .lines()
+                    .chain(stdout.lines())
+                    .find(|line| line.trim_start().starts_with("error:"))
+                    .unwrap_or("wally-package-types exited unsuccessfully")
+                    .trim();
+                Some(first_error.to_string())
             }
         }
+    };
+
+    if let Some(error) = type_generation_error {
+        let detail = if error.is_empty() {
+            String::new()
+        } else {
+            format!(" First error: {error}")
+        };
+        pb.suspend(|| {
+            output::warn(&format!(
+                "Some package type exports could not be generated; packages remain usable.{detail} Run with --verbose for full diagnostics."
+            ))
+        });
     }
 
     pb.set_message("Finalizing...");
     let sm_result2 = sourcemap::generate_sourcemap_for_project(&cwd, &source_project)
         .context("Failed to generate final sourcemap")?;
 
-    if !sm_result2.success {
-        pb.suspend(|| {
-            output::warn(&format!(
-                "Warning: final sourcemap generation failed: {}",
-                sm_result2.stderr
-            ))
-        });
-    }
-
     pb.finish_and_clear();
+    anyhow::ensure!(
+        sm_result2.success,
+        "Final sourcemap generation failed: {}",
+        sm_result2.stderr
+    );
     output::success("Wally packages set up!");
     Ok(())
 }
@@ -386,7 +430,23 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn package_dirs_ignore_aliases_that_resolve_outside_project_children() {
+    fn package_sync_preserves_removed_directory_for_rojo_watcher() {
+        let dir = TempDir::new().unwrap();
+        let source = dir.path().join("staging");
+        let target = dir.path().join("Packages");
+        let obsolete = target.join("_Index/example_widget@1.0.0/widget");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&obsolete).unwrap();
+        std::fs::write(obsolete.join("init.luau"), "return {}").unwrap();
+
+        sync_package_dir(&source, &target).unwrap();
+
+        assert!(obsolete.is_dir());
+        assert_eq!(std::fs::read_dir(obsolete).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn package_dirs_default_missing_or_unsafe_aliases() {
         let mut aliases = HashMap::new();
         aliases.insert("ProjectRoot".to_string(), ".".to_string());
         aliases.insert("ExplicitRoot".to_string(), "./".to_string());
@@ -394,11 +454,6 @@ mod tests {
         aliases.insert("Absolute".to_string(), "/tmp/Packages".to_string());
         aliases.insert("Client".to_string(), "src/client/".to_string());
         aliases.insert("Packages".to_string(), "Packages/".to_string());
-        aliases.insert(
-            "ServerPackages".to_string(),
-            "./ServerPackages/".to_string(),
-        );
-
         let package_dirs = get_package_dirs(Some(&aliases), "src");
 
         assert_eq!(

@@ -1,7 +1,5 @@
 /Test
-.darklua.json
 .luaurc
-build/
 dist/
 ezpm.exe
 test.luau
@@ -13,7 +11,6 @@ default.project.json
 rokit.toml
 ezpm.toml
 !tests/fixtures/ezpm.toml
-darklua_build
 benches/luau_bench.luau
 node_modules/
 out/
