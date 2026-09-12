@@ -373,9 +373,9 @@ async fn handle_changes(
 
     if is_batch && context.file_changes_enabled {
         output::success(&format!(
-            "Rebuilt {} files ({}ms)",
+            "Rebuilt {} files ({})",
             changes.len(),
-            t0.elapsed().as_millis()
+            output::format_duration(t0.elapsed())
         ));
     }
 }
@@ -420,15 +420,15 @@ async fn handle_lua_file(
     if !is_batch && context.file_changes_enabled {
         if was_failed {
             output::success(&format!(
-                "{} fixed ({}ms)",
+                "{} fixed ({})",
                 filename,
-                t0.elapsed().as_millis()
+                output::format_duration(t0.elapsed())
             ));
         } else {
             output::success(&format!(
-                "Synced {} ({}ms)",
+                "Synced {} ({})",
                 filename,
-                t0.elapsed().as_millis()
+                output::format_duration(t0.elapsed())
             ));
         }
     }
@@ -555,8 +555,8 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
         match result {
             Ok(index) => {
                 output::success(&format!(
-                    "Sourcemap generated ({:.0}ms)",
-                    t0.elapsed().as_millis()
+                    "Sourcemap generated ({})",
+                    output::format_duration(t0.elapsed())
                 ));
                 index
             }
@@ -579,9 +579,9 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
         pb.finish_and_clear();
         match result {
             Ok(fix_result) => output::success(&format!(
-                "Requires fixed ({} files, {:.0}ms)",
+                "Requires fixed ({} files, {})",
                 fix_result.files_changed,
-                t0.elapsed().as_millis()
+                output::format_duration(t0.elapsed())
             )),
             Err(e) => {
                 output::error(&format!("Fix require paths failed: {}", e));
@@ -599,8 +599,8 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
         match result {
             Ok((watcher, rx)) => {
                 output::success(&format!(
-                    "File watcher started ({:.0}ms)",
-                    t0.elapsed().as_millis()
+                    "File watcher started ({})",
+                    output::format_duration(t0.elapsed())
                 ));
                 (watcher, rx)
             }
@@ -623,7 +623,10 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
         pb.finish_and_clear();
         match result {
             Ok(()) => {
-                output::success(&format!("Rojo started ({:.0}ms)", t0.elapsed().as_millis()));
+                output::success(&format!(
+                    "Rojo started ({})",
+                    output::format_duration(t0.elapsed())
+                ));
                 (pm, rx)
             }
             Err(e) => {
