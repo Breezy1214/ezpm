@@ -54,7 +54,6 @@ ezpm setup-wally-packages Staged reinstall of Wally deps + sourcemap/types
 ezpm lint                 Selene + StyLua --check
 ezpm format [--check]     StyLua format (or verify only, for CI)
 ezpm alias <add|remove|list|sync>   Manage path aliases
-ezpm docs                 Moonwave documentation server
 ```
 
 Global flags: `--verbose`, `--quiet`, `--color <auto|always|never>`.
@@ -100,7 +99,6 @@ src = "src"
 
 [display]
 file_changes = true
-docs_enabled = false      # must be true for `ezpm docs`
 logs_enabled = true
 check_updates = true      # or set EZPM_NO_UPDATE_CHECK=1
 
