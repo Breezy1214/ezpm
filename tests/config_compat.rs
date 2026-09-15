@@ -49,7 +49,6 @@ src = "src"
 
 [display]
 file_changes = true
-docs_enabled = false
 logs_enabled = true
 check_updates = false
 
@@ -73,7 +72,6 @@ port = 34872
 
     let display = config.display.expect("display section");
     assert_eq!(display.file_changes, Some(true));
-    assert_eq!(display.docs_enabled, Some(false));
     assert_eq!(display.logs_enabled, Some(true));
     assert_eq!(display.check_updates, Some(false));
 

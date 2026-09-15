@@ -9,7 +9,6 @@ describe("command parity", () => {
 			"setup-wally-packages",
 		]);
 		assert.deepEqual(byId.get("ezpm.formatCheck")?.args, ["format", "--check"]);
-		assert.equal(byId.get("ezpm.docs")?.execution, "terminal");
 		assert.equal(byId.get("ezpm.init")?.execution, "terminal");
 		assert.equal(byId.get("ezpm.alias")?.execution, "terminal");
 	});

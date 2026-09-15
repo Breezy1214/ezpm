@@ -142,14 +142,6 @@ fn main() {
         }
         Some(Commands::Lint) => quality::lint(&src),
         Some(Commands::Format { check }) => quality::format_code(&src, check),
-        Some(Commands::Docs) => {
-            let docs_enabled = loaded_config
-                .as_ref()
-                .and_then(|c| c.display.as_ref())
-                .and_then(|d| d.docs_enabled)
-                .unwrap_or(false);
-            quality::docs(docs_enabled)
-        }
         Some(Commands::FixRequires) => {
             let cfg = loaded_config.unwrap_or_default();
             fix_requires::run(&cfg)

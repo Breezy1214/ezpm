@@ -26,7 +26,6 @@ This extension wraps the `ezpm` CLI and preserves CLI behavior. It does not reim
 - `ezpm: Format` -> `ezpm format`
 - `ezpm: Format (Check Only)` -> `ezpm format --check`
 - `ezpm: Setup Wally Packages` -> `ezpm setup-wally-packages`
-- `ezpm: Docs` -> runs `ezpm docs` in an integrated terminal because the docs server is long-running
 - `ezpm: Init (Terminal)` -> runs `ezpm init` in integrated terminal
 - `ezpm: Alias (Terminal)` -> runs `ezpm alias` in integrated terminal
 

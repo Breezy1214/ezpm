@@ -64,9 +64,6 @@ pub enum Commands {
         check: bool,
     },
 
-    /// Open documentation server
-    Docs,
-
     /// Fix require paths in source files
     #[command(name = "fix-requires")]
     FixRequires,

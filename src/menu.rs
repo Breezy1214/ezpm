@@ -24,7 +24,6 @@ const MENU_ITEMS: &[(&str, &str, &str)] = &[
     ),
     ("lint", "Run Selene and StyLua checks", "lint"),
     ("format", "Format source with StyLua", "format"),
-    ("docs", "Launch Moonwave docs server", "docs"),
     ("exit", "Exit", "exit"),
 ];
 
@@ -133,14 +132,6 @@ fn run_command(cmd: &str) -> Result<()> {
         "alias-menu" => crate::commands::alias::alias_menu(),
         "lint" => crate::commands::quality::lint(src),
         "format" => crate::commands::quality::format_code(src, false),
-        "docs" => {
-            let docs_enabled = cfg
-                .display
-                .as_ref()
-                .and_then(|d| d.docs_enabled)
-                .unwrap_or(false);
-            crate::commands::quality::docs(docs_enabled)
-        }
         "fix-requires" => crate::commands::fix_requires::run(&cfg),
         "serve" => {
             let rt = tokio::runtime::Builder::new_multi_thread()

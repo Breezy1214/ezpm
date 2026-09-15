@@ -46,7 +46,6 @@ pub struct PathsConfig {
 #[derive(Debug, Deserialize, Serialize, Default)]
 pub struct DisplayConfig {
     pub file_changes: Option<bool>,
-    pub docs_enabled: Option<bool>,
     pub logs_enabled: Option<bool>,
     pub check_updates: Option<bool>,
 }
@@ -77,7 +76,6 @@ struct PathsTomlOutput {
 #[derive(Serialize)]
 struct DisplayTomlOutput {
     file_changes: bool,
-    docs_enabled: bool,
     logs_enabled: bool,
     check_updates: bool,
 }
@@ -97,7 +95,6 @@ pub fn save_ezpm_toml(
         },
         display: DisplayTomlOutput {
             file_changes: true,
-            docs_enabled: false,
             logs_enabled: true,
             check_updates: true,
         },

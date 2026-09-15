@@ -86,7 +86,6 @@ src = "src"
 
 [display]
 file_changes = true
-docs_enabled = false
 logs_enabled = true
 
 [aliases]
