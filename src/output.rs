@@ -132,6 +132,14 @@ pub fn is_verbose() -> bool {
     config().verbose
 }
 
+pub fn format_duration(duration: Duration) -> String {
+    if duration < Duration::from_millis(1) {
+        "<1ms".to_string()
+    } else {
+        format!("{}ms", duration.as_millis())
+    }
+}
+
 pub fn print_line(msg: &str) {
     if config().quiet {
         return;

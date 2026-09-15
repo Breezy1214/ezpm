@@ -154,10 +154,10 @@ fn print_json(result: &CheckResult) -> Result<()> {
 
 fn print_human(result: &CheckResult, build_time: std::time::Duration) {
     output::info(&format!(
-        "Dependency graph: {} modules, {} dependencies ({:.0}ms)",
+        "Dependency graph: {} modules, {} dependencies ({})",
         result.total_modules,
         result.total_edges,
-        build_time.as_millis()
+        output::format_duration(build_time)
     ));
     output::print_line("");
 

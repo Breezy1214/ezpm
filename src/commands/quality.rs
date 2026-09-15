@@ -188,18 +188,3 @@ pub fn format_code(src_path: &str, check: bool) -> Result<()> {
     }
     Ok(())
 }
-
-pub fn docs(docs_enabled: bool) -> Result<()> {
-    if !docs_enabled {
-        output::info("Documentation is not set up for this project.");
-        output::hint("Set docs_enabled = true in ezpm.toml [display] section.");
-        return Ok(());
-    }
-
-    Command::new("moonwave")
-        .arg("dev")
-        .status()
-        .context("Failed to run moonwave. Install it with Rokit, then try again.")?;
-
-    Ok(())
-}

@@ -4,28 +4,19 @@ use std::fs;
 use tempfile::TempDir;
 
 #[test]
-fn alias_sync_without_darklua_uses_default() {
+fn alias_sync_regenerates_luaurc() {
     let dir = TempDir::new().expect("TempDir::new");
     fs::write(
         dir.path().join("ezpm.toml"),
         "[project]\nname = \"test-project\"\n\n[aliases]\nClient = \"src/client/\"\n",
     )
-    .expect("write ezpm.toml with aliases but no [darklua]");
+    .expect("write ezpm.toml with aliases");
 
     let out = common::run_ezpm(dir.path(), &["alias", "sync"]);
     common::assert_success(&out);
 
-    let darklua_json = fs::read_to_string(dir.path().join(".darklua.json"))
-        .expect(".darklua.json should be generated from defaults");
-    assert!(
-        darklua_json.contains("make_assignment_local"),
-        "default rules should be used when [darklua] is absent: {darklua_json}"
-    );
-
-    let parsed: serde_json::Value =
-        serde_json::from_str(&darklua_json).expect(".darklua.json must be valid JSON");
-    assert_eq!(
-        parsed["loaders"]["**/*.model.json"], "copy",
-        "default alias sync output should copy Rojo model files: {darklua_json}"
-    );
+    let luaurc =
+        fs::read_to_string(dir.path().join(".luaurc")).expect(".luaurc should be generated");
+    let parsed: serde_json::Value = serde_json::from_str(&luaurc).expect("valid .luaurc");
+    assert_eq!(parsed["aliases"]["Client"], "src/client/");
 }

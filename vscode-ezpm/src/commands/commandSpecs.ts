@@ -41,13 +41,6 @@ export const COMMAND_SPECS: CommandSpec[] = [
 		successMessage: "ezpm format --check passed.",
 	},
 	{
-		commandId: "ezpm.docs",
-		label: "Docs",
-		description: "Open ezpm docs (terminal)",
-		args: ["docs"],
-		execution: "terminal",
-	},
-	{
 		commandId: "ezpm.fixRequires",
 		label: "Fix Requires",
 		description: "Run ezpm fix-requires",

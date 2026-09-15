@@ -5,10 +5,10 @@ use crate::output;
 
 const MENU_ITEMS: &[(&str, &str, &str)] = &[
     ("init", "Create a new EZPM project", "init"),
-    ("serve", "Start file watcher + DarkLua + Rojo", "serve"),
+    ("serve", "Start require watcher + Rojo", "serve"),
     (
         "fix-requires",
-        "Rewrite require paths to @alias notation",
+        "Resolve shorthand require paths",
         "fix-requires",
     ),
     ("install", "Install tools and packages", "install"),
@@ -24,7 +24,6 @@ const MENU_ITEMS: &[(&str, &str, &str)] = &[
     ),
     ("lint", "Run Selene and StyLua checks", "lint"),
     ("format", "Format source with StyLua", "format"),
-    ("docs", "Launch Moonwave docs server", "docs"),
     ("exit", "Exit", "exit"),
 ];
 
@@ -133,42 +132,7 @@ fn run_command(cmd: &str) -> Result<()> {
         "alias-menu" => crate::commands::alias::alias_menu(),
         "lint" => crate::commands::quality::lint(src),
         "format" => crate::commands::quality::format_code(src, false),
-        "docs" => {
-            let docs_enabled = cfg
-                .display
-                .as_ref()
-                .and_then(|d| d.docs_enabled)
-                .unwrap_or(false);
-            crate::commands::quality::docs(docs_enabled)
-        }
-        "fix-requires" => {
-            let aliases = cfg.aliases.unwrap_or_default();
-            let result = crate::services::require_fixer::fix_requires(
-                std::path::Path::new(src),
-                &aliases,
-                src,
-            )?;
-            if result.files_changed == 0 {
-                output::success(&format!(
-                    "All requires up to date. 0 changes across {} files.",
-                    result.total_files_scanned
-                ));
-            } else {
-                let total_rewrites: usize = result.changes.iter().map(|c| c.rewrites.len()).sum();
-                for file_change in &result.changes {
-                    output::print_line(&format!("{}:", file_change.file.display()));
-                    for rw in &file_change.rewrites {
-                        output::print_line(&format!("  {} -> {}", rw.old, rw.new));
-                    }
-                }
-                output::print_line("");
-                output::success(&format!(
-                    "Fixed {} requires across {} files",
-                    total_rewrites, result.files_changed
-                ));
-            }
-            Ok(())
-        }
+        "fix-requires" => crate::commands::fix_requires::run(&cfg),
         "serve" => {
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()

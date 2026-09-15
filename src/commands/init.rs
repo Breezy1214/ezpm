@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use inquire::{Confirm, MultiSelect, Select, Text};
+use inquire::{Confirm, Select, Text};
 use std::collections::{BTreeSet, HashMap};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -33,15 +33,11 @@ pub fn run_init(dry_run: bool) -> Result<()> {
     }
 
     let has_ezpm = Path::new("ezpm.toml").exists();
-    let has_darklua = Path::new(".darklua.json").exists();
     let has_rokit = Path::new("rokit.toml").exists();
     let has_wally = Path::new("wally.toml").exists();
     let selected_project = select_rojo_project(&discovery)?;
     let has_project_json = selected_project.is_some();
 
-    if has_darklua {
-        output::info("Detected .darklua.json");
-    }
     if has_rokit {
         output::info("Detected rokit.toml");
     }
@@ -113,24 +109,6 @@ pub fn run_init(dry_run: bool) -> Result<()> {
 
     let mut aliases: HashMap<String, String> = HashMap::new();
 
-    if has_darklua {
-        let imported = config::import_aliases_from_dir(Path::new("."));
-        if !imported.is_empty() {
-            let mut alias_names: Vec<String> = imported.keys().cloned().collect();
-            alias_names.sort();
-
-            let selected = MultiSelect::new("Select aliases to import:", alias_names.clone())
-                .with_all_selected_by_default()
-                .prompt()?;
-
-            for name in selected {
-                if let Some(path) = imported.get(&name) {
-                    aliases.insert(name, path.clone());
-                }
-            }
-        }
-    }
-
     if aliases.is_empty() {
         let use_defaults =
             Confirm::new("Use default aliases (Client, Server, Shared, Packages, ServerPackages)?")
@@ -174,21 +152,14 @@ pub fn run_init(dry_run: bool) -> Result<()> {
         }
     }
 
-    config::save_ezpm_toml(
-        Path::new("."),
-        &project_name,
-        &src_dir,
-        "darklua_build",
-        &aliases,
-    )?;
+    config::save_ezpm_toml(Path::new("."), &project_name, &src_dir, &aliases)?;
     if let Some(project) = selected_project {
         record_rojo_template(Path::new("ezpm.toml"), &project.path)?;
     }
     output::success("Generated ezpm.toml");
 
     if !aliases.is_empty() {
-        config_gen::write_config_files(Path::new("."), &aliases, None)?;
-        output::success("Generated .darklua.json");
+        config_gen::write_config_files(Path::new("."), &aliases)?;
         output::success("Generated .luaurc");
     }
 
@@ -406,11 +377,10 @@ fn print_dry_run(discovery: &RojoDiscovery) -> Result<()> {
             "Would preserve Rojo template: {}",
             project.path.display()
         ));
-        output::info("Would generate: build.project.json");
     } else {
         output::info("Would create: default.project.json");
     }
-    for path in ["ezpm.toml", ".darklua.json", ".luaurc"] {
+    for path in ["ezpm.toml", ".luaurc"] {
         output::info(&format!("Would create or update: {path}"));
     }
     if !Path::new("rokit.toml").exists() {
@@ -431,10 +401,6 @@ fn record_rojo_template(config_path: &Path, project_path: &Path) -> Result<()> {
     rojo.insert(
         "project".into(),
         toml::Value::String(project_path.display().to_string()),
-    );
-    rojo.insert(
-        "generated_project".into(),
-        toml::Value::String("build.project.json".into()),
     );
     table.insert("rojo".into(), toml::Value::Table(rojo));
     std::fs::write(config_path, toml::to_string_pretty(&value)?)?;

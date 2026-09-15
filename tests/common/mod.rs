@@ -21,7 +21,6 @@ name = "test-project"
 
 [paths]
 src = "src"
-darklua_build = "darklua_build"
 
 [aliases]
 Client = "src/client/"
@@ -67,6 +66,7 @@ Packages = "Packages/"
         "local util = require(\"src/shared/util\")\n",
     )
     .expect("write src/client/init.luau");
+    fs::write(p.join("src/shared/util.luau"), "return {}\n").expect("write src/shared/util.luau");
 
     dir
 }
