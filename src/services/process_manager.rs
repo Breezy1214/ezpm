@@ -159,6 +159,15 @@ impl Drop for ProcessManager {
                 "ProcessManager dropped with active processes — use kill_all() for clean shutdown",
             );
             for proc in self.processes.values_mut() {
+                #[cfg(unix)]
+                {
+                    use nix::sys::signal::{killpg, Signal};
+                    let _ = killpg(
+                        nix::unistd::Pid::from_raw(proc.pgid as i32),
+                        Signal::SIGTERM,
+                    );
+                }
+                #[cfg(windows)]
                 let _ = proc.child.start_kill();
             }
         }

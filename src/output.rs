@@ -18,6 +18,20 @@ pub enum ColorChoice {
     Never,
 }
 
+macro_rules! out {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stdout(), $($arg)*);
+    }};
+}
+
+macro_rules! err {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stderr(), $($arg)*);
+    }};
+}
+
 static OUTPUT_CONFIG: OnceLock<OutputConfig> = OnceLock::new();
 
 pub fn init(verbose: bool, quiet: bool, color: ColorChoice) {
@@ -43,7 +57,7 @@ pub fn success(msg: &str) {
     if config().quiet {
         return;
     }
-    println!(
+    out!(
         "{} {}",
         "\u{2713}".if_supports_color(Stream::Stdout, |t| t.green()),
         msg
@@ -51,7 +65,7 @@ pub fn success(msg: &str) {
 }
 
 pub fn error(msg: &str) {
-    eprintln!(
+    err!(
         "{} {}",
         "\u{2717}".if_supports_color(Stream::Stderr, |t| t.red()),
         msg
@@ -68,7 +82,7 @@ pub fn error_block(error: &str, context: &str, fix: Option<&str>) {
         "{}",
         "Error:".if_supports_color(Stream::Stderr, |t| t.red())
     );
-    eprintln!("{} {}", label, error);
+    err!("{} {}", label, error);
 
     label.clear();
     let _ = write!(
@@ -76,7 +90,7 @@ pub fn error_block(error: &str, context: &str, fix: Option<&str>) {
         "{}",
         "Context:".if_supports_color(Stream::Stderr, |t| t.yellow())
     );
-    eprintln!("{} {}", label, context);
+    err!("{} {}", label, context);
 
     if let Some(fix_msg) = fix {
         label.clear();
@@ -85,7 +99,7 @@ pub fn error_block(error: &str, context: &str, fix: Option<&str>) {
             "{}",
             "Fix:".if_supports_color(Stream::Stderr, |t| t.green())
         );
-        eprintln!("{} {}", label, fix_msg);
+        err!("{} {}", label, fix_msg);
     }
 }
 
@@ -93,7 +107,7 @@ pub fn hint(msg: &str) {
     if config().quiet {
         return;
     }
-    eprintln!(
+    err!(
         "  hint: {}",
         msg.if_supports_color(Stream::Stderr, |t| t.cyan())
     );
@@ -103,7 +117,7 @@ pub fn info(msg: &str) {
     if config().quiet {
         return;
     }
-    println!(
+    out!(
         "{} {}",
         "\u{25B8}".if_supports_color(Stream::Stdout, |t| t.cyan()),
         msg
@@ -114,7 +128,7 @@ pub fn warn(msg: &str) {
     if config().quiet {
         return;
     }
-    eprintln!(
+    err!(
         "{} {}",
         "\u{26A0}".if_supports_color(Stream::Stderr, |t| t.yellow()),
         msg
@@ -125,7 +139,7 @@ pub fn verbose_line(msg: &str) {
     if !config().verbose {
         return;
     }
-    println!("{}", msg.if_supports_color(Stream::Stdout, |t| t.dimmed()));
+    out!("{}", msg.if_supports_color(Stream::Stdout, |t| t.dimmed()));
 }
 
 pub fn is_verbose() -> bool {
@@ -144,14 +158,14 @@ pub fn print_line(msg: &str) {
     if config().quiet {
         return;
     }
-    println!("{}", msg);
+    out!("{}", msg);
 }
 
 pub fn print_stderr(msg: &str) {
     if config().quiet {
         return;
     }
-    eprintln!("{}", msg);
+    err!("{}", msg);
 }
 
 pub fn start_spinner(msg: &str) -> ProgressBar {

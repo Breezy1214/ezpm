@@ -104,6 +104,12 @@ Shared = "src/shared/"
         std::thread::sleep(Duration::from_millis(100));
     }
 
+    #[cfg(unix)]
+    let _ = nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(child.id() as i32),
+        nix::sys::signal::Signal::SIGTERM,
+    );
+    #[cfg(not(unix))]
     let _ = child.kill();
     let _ = child.wait();
 
