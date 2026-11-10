@@ -104,7 +104,15 @@ Shared = "src/shared/"
         std::thread::sleep(Duration::from_millis(100));
     }
 
-    let _ = child.kill();
+    #[cfg(unix)]
+    let _ = nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(child.id() as i32),
+        nix::sys::signal::Signal::SIGTERM,
+    );
+    #[cfg(windows)]
+    let _ = Command::new("taskkill")
+        .args(["/PID", &child.id().to_string(), "/T", "/F"])
+        .output();
     let _ = child.wait();
 
     assert!(rebuilt, "changed Lua file was not fixed");

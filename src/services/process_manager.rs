@@ -15,6 +15,20 @@ pub enum ProcessEvent {
     Crashed { name: String, code: Option<i32> },
 }
 
+#[cfg(windows)]
+pub(crate) fn taskkill_tree(pid: u32) -> Result<()> {
+    let output = std::process::Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .stdin(Stdio::null())
+        .output()?;
+    anyhow::ensure!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    Ok(())
+}
+
 struct ManagedProcess {
     name: String,
     pgid: u32,
@@ -135,7 +149,9 @@ impl ProcessManager {
 
         #[cfg(windows)]
         {
-            let _ = proc.child.kill().await;
+            if taskkill_tree(proc.pgid).is_err() {
+                let _ = proc.child.start_kill();
+            }
             let status = proc.child.wait().await.ok();
             let code = status.and_then(|s| s.code());
             let _ = self.status_tx.try_send(ProcessEvent::Crashed {
@@ -159,7 +175,18 @@ impl Drop for ProcessManager {
                 "ProcessManager dropped with active processes — use kill_all() for clean shutdown",
             );
             for proc in self.processes.values_mut() {
-                let _ = proc.child.start_kill();
+                #[cfg(unix)]
+                {
+                    use nix::sys::signal::{killpg, Signal};
+                    let _ = killpg(
+                        nix::unistd::Pid::from_raw(proc.pgid as i32),
+                        Signal::SIGTERM,
+                    );
+                }
+                #[cfg(windows)]
+                if taskkill_tree(proc.pgid).is_err() {
+                    let _ = proc.child.start_kill();
+                }
             }
         }
     }

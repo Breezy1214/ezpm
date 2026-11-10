@@ -9,6 +9,7 @@ use crate::{
     services::{
         config_gen,
         file_watcher::{FileChange, FileWatcher, WatchEvent, WatchTargets},
+        port,
         process_manager::{ProcessEvent, ProcessManager},
         require_fixer::{self, is_lua_file},
         rojo_project::RojoProjectSettings,
@@ -19,8 +20,80 @@ use anyhow::Context;
 use owo_colors::OwoColorize;
 use owo_colors::Stream;
 
-fn port_is_available(port: u16) -> bool {
-    std::net::TcpListener::bind(std::net::SocketAddr::from(([0, 0, 0, 0], port))).is_ok()
+enum PortChoice {
+    Stop { owners: String, port: u16 },
+    Fallback(u16),
+    Cancel,
+}
+
+impl std::fmt::Display for PortChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PortChoice::Stop { owners, port } => {
+                write!(f, "Stop {} and serve on port {}", owners, port)
+            }
+            PortChoice::Fallback(port) => write!(f, "Serve on port {} instead", port),
+            PortChoice::Cancel => write!(f, "Cancel"),
+        }
+    }
+}
+
+fn resolve_port(port: u16) -> anyhow::Result<Option<u16>> {
+    use std::io::IsTerminal;
+
+    if port::is_available(port) {
+        return Ok(Some(port));
+    }
+
+    let owners = port::owners(port);
+    let owner_desc = owners
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let in_use = if owners.is_empty() {
+        format!("Port {} is already in use", port)
+    } else {
+        format!("Port {} is already in use by {}", port, owner_desc)
+    };
+    let fallback = port::next_available(port);
+
+    if !std::io::stdin().is_terminal() {
+        let try_port = fallback.unwrap_or(port.saturating_add(1));
+        anyhow::bail!("{}. Try: ezpm serve --port {}", in_use, try_port);
+    }
+
+    output::warn(&in_use);
+
+    let mut options = Vec::new();
+    if !owners.is_empty() {
+        options.push(PortChoice::Stop {
+            owners: owner_desc,
+            port,
+        });
+    }
+    if let Some(p) = fallback {
+        options.push(PortChoice::Fallback(p));
+    }
+    options.push(PortChoice::Cancel);
+
+    let choice = match inquire::Select::new("What would you like to do?", options).prompt() {
+        Ok(choice) => choice,
+        Err(
+            inquire::InquireError::OperationCanceled | inquire::InquireError::OperationInterrupted,
+        ) => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+
+    match choice {
+        PortChoice::Stop { owners: desc, port } => {
+            port::kill_owners(&owners, port)?;
+            output::success(&format!("Stopped {}", desc));
+            Ok(Some(port))
+        }
+        PortChoice::Fallback(p) => Ok(Some(p)),
+        PortChoice::Cancel => Ok(None),
+    }
 }
 
 fn sync_toolchain_versions(project_dir: &Path) -> anyhow::Result<()> {
@@ -504,6 +577,45 @@ async fn restart_rojo(
         .context("failed to restart Rojo")
 }
 
+enum StopSignal {
+    Interrupt,
+    TerminalClosed,
+}
+
+#[cfg(unix)]
+fn stop_signal() -> anyhow::Result<impl std::future::Future<Output = StopSignal>> {
+    use tokio::signal::unix::{signal, SignalKind};
+    let mut interrupt =
+        signal(SignalKind::interrupt()).context("failed to register SIGINT handler")?;
+    let mut hangup = signal(SignalKind::hangup()).context("failed to register SIGHUP handler")?;
+    let mut terminate =
+        signal(SignalKind::terminate()).context("failed to register SIGTERM handler")?;
+    Ok(async move {
+        tokio::select! {
+            _ = interrupt.recv() => StopSignal::Interrupt,
+            _ = hangup.recv() => StopSignal::TerminalClosed,
+            _ = terminate.recv() => StopSignal::TerminalClosed,
+        }
+    })
+}
+
+#[cfg(windows)]
+fn stop_signal() -> anyhow::Result<impl std::future::Future<Output = StopSignal>> {
+    use tokio::signal::windows::{ctrl_c, ctrl_close, ctrl_logoff, ctrl_shutdown};
+    let mut interrupt = ctrl_c().context("failed to register Ctrl-C handler")?;
+    let mut close = ctrl_close().context("failed to register console close handler")?;
+    let mut logoff = ctrl_logoff().context("failed to register logoff handler")?;
+    let mut shutdown = ctrl_shutdown().context("failed to register shutdown handler")?;
+    Ok(async move {
+        tokio::select! {
+            _ = interrupt.recv() => StopSignal::Interrupt,
+            _ = close.recv() => StopSignal::TerminalClosed,
+            _ = logoff.recv() => StopSignal::TerminalClosed,
+            _ = shutdown.recv() => StopSignal::TerminalClosed,
+        }
+    })
+}
+
 pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::Result<()> {
     let config = config.unwrap_or_default();
     let mut rojo_settings = RojoProjectSettings::from_config(&config);
@@ -520,19 +632,12 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
         .as_ref()
         .and_then(|d| d.file_changes)
         .unwrap_or(true);
-    let port: u16 = cli_port
+    let requested_port: u16 = cli_port
         .or_else(|| config.serve.as_ref().and_then(|s| s.port))
         .unwrap_or(34872);
-
-    if !port_is_available(port) {
-        output::error(&format!(
-            "Port {} in use. Try: ezpm serve --port {}",
-            port,
-            port + 1
-        ));
-        output::hint("Another Rojo session may still be running");
-        return Err(anyhow::anyhow!("port {} already in use", port));
-    }
+    let Some(port) = resolve_port(requested_port)? else {
+        return Ok(());
+    };
 
     let project_dir = std::env::current_dir().context("could not determine current directory")?;
     let src_path = project_dir.join(&src);
@@ -611,6 +716,8 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
         }
     };
 
+    let stop_signal = stop_signal()?;
+    tokio::pin!(stop_signal);
     let (mut process_manager, mut process_rx) = {
         let pb = output::start_spinner("Starting Rojo...");
         let t0 = Instant::now();
@@ -660,30 +767,7 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
     let mut module_snapshot = snapshot_modules(&source_files);
     let mut module_index = fix_ctx.module_index();
 
-    #[cfg(unix)]
-    let mut sig_hup = {
-        use tokio::signal::unix::{signal, SignalKind};
-        signal(SignalKind::hangup()).context("failed to register SIGHUP handler")?
-    };
-    #[cfg(unix)]
-    let mut sig_term = {
-        use tokio::signal::unix::{signal, SignalKind};
-        signal(SignalKind::terminate()).context("failed to register SIGTERM handler")?
-    };
-
     loop {
-        let terminal_signal = async {
-            #[cfg(unix)]
-            {
-                tokio::select! {
-                    _ = sig_hup.recv() => {}
-                    _ = sig_term.recv() => {}
-                }
-            }
-            #[cfg(not(unix))]
-            std::future::pending::<()>().await
-        };
-
         tokio::select! {
             event = watcher_rx.recv() => {
                 match event {
@@ -892,12 +976,11 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
                     .await;
                 }
             }
-            _ = tokio::signal::ctrl_c() => {
-                output::info("Stopping...");
-                break;
-            }
-            _ = terminal_signal => {
-                output::info("Terminal closed — stopping...");
+            signal = &mut stop_signal => {
+                output::info(match signal {
+                    StopSignal::Interrupt => "Stopping...",
+                    StopSignal::TerminalClosed => "Terminal closed — stopping...",
+                });
                 break;
             }
         }

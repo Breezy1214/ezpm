@@ -1,6 +1,7 @@
 pub mod config_gen;
 pub mod file_watcher;
 pub mod graph;
+pub mod port;
 pub mod process_manager;
 pub mod require_fixer;
 pub mod rojo_project;
