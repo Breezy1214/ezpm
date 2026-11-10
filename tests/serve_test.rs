@@ -109,8 +109,10 @@ Shared = "src/shared/"
         nix::unistd::Pid::from_raw(child.id() as i32),
         nix::sys::signal::Signal::SIGTERM,
     );
-    #[cfg(not(unix))]
-    let _ = child.kill();
+    #[cfg(windows)]
+    let _ = Command::new("taskkill")
+        .args(["/PID", &child.id().to_string(), "/T", "/F"])
+        .output();
     let _ = child.wait();
 
     assert!(rebuilt, "changed Lua file was not fixed");

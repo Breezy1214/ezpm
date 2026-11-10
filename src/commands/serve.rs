@@ -48,7 +48,7 @@ fn resolve_port(port: u16) -> anyhow::Result<Option<u16>> {
     let owners = port::owners(port);
     let owner_desc = owners
         .iter()
-        .map(|o| format!("{} (PID {})", o.name, o.pid))
+        .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join(", ");
     let in_use = if owners.is_empty() {
@@ -577,16 +577,46 @@ async fn restart_rojo(
         .context("failed to restart Rojo")
 }
 
-pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::Result<()> {
-    #[cfg(unix)]
-    let (mut sig_hup, mut sig_term) = {
-        use tokio::signal::unix::{signal, SignalKind};
-        (
-            signal(SignalKind::hangup()).context("failed to register SIGHUP handler")?,
-            signal(SignalKind::terminate()).context("failed to register SIGTERM handler")?,
-        )
-    };
+enum StopSignal {
+    Interrupt,
+    TerminalClosed,
+}
 
+#[cfg(unix)]
+fn stop_signal() -> anyhow::Result<impl std::future::Future<Output = StopSignal>> {
+    use tokio::signal::unix::{signal, SignalKind};
+    let mut interrupt =
+        signal(SignalKind::interrupt()).context("failed to register SIGINT handler")?;
+    let mut hangup = signal(SignalKind::hangup()).context("failed to register SIGHUP handler")?;
+    let mut terminate =
+        signal(SignalKind::terminate()).context("failed to register SIGTERM handler")?;
+    Ok(async move {
+        tokio::select! {
+            _ = interrupt.recv() => StopSignal::Interrupt,
+            _ = hangup.recv() => StopSignal::TerminalClosed,
+            _ = terminate.recv() => StopSignal::TerminalClosed,
+        }
+    })
+}
+
+#[cfg(windows)]
+fn stop_signal() -> anyhow::Result<impl std::future::Future<Output = StopSignal>> {
+    use tokio::signal::windows::{ctrl_c, ctrl_close, ctrl_logoff, ctrl_shutdown};
+    let mut interrupt = ctrl_c().context("failed to register Ctrl-C handler")?;
+    let mut close = ctrl_close().context("failed to register console close handler")?;
+    let mut logoff = ctrl_logoff().context("failed to register logoff handler")?;
+    let mut shutdown = ctrl_shutdown().context("failed to register shutdown handler")?;
+    Ok(async move {
+        tokio::select! {
+            _ = interrupt.recv() => StopSignal::Interrupt,
+            _ = close.recv() => StopSignal::TerminalClosed,
+            _ = logoff.recv() => StopSignal::TerminalClosed,
+            _ = shutdown.recv() => StopSignal::TerminalClosed,
+        }
+    })
+}
+
+pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::Result<()> {
     let config = config.unwrap_or_default();
     let mut rojo_settings = RojoProjectSettings::from_config(&config);
 
@@ -686,6 +716,8 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
         }
     };
 
+    let stop_signal = stop_signal()?;
+    tokio::pin!(stop_signal);
     let (mut process_manager, mut process_rx) = {
         let pb = output::start_spinner("Starting Rojo...");
         let t0 = Instant::now();
@@ -736,18 +768,6 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
     let mut module_index = fix_ctx.module_index();
 
     loop {
-        let terminal_signal = async {
-            #[cfg(unix)]
-            {
-                tokio::select! {
-                    _ = sig_hup.recv() => {}
-                    _ = sig_term.recv() => {}
-                }
-            }
-            #[cfg(not(unix))]
-            std::future::pending::<()>().await
-        };
-
         tokio::select! {
             event = watcher_rx.recv() => {
                 match event {
@@ -956,12 +976,11 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
                     .await;
                 }
             }
-            _ = tokio::signal::ctrl_c() => {
-                output::info("Stopping...");
-                break;
-            }
-            _ = terminal_signal => {
-                output::info("Terminal closed — stopping...");
+            signal = &mut stop_signal => {
+                output::info(match signal {
+                    StopSignal::Interrupt => "Stopping...",
+                    StopSignal::TerminalClosed => "Terminal closed — stopping...",
+                });
                 break;
             }
         }
