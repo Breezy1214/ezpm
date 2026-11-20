@@ -23,6 +23,7 @@ pub fn build_graph(
     let resolver = Resolver::new(aliases, &src_prefix, project_root, sourcemap);
 
     let files: Vec<_> = WalkDir::new(&scan_dir)
+        .sort_by_file_name()
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file() && is_lua_file(e.path()))

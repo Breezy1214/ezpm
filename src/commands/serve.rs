@@ -668,7 +668,7 @@ fn stop_signal() -> anyhow::Result<impl std::future::Future<Output = StopSignal>
             _ = interrupt.recv() => StopSignal::Interrupt,
             _ = close.recv() => StopSignal::TerminalClosed,
             _ = logoff.recv() => StopSignal::TerminalClosed,
-            _ = shutdown.recv() => StopSignal::TerminalClosed,
+            _ = shutdown.recv() => StopSignal::Terminate,
         }
     })
 }
