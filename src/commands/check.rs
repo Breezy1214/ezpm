@@ -11,56 +11,28 @@ use crate::services::graph::{
     build,
     types::{CheckResult, DepGraph},
 };
-use crate::services::{path_filter::PathFilter, rojo_project::RojoProjectSettings, sourcemap};
+use crate::services::{
+    path_filter::PathFilter,
+    rojo_project::RojoProjectSettings,
+    sourcemap::{self, SourcemapIndex},
+};
 
 pub fn run_check(config: Option<&EzpmConfig>, paths: &[String]) -> Result<()> {
     let default_config = EzpmConfig::default();
     let cfg = config.unwrap_or(&default_config);
-
-    let aliases = cfg.aliases.clone().unwrap_or_default();
-    let src_prefix = cfg.src_dir();
-    let src_prefix = src_prefix.as_str();
-
-    let src_dir = Path::new(src_prefix);
-    if !src_dir.exists() {
-        return Err(EzpmError::project(format!(
-            "Source directory '{}' not found. Run from your project root or check [paths.src] in ezpm.toml.",
-            src_prefix
-        ))
-        .into());
-    }
-
     let project_root = std::env::current_dir()?;
-    let project_root = project_root.as_path();
 
     let spinner = output::start_spinner("Building dependency graph...");
-
     let start = Instant::now();
     let rojo = RojoProjectSettings::from_config(cfg);
-    let sourcemap = sourcemap::generate_index(project_root, &rojo.project)
+    let sourcemap = sourcemap::generate_index(&project_root, &rojo.project)
         .inspect_err(|error| {
             output::verbose_line(&format!("@game requires are not resolved: {error}"));
         })
         .ok();
-    let graph = build::build_graph(project_root, &aliases, src_prefix, sourcemap.as_ref())?;
+    let (result, found) = analyze(cfg, &project_root, sourcemap.as_ref(), paths)?;
     let build_time = start.elapsed();
-
     spinner.finish_and_clear();
-
-    let check_config = cfg.check.clone().unwrap_or_default();
-
-    let layers = build_layers(&check_config, src_prefix);
-    let rules = build_rules(&check_config);
-    let features = build_feature_rules(&check_config);
-
-    let entry_point_ids = resolve_entry_points(&graph, &check_config, src_prefix);
-
-    let mut result = analysis::run_all_checks(&graph, &layers, &rules, &features, &entry_point_ids);
-    let filter = PathFilter::new(project_root, paths);
-    if !filter.is_empty() {
-        retain_about(&mut result, &filter, project_root);
-    }
-    let found = diagnostics_for(&result, &graph);
 
     if output::is_json() {
         let mut document = serde_json::to_value(&result)?;
@@ -78,6 +50,43 @@ pub fn run_check(config: Option<&EzpmConfig>, paths: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// Builds the require graph and runs every check, printing nothing. With `paths`, keeps only
+/// the findings about those files.
+pub fn analyze(
+    cfg: &EzpmConfig,
+    project_root: &Path,
+    sourcemap: Option<&SourcemapIndex>,
+    paths: &[String],
+) -> Result<(CheckResult, Vec<Diagnostic>)> {
+    let aliases = cfg.aliases.clone().unwrap_or_default();
+    let src_prefix = cfg.src_dir();
+    let src_prefix = src_prefix.as_str();
+
+    if !project_root.join(src_prefix).exists() {
+        return Err(EzpmError::project(format!(
+            "Source directory '{}' not found. Run from your project root or check [paths.src] in ezpm.toml.",
+            src_prefix
+        ))
+        .into());
+    }
+
+    let graph = build::build_graph(project_root, &aliases, src_prefix, sourcemap)?;
+
+    let check_config = cfg.check.clone().unwrap_or_default();
+    let layers = build_layers(&check_config, src_prefix);
+    let rules = build_rules(&check_config);
+    let features = build_feature_rules(&check_config);
+    let entry_point_ids = resolve_entry_points(&graph, &check_config, src_prefix);
+
+    let mut result = analysis::run_all_checks(&graph, &layers, &rules, &features, &entry_point_ids);
+    let filter = PathFilter::new(project_root, paths);
+    if !filter.is_empty() {
+        retain_about(&mut result, &filter, project_root);
+    }
+    let found = diagnostics_for(&result, &graph);
+    Ok((result, found))
+}
+
 /// Keeps only the findings about the given files: a cycle through one, a violating require
 /// from one, or one that is unused.
 fn retain_about(result: &mut CheckResult, filter: &PathFilter, project_root: &Path) {
@@ -92,9 +101,7 @@ fn retain_about(result: &mut CheckResult, filter: &PathFilter, project_root: &Pa
         .feature_violations
         .retain(|violation| about(&violation.from_module));
     result.unused_modules.retain(|module| about(module));
-    result.pass = result.cycles.is_empty()
-        && result.rule_violations.is_empty()
-        && result.feature_violations.is_empty();
+    result.pass = result.passes();
 }
 
 fn diagnostics_for(result: &CheckResult, graph: &DepGraph) -> Vec<Diagnostic> {
@@ -278,10 +285,7 @@ fn print_human(result: &CheckResult, build_time: std::time::Duration) {
             result.rule_violations.len()
         ));
         for v in &result.rule_violations {
-            let location = match v.line {
-                Some(line) => format!("{}:{}", v.from_module, line),
-                None => v.from_module.clone(),
-            };
+            let location = diagnostics::location(&v.from_module, v.line);
             output::print_line(&format!("  {} \u{2192} {}", location, v.to_module));
             let reason_str = v
                 .reason
@@ -302,10 +306,7 @@ fn print_human(result: &CheckResult, build_time: std::time::Duration) {
             result.feature_violations.len()
         ));
         for v in &result.feature_violations {
-            let location = match v.line {
-                Some(line) => format!("{}:{}", v.from_module, line),
-                None => v.from_module.clone(),
-            };
+            let location = diagnostics::location(&v.from_module, v.line);
             output::print_line(&format!("  {} \u{2192} {}", location, v.to_module));
             output::print_line(&format!(
                 "    feature {} may not require feature {}",

@@ -2,7 +2,6 @@ use anyhow::Result;
 use inquire::{Confirm, MultiSelect, Select, Text};
 use serde_json::json;
 use std::collections::HashMap;
-use std::io::IsTerminal;
 use std::path::Path;
 
 use crate::config::{self, EzpmConfig};
@@ -46,10 +45,6 @@ pub fn alias_menu() -> Result<()> {
     Ok(())
 }
 
-fn can_prompt() -> bool {
-    !output::is_json() && std::io::stdin().is_terminal()
-}
-
 /// `Shared`, `@Shared` → `Shared`. Names become `@Name/...` requires, so no spaces or slashes.
 pub fn normalize_alias_name(raw: &str) -> Result<String, EzpmError> {
     let name = raw.trim().trim_start_matches('@');
@@ -86,7 +81,7 @@ fn save_aliases(cfg: &EzpmConfig, aliases: &HashMap<String, String>) -> Result<(
 
 pub fn alias_add(name: Option<String>, path: Option<String>, create_dir: bool) -> Result<()> {
     let interactive = name.is_none() || path.is_none();
-    if interactive && !can_prompt() {
+    if interactive && !output::can_prompt() {
         return Err(EzpmError::usage("alias add needs a NAME and a PATH")
             .with_hint("ezpm alias add Shared src/shared/")
             .into());
@@ -164,7 +159,7 @@ pub fn alias_remove(names: &[String]) -> Result<()> {
     let mut aliases: HashMap<String, String> = cfg.aliases.take().unwrap_or_default();
 
     let names_to_remove = if names.is_empty() {
-        if !can_prompt() {
+        if !output::can_prompt() {
             return Err(EzpmError::usage("alias remove needs at least one NAME")
                 .with_hint("ezpm alias remove Shared")
                 .into());

@@ -5,7 +5,7 @@ use walkdir::WalkDir;
 
 use crate::config::normalize_relative;
 use crate::output;
-use crate::services::require_fixer::{is_lua_file, line_of, require_matches};
+use crate::services::require_fixer::{is_lua_file, require_matches, LineCounter};
 use crate::services::rojo_project::is_within;
 use crate::services::sourcemap::SourcemapIndex;
 
@@ -46,12 +46,12 @@ pub fn build_graph(
 
         let from_id = graph.add_node(&rel_from);
         let mut seen_targets = HashSet::new();
+        let mut lines = LineCounter::new(&content);
         for found in require_matches(&content) {
             if let Some(resolved) = resolver.resolve(found.path) {
                 let to_id = graph.add_node(&resolved);
                 if seen_targets.insert(to_id) {
-                    let line = line_of(&content, found.span.start);
-                    graph.add_edge_at(from_id, to_id, found.path.to_string(), Some(line));
+                    graph.add_edge(from_id, to_id, Some(lines.line_at(found.span.start)));
                 }
             }
         }

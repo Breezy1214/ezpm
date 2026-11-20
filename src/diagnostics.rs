@@ -157,12 +157,22 @@ impl Diagnostic {
         self.severity == Severity::Error
     }
 
-    pub fn location(&self) -> Option<String> {
-        let file = self.file.as_deref()?;
-        Some(match self.line {
-            Some(line) => format!("{file}:{line}"),
-            None => file.to_string(),
-        })
+    /// `file - severity: message (code)`, with `file:line` when the line is known.
+    pub fn render(&self, severity: &str) -> String {
+        let prefix = self
+            .file
+            .as_deref()
+            .map(|file| format!("{} - ", location(file, self.line)))
+            .unwrap_or_default();
+        format!("{prefix}{severity}: {} ({})", self.message, self.code)
+    }
+}
+
+/// `file:line`, or `file` when the line is unknown.
+pub fn location(file: &str, line: Option<usize>) -> String {
+    match line {
+        Some(line) => format!("{file}:{line}"),
+        None => file.to_string(),
     }
 }
 
@@ -185,14 +195,7 @@ pub fn report(diagnostics: &[Diagnostic]) {
                 .if_supports_color(Stream::Stderr, |t| t.yellow())
                 .to_string(),
         };
-        let prefix = diagnostic
-            .location()
-            .map(|loc| format!("{loc} - "))
-            .unwrap_or_default();
-        eprintln!(
-            "{prefix}{severity}: {} ({})",
-            diagnostic.message, diagnostic.code
-        );
+        eprintln!("{}", diagnostic.render(&severity));
         if let Some(hint) = &diagnostic.hint {
             output::hint(hint);
         }

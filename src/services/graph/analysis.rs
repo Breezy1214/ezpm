@@ -271,17 +271,17 @@ pub fn run_all_checks(
     let feature_violations = validate_features(graph, &features.roots, &features.shared);
     let unused_modules = find_unused(graph, entry_points);
 
-    let pass = cycles.is_empty() && rule_violations.is_empty() && feature_violations.is_empty();
-
-    CheckResult {
+    let mut result = CheckResult {
         total_modules: graph.node_count(),
         total_edges: graph.edge_count(),
         cycles,
         rule_violations,
         feature_violations,
         unused_modules,
-        pass,
-    }
+        pass: false,
+    };
+    result.pass = result.passes();
+    result
 }
 
 #[cfg(test)]
@@ -296,10 +296,10 @@ mod tests {
         let inventory = g.add_node("src/shared/Inventory/init.luau");
         let util = g.add_node("src/shared/Util/Signal.luau");
         let loose = g.add_node("src/shared/Loose.luau");
-        g.add_edge_at(shop, shared_shop, "a".into(), Some(1));
-        g.add_edge_at(shop, util, "b".into(), Some(2));
-        g.add_edge_at(shop, loose, "c".into(), Some(3));
-        g.add_edge_at(shop, inventory, "d".into(), Some(4));
+        g.add_edge(shop, shared_shop, Some(1));
+        g.add_edge(shop, util, Some(2));
+        g.add_edge(shop, loose, Some(3));
+        g.add_edge(shop, inventory, Some(4));
 
         let roots = vec!["src/server/".to_string(), "src/shared/".to_string()];
         let violations = validate_features(&g, &roots, &["Util".to_string()]);
@@ -314,8 +314,8 @@ mod tests {
         let mut g = DepGraph::new();
         let a = g.add_node("a.luau");
         let b = g.add_node("b.luau");
-        g.add_edge(a, b, "b".to_string());
-        g.add_edge(b, a, "a".to_string());
+        g.add_edge(a, b, None);
+        g.add_edge(b, a, None);
         g
     }
 
@@ -324,7 +324,7 @@ mod tests {
         let mut g = DepGraph::new();
         let a = g.add_node("a.luau");
         g.add_node("b.luau");
-        g.add_edge(a, a, "a".to_string());
+        g.add_edge(a, a, None);
 
         let cycles = find_cycles(&g);
         assert_eq!(cycles.len(), 1);
@@ -337,10 +337,10 @@ mod tests {
         let a = g.add_node("a.luau");
         let b = g.add_node("b.luau");
         let c = g.add_node("c.luau");
-        g.add_edge(a, b, "b".to_string());
-        g.add_edge(b, a, "a".to_string());
-        g.add_edge(a, c, "c".to_string());
-        g.add_edge(c, a, "a".to_string());
+        g.add_edge(a, b, None);
+        g.add_edge(b, a, None);
+        g.add_edge(a, c, None);
+        g.add_edge(c, a, None);
 
         let cycles = find_cycles(&g);
         assert_eq!(cycles.len(), 1);
@@ -369,7 +369,7 @@ mod tests {
         let mut g = DepGraph::new();
         let client = g.add_node("src/client/ui.luau");
         let server = g.add_node("src/server/handler.luau");
-        g.add_edge(client, server, "@Server/handler".to_string());
+        g.add_edge(client, server, None);
 
         let layers = vec![
             ("client".to_string(), "src/client/".to_string()),
@@ -393,8 +393,8 @@ mod tests {
         let a = g.add_node("a.luau");
         let b = g.add_node("b.luau");
         let c = g.add_node("c.luau");
-        g.add_edge(a, b, "b".to_string());
-        g.add_edge(b, c, "c".to_string());
+        g.add_edge(a, b, None);
+        g.add_edge(b, c, None);
 
         let unused = find_unused(&g, &[a]);
         assert!(unused.is_empty());

@@ -2,7 +2,6 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use crate::services::toolchain;
 
@@ -18,14 +17,11 @@ pub fn generate_sourcemap_for_project(
     project_dir: &Path,
     project: &Path,
 ) -> Result<SourcemapResult> {
-    let output = Command::new("rojo")
-        .arg("sourcemap")
-        .arg(project)
+    let output = toolchain::rojo("sourcemap", project, project_dir)
         .arg("-o")
         .arg(SOURCEMAP_FILE)
-        .current_dir(project_dir)
         .output()
-        .with_context(|| toolchain::missing_tool_context("rojo"))?;
+        .map_err(|error| toolchain::spawn_error("rojo", error))?;
 
     Ok(SourcemapResult {
         success: output.status.success(),
@@ -34,13 +30,10 @@ pub fn generate_sourcemap_for_project(
 }
 
 pub fn generate_index(project_dir: &Path, project: &Path) -> Result<SourcemapIndex> {
-    let output = Command::new("rojo")
-        .arg("sourcemap")
-        .arg(project)
+    let output = toolchain::rojo("sourcemap", project, project_dir)
         .arg("--absolute")
-        .current_dir(project_dir)
         .output()
-        .with_context(|| toolchain::missing_tool_context("rojo"))?;
+        .map_err(|error| toolchain::spawn_error("rojo", error))?;
     anyhow::ensure!(
         output.status.success(),
         "Rojo sourcemap failed: {}",
@@ -156,32 +149,23 @@ impl SourcemapIndex {
     ) -> Result<()> {
         instance_path.push(node.name.clone());
 
-        for file_path in &node.file_paths {
-            let source_path = if file_path.is_absolute() {
-                file_path.clone()
-            } else {
-                project_dir.join(file_path)
-            };
+        let file_paths: Vec<PathBuf> = node
+            .file_paths
+            .iter()
+            .map(|file_path| normalize_source_path(&project_dir.join(file_path)))
+            .collect();
+        for path in &file_paths {
             self.placements
-                .entry(normalize_source_path(&source_path))
+                .entry(path.clone())
                 .or_insert_with(|| Placement {
                     instance_path: instance_path.join("."),
                     class_name: node.class_name.clone(),
                 });
         }
 
-        let lua_files = node
-            .file_paths
-            .iter()
+        let lua_files = file_paths
+            .into_iter()
             .filter(|path| is_lua_file(path))
-            .map(|file_path| {
-                let source_path = if file_path.is_absolute() {
-                    file_path.clone()
-                } else {
-                    project_dir.join(file_path)
-                };
-                normalize_source_path(&source_path)
-            })
             .collect::<Vec<_>>();
 
         // Vendored Wally sources are resolvable modules but are never rewritten:

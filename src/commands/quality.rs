@@ -34,37 +34,36 @@ pub fn lint(src_path: &str) -> Result<()> {
         output::warn("Skipping StyLua (install Rokit and run `ezpm install`)");
     }
 
-    let mut issues_found = false;
-    let mut selene_ok = None;
-    let mut stylua_ok = None;
-
-    if has_selene {
+    let selene_ok = if has_selene {
         selene::generate_selene_roblox_std();
         let mut cmd = Command::new("selene");
         cmd.arg(src_path);
-        let ok = run_tool(cmd, None)?;
-        selene_ok = Some(ok);
-        if !ok {
-            output::error_block(
-                "Selene lint failed",
-                &format!("Violations found in {}", src_path),
-                Some("Fix violations listed above, or run `ezpm format` to auto-fix style issues"),
-            );
-            issues_found = true;
-        }
+        Some(run_tool(cmd, None)?)
+    } else {
+        None
+    };
+    if selene_ok == Some(false) {
+        output::error_block(
+            "Selene lint failed",
+            &format!("Violations found in {}", src_path),
+            Some("Fix violations listed above, or run `ezpm format` to auto-fix style issues"),
+        );
     }
 
-    if has_stylua {
-        stylua_ok = Some(run_tool(stylua(src_path, true), None)?);
-    }
+    let stylua_ok = if has_stylua {
+        Some(run_tool(stylua(src_path, true), None)?)
+    } else {
+        None
+    };
     if stylua_ok == Some(false) {
         output::error_block(
             "StyLua formatting check failed",
             &format!("Formatting violations found in {}", src_path),
             Some("Run `ezpm format` to auto-fix"),
         );
-        issues_found = true;
     }
+
+    let issues_found = selene_ok == Some(false) || stylua_ok == Some(false);
 
     if output::is_json() {
         output::document(&json!({

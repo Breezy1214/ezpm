@@ -46,6 +46,11 @@ impl EzpmError {
         Self::new(ErrorKind::Reported(exit_code), message)
     }
 
+    /// Exit with `exit_code` and print nothing more: the command already said everything.
+    pub fn exit(exit_code: i32) -> Self {
+        Self::reported(String::new(), exit_code)
+    }
+
     pub fn with_hint(mut self, hint: impl Into<String>) -> Self {
         self.hint = Some(hint.into());
         self

@@ -16,7 +16,7 @@ pub struct FixResult {
     pub changes: Vec<FileChange>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FileChange {
     pub file: PathBuf,
     pub rewrites: Vec<RequireRewrite>,
@@ -30,9 +30,28 @@ pub struct RequireRewrite {
     pub line: usize,
 }
 
-/// The 1-based line that byte `offset` of `content` is on.
-pub fn line_of(content: &str, offset: usize) -> usize {
-    content[..offset].matches('\n').count() + 1
+/// Turns ascending byte offsets into 1-based line numbers, scanning each byte once.
+pub struct LineCounter<'a> {
+    content: &'a str,
+    offset: usize,
+    line: usize,
+}
+
+impl<'a> LineCounter<'a> {
+    pub fn new(content: &'a str) -> Self {
+        Self {
+            content,
+            offset: 0,
+            line: 1,
+        }
+    }
+
+    /// The line `offset` is on; offsets must not decrease between calls.
+    pub fn line_at(&mut self, offset: usize) -> usize {
+        self.line += self.content[self.offset..offset].matches('\n').count();
+        self.offset = offset;
+        self.line
+    }
 }
 
 #[derive(Clone)]
@@ -296,7 +315,11 @@ pub fn fix_requires_with_context(ctx: &FixContext) -> Result<FixResult> {
     if let Some(error) = ambiguity_error(&plan.ambiguities) {
         return Err(error);
     }
+    apply_plan(plan)
+}
 
+/// Writes every pending rewrite of a plan that has no ambiguities.
+pub fn apply_plan(plan: FixPlan) -> Result<FixResult> {
     let mut changes = Vec::with_capacity(plan.pending.len());
     for (change, content) in plan.pending {
         write_source(&change.file, &content)?;
@@ -582,6 +605,7 @@ fn process_file_content_with_index(
     let mut rewrites: Vec<RequireRewrite> = Vec::new();
     let mut rebuilt: Option<String> = None;
     let mut last_end = 0usize;
+    let mut lines = LineCounter::new(content);
 
     for found in require_matches(content) {
         if let Some(new_path) = rewrite_require_path(found.path, ctx, module_index) {
@@ -593,7 +617,7 @@ fn process_file_content_with_index(
             rewrites.push(RequireRewrite {
                 old: found.path.to_string(),
                 new: new_path,
-                line: line_of(content, found.span.start),
+                line: lines.line_at(found.span.start),
             });
             last_end = found.span.end;
         }

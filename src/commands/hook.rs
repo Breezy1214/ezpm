@@ -6,6 +6,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::cli::HookFormat;
+use crate::commands::{check, fix_requires};
+use crate::config;
+use crate::diagnostics::Diagnostic;
+use crate::services::{require_fixer::is_lua_file, rojo_project::RojoProjectSettings, sourcemap};
 
 /// Agent Stop hook: checks the Luau files changed in git and hands every new error back to the
 /// agent as its next prompt. Never fails the agent: problems running the checks are ignored.
@@ -28,12 +32,7 @@ pub fn stop(format: HookFormat) -> Result<()> {
         return Ok(());
     }
 
-    let mut lines = Vec::new();
-    lines.extend(error_lines(&["check", "--json"], &changed));
-    lines.extend(error_lines(
-        &["fix-requires", "--check", "--json"],
-        &changed,
-    ));
+    let lines = error_lines(&changed);
 
     let session = session_id(&payload);
     let seen_file = git(&["rev-parse", "--git-dir"])
@@ -106,11 +105,7 @@ fn changed_lua_files() -> Vec<String> {
     let mut files: Vec<String> = modified
         .split('\0')
         .chain(untracked.split('\0'))
-        .filter(|path| {
-            Path::new(path)
-                .extension()
-                .is_some_and(|ext| ext == "lua" || ext == "luau")
-        })
+        .filter(|path| is_lua_file(Path::new(path)))
         .map(str::to_string)
         .collect();
     files.sort();
@@ -118,43 +113,39 @@ fn changed_lua_files() -> Vec<String> {
     files
 }
 
-/// Runs this ezpm with `args` and the files, and renders each error diagnostic as one line.
-fn error_lines(args: &[&str], files: &[String]) -> Vec<String> {
-    let Ok(exe) = std::env::current_exe() else {
+/// Every error `check` and `fix-requires --check` report about `files`, one line each. Both
+/// share one Rojo sourcemap.
+fn error_lines(files: &[String]) -> Vec<String> {
+    let config = match config::load_config() {
+        Ok((config, _warnings)) => config,
+        Err(error) => {
+            let diagnostic =
+                Diagnostic::new("config.invalid", error.to_string()).at("ezpm.toml", None);
+            return vec![diagnostic.render("error")];
+        }
+    };
+    let Ok(project_dir) = std::env::current_dir() else {
         return Vec::new();
     };
-    let Ok(output) = Command::new(exe)
-        .args(args)
-        .args(files)
-        .env("EZPM_NO_UPDATE_CHECK", "1")
-        .stdin(std::process::Stdio::null())
-        .output()
-    else {
-        return Vec::new();
-    };
-    let Ok(document) = serde_json::from_slice::<Value>(&output.stdout) else {
-        return Vec::new();
-    };
-    document["diagnostics"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|diagnostic| diagnostic["severity"] == "error")
-        .map(render)
-        .collect()
-}
+    let rojo = RojoProjectSettings::from_config(&config);
+    let index = sourcemap::generate_index(&project_dir, &rojo.project).ok();
 
-fn render(diagnostic: &Value) -> String {
-    let location = match (diagnostic["file"].as_str(), diagnostic["line"].as_u64()) {
-        (Some(file), Some(line)) => format!("{file}:{line} - "),
-        (Some(file), None) => format!("{file} - "),
-        _ => String::new(),
-    };
-    format!(
-        "{location}{} ({})",
-        diagnostic["message"].as_str().unwrap_or_default(),
-        diagnostic["code"].as_str().unwrap_or_default()
-    )
+    let mut found = Vec::new();
+    if let Ok((_, diagnostics)) = check::analyze(&config, &project_dir, index.as_ref(), files) {
+        found.extend(diagnostics);
+    }
+    if let Some(index) = index {
+        if let Ok(diagnostics) =
+            fix_requires::check_diagnostics(&config, &project_dir, index, files)
+        {
+            found.extend(diagnostics);
+        }
+    }
+    found
+        .iter()
+        .filter(|diagnostic| diagnostic.is_error())
+        .map(|diagnostic| diagnostic.render("error"))
+        .collect()
 }
 
 fn remember(path: &Path, lines: &[String]) {

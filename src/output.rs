@@ -194,8 +194,18 @@ pub fn document(value: &impl serde::Serialize) {
     }
 }
 
-/// Prints one `serve --json` event: `{"event": kind, ...fields}` on one line of stdout.
+/// Whether a command may ask the user questions: only on a terminal, and never in JSON mode.
+pub fn can_prompt() -> bool {
+    use std::io::IsTerminal;
+    !is_json() && std::io::stdin().is_terminal()
+}
+
+/// Prints one `serve --json` event, `{"event": kind, ...fields}`, on one line of stdout.
+/// Does nothing outside JSON mode.
 pub fn event(kind: &str, fields: serde_json::Value) {
+    if !is_json() {
+        return;
+    }
     let mut object = serde_json::Map::new();
     object.insert("event".into(), kind.into());
     if let serde_json::Value::Object(fields) = fields {

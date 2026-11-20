@@ -1,7 +1,6 @@
 use anyhow::{Context, Result};
 use inquire::{Confirm, Select, Text};
 use std::collections::{BTreeSet, HashMap};
-use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use crate::config;
@@ -10,6 +9,15 @@ use crate::output;
 pub use crate::services::rojo_project::generate_rojo_project;
 use crate::services::toolchain;
 use crate::services::{agents, atomic_file, config_gen, fs_txn::FileTransaction};
+
+/// What happened to a file, as `init --json` reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Outcome {
+    Wrote,
+    Unchanged,
+    WouldWrite,
+}
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct InitOptions {
@@ -48,7 +56,7 @@ pub fn run_init(options: InitOptions) -> Result<()> {
         return print_dry_run(&discovery, options);
     }
 
-    if output::is_json() || !std::io::stdin().is_terminal() {
+    if !output::can_prompt() {
         return Err(EzpmError::usage("ezpm init requires an interactive terminal")
             .with_hint(
                 "use `ezpm init --dry-run` to preview, or `ezpm init --agent-rules` to add only the agent rules",
@@ -203,7 +211,7 @@ pub fn run_init(options: InitOptions) -> Result<()> {
     if options.agent_rules || options.agent_hook {
         let files = write_agent_files(&mut txn, options.agent_rules, options.agent_hook)?;
         for (path, outcome) in files {
-            if outcome == "wrote" {
+            if outcome == Outcome::Wrote {
                 output::success(&format!("Updated {path}"));
             }
         }
@@ -400,7 +408,7 @@ fn print_dry_run(discovery: &RojoDiscovery, options: InitOptions) -> Result<()> 
     } else {
         anyhow::bail!("Multiple Rojo projects found; run `ezpm init` interactively to select one");
     };
-    let mut files: Vec<(String, &'static str)> = Vec::new();
+    let mut files: Vec<(String, Outcome)> = Vec::new();
     if let Some(project) = selected {
         if let Some(error) = &project.parse_error {
             anyhow::bail!(
@@ -419,24 +427,24 @@ fn print_dry_run(discovery: &RojoDiscovery, options: InitOptions) -> Result<()> 
             project.path.display()
         ));
         let path = project.path.strip_prefix(".").unwrap_or(&project.path);
-        files.push((path.display().to_string(), "unchanged"));
+        files.push((path.display().to_string(), Outcome::Unchanged));
     } else {
         output::info("Would create: default.project.json");
-        files.push(("default.project.json".into(), "wouldWrite"));
+        files.push(("default.project.json".into(), Outcome::WouldWrite));
     }
     for path in ["ezpm.toml", ".luaurc"] {
         output::info(&format!("Would create or update: {path}"));
-        files.push((path.into(), "wouldWrite"));
+        files.push((path.into(), Outcome::WouldWrite));
     }
     if !Path::new("rokit.toml").exists() {
         output::info("Would create: rokit.toml");
-        files.push(("rokit.toml".into(), "wouldWrite"));
+        files.push(("rokit.toml".into(), Outcome::WouldWrite));
     }
     if options.agent_rules {
         let current = std::fs::read_to_string(agents::AGENTS_FILE).ok();
         if agents::upsert_rules(current.as_deref()).is_some() {
             output::info("Would add ezpm's agent rules to: AGENTS.md");
-            files.push((agents::AGENTS_FILE.into(), "wouldWrite"));
+            files.push((agents::AGENTS_FILE.into(), Outcome::WouldWrite));
         }
     }
 
@@ -458,7 +466,7 @@ fn write_agent_files(
     txn: &mut FileTransaction,
     rules: bool,
     hook: bool,
-) -> Result<Vec<(String, &'static str)>> {
+) -> Result<Vec<(String, Outcome)>> {
     let mut changes: Vec<(&str, Option<String>)> = Vec::new();
     let read = |path: &str| std::fs::read_to_string(path).ok();
     if rules {
@@ -487,32 +495,32 @@ fn write_agent_files(
             Some(contents) => {
                 txn.write(Path::new(path), contents)
                     .with_context(|| format!("Failed to write {path}"))?;
-                "wrote"
+                Outcome::Wrote
             }
-            None => "unchanged",
+            None => Outcome::Unchanged,
         };
         files.push((path.to_string(), outcome));
     }
     Ok(files)
 }
 
-fn files_json(files: &[(String, &str)]) -> Vec<serde_json::Value> {
+fn files_json(files: &[(String, Outcome)]) -> Vec<serde_json::Value> {
     files
         .iter()
         .map(|(path, outcome)| serde_json::json!({ "path": path, "outcome": outcome }))
         .collect()
 }
 
-fn report_files(files: &[(String, &'static str)]) {
+fn report_files(files: &[(String, Outcome)]) {
     if output::is_json() {
         output::document(&serde_json::json!({
-            "changed": files.iter().any(|(_, outcome)| *outcome == "wrote"),
+            "changed": files.iter().any(|(_, outcome)| *outcome == Outcome::Wrote),
             "files": files_json(files),
         }));
         return;
     }
     for (path, outcome) in files {
-        if *outcome == "wrote" {
+        if *outcome == Outcome::Wrote {
             output::success(&format!("Updated {path}"));
         } else {
             output::info(&format!("{path} is already up to date"));

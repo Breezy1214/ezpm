@@ -217,6 +217,28 @@ fn suspend<R>(spinner: Option<&ProgressBar>, f: impl FnOnce() -> R) -> R {
     }
 }
 
+/// `rojo <subcommand> <project>`, run from `project_dir`.
+pub fn rojo(subcommand: &str, project: &Path, project_dir: &Path) -> Command {
+    let mut command = Command::new("rojo");
+    command
+        .arg(subcommand)
+        .arg(project)
+        .current_dir(project_dir);
+    command
+}
+
+/// The error for a tool that could not be started: `tool.missing` with an install hint when it
+/// isn't installed, the I/O error otherwise.
+pub fn spawn_error(tool: &str, error: std::io::Error) -> anyhow::Error {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        crate::error::EzpmError::tool(format!("Failed to run {tool}: it is not installed"))
+            .with_hint(tool_install_hint(tool))
+            .into()
+    } else {
+        anyhow::Error::new(error).context(format!("failed to run {tool}"))
+    }
+}
+
 pub fn missing_tool_context(binary: &str) -> String {
     format!("Failed to run {binary}. {}", rokit_bootstrap_hint())
 }

@@ -9,7 +9,7 @@ use crate::{
     services::{
         atomic_file, config_gen,
         file_watcher::{FileChange, FileWatcher, WatchEvent, WatchTargets},
-        port, prepare,
+        path_filter, port, prepare,
         process_manager::{ProcessEvent, ProcessManager},
         require_fixer::{self, is_lua_file},
         rojo_project::RojoProjectSettings,
@@ -42,8 +42,6 @@ impl std::fmt::Display for PortChoice {
 }
 
 fn resolve_port(port: u16) -> anyhow::Result<Option<u16>> {
-    use std::io::IsTerminal;
-
     if port::is_available(port) {
         return Ok(Some(port));
     }
@@ -61,7 +59,7 @@ fn resolve_port(port: u16) -> anyhow::Result<Option<u16>> {
     };
     let fallback = port::next_available(port);
 
-    if output::is_json() || !std::io::stdin().is_terminal() {
+    if !output::can_prompt() {
         let try_port = fallback.unwrap_or(port.saturating_add(1));
         anyhow::bail!("{}. Try: ezpm serve --port {}", in_use, try_port);
     }
@@ -171,12 +169,6 @@ fn sync_toolchain_versions(project_dir: &Path) -> anyhow::Result<()> {
 }
 
 /// One `serve --json` event; text mode prints its own lines instead.
-fn emit(kind: &str, fields: serde_json::Value) {
-    if output::is_json() {
-        output::event(kind, fields);
-    }
-}
-
 async fn run_fix_requires(context: &require_fixer::FixContext) -> bool {
     let context = context.clone();
     let result =
@@ -188,13 +180,14 @@ async fn run_fix_requires(context: &require_fixer::FixContext) -> bool {
         Ok(_) => true,
         Err(error) => {
             output::error(&format!("Require fix failed: {error}"));
-            emit("fixFailed", json!({ "message": error.to_string() }));
+            output::event("fixFailed", json!({ "message": error.to_string() }));
             false
         }
     }
 }
 
 struct ChangeContext<'a> {
+    project_dir: &'a Path,
     file_changes_enabled: bool,
     fix_ctx: &'a require_fixer::FixContext,
     previous_fix_ctx: Option<&'a require_fixer::FixContext>,
@@ -396,7 +389,7 @@ async fn refresh_sourcemap(
         Ok(Ok(index)) => Some(index),
         Ok(Err(error)) => {
             output::error(&format!("Sourcemap update failed: {error}"));
-            emit("sourcemapFailed", json!({ "message": error.to_string() }));
+            output::event("sourcemapFailed", json!({ "message": error.to_string() }));
             None
         }
         Err(error) => {
@@ -465,7 +458,7 @@ async fn handle_changes(
     }
 
     if is_batch {
-        emit(
+        output::event(
             "rebuilt",
             json!({ "files": changes.len(), "ms": t0.elapsed().as_millis() as u64 }),
         );
@@ -509,9 +502,9 @@ async fn handle_lua_file(
                 display_name(path),
                 e
             ));
-            emit(
+            output::event(
                 "fixFailed",
-                json!({ "file": path.display().to_string(), "message": e.to_string() }),
+                json!({ "file": path_filter::display(context.project_dir, path), "message": e.to_string() }),
             );
             failed_files.insert(path.to_path_buf());
             return;
@@ -521,10 +514,10 @@ async fn handle_lua_file(
     let filename = display_name(path);
     let was_failed = failed_files.remove(path);
     if !is_batch {
-        emit(
+        output::event(
             "synced",
             json!({
-                "file": path.display().to_string(),
+                "file": path_filter::display(context.project_dir, path),
                 "recovered": was_failed,
                 "ms": t0.elapsed().as_millis() as u64,
             }),
@@ -561,7 +554,7 @@ async fn handle_process_event(
                     "Rojo exited unexpectedly (exit code {}) — restarting...",
                     code.map_or_else(|| "none".to_string(), |code| code.to_string())
                 ));
-                emit("rojoRestarted", json!({ "code": code }));
+                output::event("rojoRestarted", json!({ "code": code }));
                 let port_str = port.to_string();
                 let project = project.to_string_lossy();
                 if let Err(e) = pm
@@ -573,7 +566,7 @@ async fn handle_process_event(
                 *restart_count += 1;
             } else {
                 output::error("Rojo crashed again — not restarting. File watching continues.");
-                emit("rojoCrashed", json!({ "code": code }));
+                output::event("rojoCrashed", json!({ "code": code }));
             }
         }
         ProcessEvent::Exited { name, code } => {
@@ -824,7 +817,7 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
     output::info("Watching Rojo source files (.lua, .luau, init.meta.json, *.model.json)");
     output::info("Press Ctrl-C to stop");
     output::print_line("");
-    emit(
+    output::event(
         "ready",
         json!({ "port": port, "project": rojo_settings.project }),
     );
@@ -866,7 +859,7 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
                                     match config_gen::write_config_files(&project_dir, &new_aliases) {
                                         Ok(()) => {
                                             output::info("Regenerated .luaurc from ezpm.toml");
-                                            emit("configReloaded", json!({}));
+                                            output::event("configReloaded", json!({}));
                                         }
                                         Err(error) => output::error(&format!(
                                             "Could not regenerate .luaurc: {error}"
@@ -1004,6 +997,7 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
                                 }
                             }
                             let context = ChangeContext {
+                                project_dir: &project_dir,
                                 file_changes_enabled,
                                 fix_ctx: &fix_ctx,
                                 previous_fix_ctx: previous_fix_ctx.as_ref(),
@@ -1023,7 +1017,7 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
                     }
                     Some(WatchEvent::Error(msg)) => {
                         output::warn(&format!("File watcher error: {}", msg));
-                        emit("watcherError", json!({ "message": msg }));
+                        output::event("watcherError", json!({ "message": msg }));
                     }
                     None => break,
                 }
@@ -1057,9 +1051,9 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
     let reason = stopped_by
         .as_ref()
         .map_or("watcherClosed", StopSignal::name);
-    emit("stopped", json!({ "reason": reason }));
+    output::event("stopped", json!({ "reason": reason }));
     match stopped_by {
-        Some(signal) => Err(EzpmError::reported("", signal.exit_code()).into()),
+        Some(signal) => Err(EzpmError::exit(signal.exit_code()).into()),
         None => Ok(()),
     }
 }

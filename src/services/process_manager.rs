@@ -54,23 +54,17 @@ impl ProcessManager {
 
         // In JSON mode the child's output is forwarded as events so stdout stays valid JSON.
         let forward = output::is_json();
-        let stdio = || {
-            if forward {
-                Stdio::piped()
-            } else {
-                Stdio::inherit()
-            }
+        let (stdin, stdout, stderr) = if forward {
+            (Stdio::null(), Stdio::piped(), Stdio::piped())
+        } else {
+            (Stdio::inherit(), Stdio::inherit(), Stdio::inherit())
         };
         let mut command = tokio::process::Command::new(cmd);
         command
             .args(args)
-            .stdin(if forward {
-                Stdio::null()
-            } else {
-                Stdio::inherit()
-            })
-            .stdout(stdio())
-            .stderr(stdio())
+            .stdin(stdin)
+            .stdout(stdout)
+            .stderr(stderr)
             .kill_on_drop(true);
 
         #[cfg(unix)]

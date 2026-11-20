@@ -9,9 +9,9 @@ use crate::{
     output,
     services::{
         path_filter::{self, PathFilter},
-        require_fixer::{self, Ambiguity, FileChange, FixContext},
+        require_fixer::{self, Ambiguity, FileChange, FixContext, FixPlan},
         rojo_project::RojoProjectSettings,
-        sourcemap,
+        sourcemap::{self, SourcemapIndex},
     },
 };
 
@@ -35,14 +35,13 @@ pub fn run(config: &EzpmConfig, mode: Mode, paths: &[String]) -> Result<()> {
     }
 
     let project_dir = std::env::current_dir().context("could not determine current directory")?;
-    let aliases = config.aliases.as_ref().cloned().unwrap_or_default();
-    let src = config.src_dir();
     let rojo = RojoProjectSettings::from_config(config);
     let index = sourcemap::generate_index(&project_dir, &rojo.project)?;
-    let context = FixContext::new(&project_dir, &src, &aliases, index);
+    let context = fix_context(config, &project_dir, index);
+    let review = review(&context, &project_dir, mode, paths)?;
 
-    if mode == Mode::Write {
-        let result = require_fixer::fix_requires_with_context(&context)?;
+    if mode == Mode::Write && review.diagnostics.is_empty() {
+        let result = require_fixer::apply_plan(review.plan)?;
         if output::is_json() {
             output::document(&json!({
                 "changed": result.files_changed > 0,
@@ -55,31 +54,107 @@ pub fn run(config: &EzpmConfig, mode: Mode, paths: &[String]) -> Result<()> {
         return Ok(());
     }
 
-    let plan = require_fixer::plan_fixes(&context)?;
-    let filter = PathFilter::new(&project_dir, paths);
-    let changes: Vec<&FileChange> = plan
-        .pending
-        .iter()
-        .map(|(change, _)| change)
-        .filter(|change| filter.matches(&project_dir, &change.file))
-        .collect();
-
-    let mut found = Vec::new();
-    for ambiguity in &plan.ambiguities {
-        if filter.is_empty()
-            || ambiguity
-                .candidates
-                .iter()
-                .any(|path| filter.matches(&project_dir, path))
-        {
-            found.push(ambiguity_diagnostic(&project_dir, ambiguity));
+    let changes = review.changes();
+    let rewrite_count: usize = changes.iter().map(|change| change.rewrites.len()).sum();
+    if output::is_json() {
+        output::document(&json!({
+            "changed": false,
+            "files_scanned": review.plan.total_files_scanned,
+            "would_change": changes.len(),
+            "changes": changes_json(&project_dir, changes.iter().copied()),
+            "diagnostics": review.diagnostics,
+        }));
+    } else {
+        if mode == Mode::DryRun {
+            print_planned(&project_dir, &changes);
+        }
+        diagnostics::report(&review.diagnostics);
+        if rewrite_count == 0 && review.diagnostics.is_empty() {
+            output::success(&format!(
+                "All requires up to date across {} files.",
+                review.plan.total_files_scanned
+            ));
+        } else if mode == Mode::DryRun && rewrite_count > 0 {
+            output::info(&format!(
+                "Would fix {} requires across {} files. Nothing was written.",
+                rewrite_count,
+                changes.len()
+            ));
         }
     }
+
+    let errors = review.diagnostics.iter().filter(|d| d.is_error()).count();
+    if errors > 0 {
+        return Err(EzpmError::reported(
+            format!(
+                "{errors} require problem{} found",
+                if errors == 1 { "" } else { "s" }
+            ),
+            1,
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// What `fix-requires --check` reports about `paths` (everything when empty), printing nothing.
+pub fn check_diagnostics(
+    config: &EzpmConfig,
+    project_dir: &Path,
+    index: SourcemapIndex,
+    paths: &[String],
+) -> Result<Vec<Diagnostic>> {
+    let context = fix_context(config, project_dir, index);
+    Ok(review(&context, project_dir, Mode::Check, paths)?.diagnostics)
+}
+
+fn fix_context(config: &EzpmConfig, project_dir: &Path, index: SourcemapIndex) -> FixContext {
+    let aliases = config.aliases.clone().unwrap_or_default();
+    FixContext::new(project_dir, &config.src_dir(), &aliases, index)
+}
+
+/// The plan, which of its changes are about `paths`, and the problems to report: ambiguities
+/// always, and each rewrite as an error in `--check` mode.
+struct Review {
+    plan: FixPlan,
+    selected: Vec<usize>,
+    diagnostics: Vec<Diagnostic>,
+}
+
+impl Review {
+    fn changes(&self) -> Vec<&FileChange> {
+        self.selected
+            .iter()
+            .map(|&i| &self.plan.pending[i].0)
+            .collect()
+    }
+}
+
+fn review(ctx: &FixContext, project_dir: &Path, mode: Mode, paths: &[String]) -> Result<Review> {
+    let plan = require_fixer::plan_fixes(ctx)?;
+    let filter = PathFilter::new(project_dir, paths);
+    let selected: Vec<usize> = (0..plan.pending.len())
+        .filter(|&i| filter.matches(project_dir, &plan.pending[i].0.file))
+        .collect();
+
+    let mut diagnostics: Vec<Diagnostic> = plan
+        .ambiguities
+        .iter()
+        .filter(|ambiguity| {
+            filter.is_empty()
+                || ambiguity
+                    .candidates
+                    .iter()
+                    .any(|path| filter.matches(project_dir, path))
+        })
+        .map(|ambiguity| ambiguity_diagnostic(project_dir, ambiguity))
+        .collect();
     if mode == Mode::Check {
-        for change in &changes {
-            let file = path_filter::display(&project_dir, &change.file);
+        for &i in &selected {
+            let change = &plan.pending[i].0;
+            let file = path_filter::display(project_dir, &change.file);
             for rewrite in &change.rewrites {
-                found.push(
+                diagnostics.push(
                     Diagnostic::new(
                         "require.wouldRewrite",
                         format!(
@@ -94,46 +169,11 @@ pub fn run(config: &EzpmConfig, mode: Mode, paths: &[String]) -> Result<()> {
         }
     }
 
-    let rewrite_count: usize = changes.iter().map(|change| change.rewrites.len()).sum();
-    if output::is_json() {
-        output::document(&json!({
-            "changed": false,
-            "files_scanned": plan.total_files_scanned,
-            "would_change": changes.len(),
-            "changes": changes_json(&project_dir, changes.iter().copied()),
-            "diagnostics": found,
-        }));
-    } else {
-        if mode == Mode::DryRun {
-            print_planned(&project_dir, &changes);
-        }
-        diagnostics::report(&found);
-        if rewrite_count == 0 && found.is_empty() {
-            output::success(&format!(
-                "All requires up to date across {} files.",
-                plan.total_files_scanned
-            ));
-        } else if mode == Mode::DryRun && rewrite_count > 0 {
-            output::info(&format!(
-                "Would fix {} requires across {} files. Nothing was written.",
-                rewrite_count,
-                changes.len()
-            ));
-        }
-    }
-
-    let errors = found.iter().filter(|d| d.is_error()).count();
-    if errors > 0 {
-        return Err(EzpmError::reported(
-            format!(
-                "{errors} require problem{} found",
-                if errors == 1 { "" } else { "s" }
-            ),
-            1,
-        )
-        .into());
-    }
-    Ok(())
+    Ok(Review {
+        plan,
+        selected,
+        diagnostics,
+    })
 }
 
 fn ambiguity_diagnostic(project_dir: &Path, ambiguity: &Ambiguity) -> Diagnostic {

@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use serde_json::json;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use crate::{
     config::EzpmConfig,
@@ -37,26 +37,16 @@ pub fn run(config: &EzpmConfig, command: RojoCommand, args: &[String]) -> Result
         .into());
     }
 
-    let mut child = Command::new("rojo");
-    child
-        .arg(command.name())
-        .arg(&rojo.project)
-        .args(args)
-        .current_dir(&project_dir);
+    let mut child = toolchain::rojo(command.name(), &rojo.project, &project_dir);
+    child.args(args);
     if output::is_json() {
         // Keep stdout for ezpm's document; a sourcemap printed without -o goes to stderr.
         child.stdout(Stdio::from(std::io::stderr()));
     }
 
-    let status = match child.status() {
-        Ok(status) => status,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Err(EzpmError::tool("Failed to run rojo: it is not installed")
-                .with_hint(toolchain::tool_install_hint("rojo"))
-                .into());
-        }
-        Err(error) => return Err(error).context("failed to run rojo"),
-    };
+    let status = child
+        .status()
+        .map_err(|error| toolchain::spawn_error("rojo", error))?;
     let exit_code = status.code().unwrap_or(1);
 
     if output::is_json() {

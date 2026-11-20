@@ -46,8 +46,6 @@ impl Interner {
 #[derive(Debug, Clone)]
 pub struct Edge {
     pub to: usize,
-    /// The require path as written, such as `@Shared/Signal`.
-    pub require: String,
     /// 1-based line of the `require`, when known.
     pub line: Option<usize>,
 }
@@ -74,12 +72,8 @@ impl DepGraph {
         id
     }
 
-    pub fn add_edge(&mut self, from: usize, to: usize, require_path: String) {
-        self.add_edge_at(from, to, require_path, None);
-    }
-
-    pub fn add_edge_at(&mut self, from: usize, to: usize, require: String, line: Option<usize>) {
-        self.edges[from].push(Edge { to, require, line });
+    pub fn add_edge(&mut self, from: usize, to: usize, line: Option<usize>) {
+        self.edges[from].push(Edge { to, line });
     }
 
     /// The line of the first require from `from` to `to`.
@@ -143,4 +137,13 @@ pub struct CheckResult {
     pub feature_violations: Vec<FeatureViolation>,
     pub unused_modules: Vec<String>,
     pub pass: bool,
+}
+
+impl CheckResult {
+    /// Cycles and violations fail a check; unused modules are only warnings.
+    pub fn passes(&self) -> bool {
+        self.cycles.is_empty()
+            && self.rule_violations.is_empty()
+            && self.feature_violations.is_empty()
+    }
 }
