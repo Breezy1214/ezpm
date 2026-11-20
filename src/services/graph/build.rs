@@ -5,6 +5,7 @@ use walkdir::WalkDir;
 
 use crate::config::normalize_relative;
 use crate::output;
+use crate::services::path_filter;
 use crate::services::require_fixer::{is_lua_file, require_matches, LineCounter};
 use crate::services::rojo_project::is_within;
 use crate::services::sourcemap::SourcemapIndex;
@@ -17,6 +18,9 @@ pub fn build_graph(
     src_prefix: &str,
     sourcemap: Option<&SourcemapIndex>,
 ) -> Result<DepGraph> {
+    // Rojo's sourcemap paths are canonical; the root must be too, or `@game` requires resolve
+    // to absolute paths that never match a module (Windows 8.3 names, symlinked folders).
+    let project_root = &path_filter::absolute(project_root, Path::new("."));
     let src_prefix = normalize_relative(src_prefix);
     let mut graph = DepGraph::new();
     let scan_dir = project_root.join(&src_prefix);
@@ -310,12 +314,46 @@ mod tests {
             "local util = require(\"@game/ReplicatedStorage/Shared/util\")\n",
         )
         .unwrap();
+        // Rojo reports canonical paths.
         let sourcemap = SourcemapIndex::from_pairs(&[(
-            p.join("src/shared/util.luau"),
+            dunce::canonicalize(p).unwrap().join("src/shared/util.luau"),
             "@game/ReplicatedStorage/Shared/util",
         )]);
 
         let graph = build_graph(p, &test_aliases(), "src", Some(&sourcemap)).unwrap();
+        let client = graph.interner.get("src/client/init.luau").unwrap();
+        let util = graph.interner.get("src/shared/util.luau").unwrap();
+
+        assert!(graph.neighbors(client).iter().any(|edge| edge.to == util));
+    }
+
+    #[test]
+    fn build_graph_resolves_game_paths_from_a_non_canonical_root() {
+        let dir = setup_project();
+        let real = dir.path();
+        fs::write(
+            real.join("src/client/init.luau"),
+            "local util = require(\"@game/ReplicatedStorage/Shared/util\")\n",
+        )
+        .unwrap();
+        let links = TempDir::new().unwrap();
+        let link = links.path().join("project");
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink(real, &link);
+        #[cfg(windows)]
+        let linked = std::os::windows::fs::symlink_dir(real, &link);
+        if linked.is_err() {
+            // Windows needs developer mode or admin rights to create a symlink.
+            return;
+        }
+        let sourcemap = SourcemapIndex::from_pairs(&[(
+            dunce::canonicalize(real)
+                .unwrap()
+                .join("src/shared/util.luau"),
+            "@game/ReplicatedStorage/Shared/util",
+        )]);
+
+        let graph = build_graph(&link, &test_aliases(), "src", Some(&sourcemap)).unwrap();
         let client = graph.interner.get("src/client/init.luau").unwrap();
         let util = graph.interner.get("src/shared/util.luau").unwrap();
 
