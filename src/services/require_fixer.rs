@@ -16,7 +16,7 @@ pub struct FixResult {
     pub changes: Vec<FileChange>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FileChange {
     pub file: PathBuf,
     pub rewrites: Vec<RequireRewrite>,
@@ -26,6 +26,32 @@ pub struct FileChange {
 pub struct RequireRewrite {
     pub old: String,
     pub new: String,
+    /// 1-based line of the `require` in the original file.
+    pub line: usize,
+}
+
+/// Turns ascending byte offsets into 1-based line numbers, scanning each byte once.
+pub struct LineCounter<'a> {
+    content: &'a str,
+    offset: usize,
+    line: usize,
+}
+
+impl<'a> LineCounter<'a> {
+    pub fn new(content: &'a str) -> Self {
+        Self {
+            content,
+            offset: 0,
+            line: 1,
+        }
+    }
+
+    /// The line `offset` is on; offsets must not decrease between calls.
+    pub fn line_at(&mut self, offset: usize) -> usize {
+        self.line += self.content[self.offset..offset].matches('\n').count();
+        self.offset = offset;
+        self.line
+    }
 }
 
 #[derive(Clone)]
@@ -43,7 +69,8 @@ pub struct FixContext {
 pub struct ModuleIndex {
     files: Vec<PathBuf>,
     by_name: HashMap<String, Vec<usize>>,
-    ambiguities: Mutex<HashMap<String, Vec<PathBuf>>>,
+    /// Names `find_unique` found several modules for since the last `take_ambiguous`.
+    ambiguous: Mutex<Vec<(String, Vec<PathBuf>)>>,
 }
 
 impl ModuleIndex {
@@ -112,37 +139,47 @@ impl ModuleIndex {
             return candidates.first().map(|path| path.as_path());
         }
 
-        if let Ok(mut ambiguities) = self.ambiguities.lock() {
-            ambiguities.insert(name.to_string(), candidates.into_iter().cloned().collect());
+        if let Ok(mut ambiguous) = self.ambiguous.lock() {
+            let mut candidates: Vec<PathBuf> = candidates.into_iter().cloned().collect();
+            candidates.sort();
+            ambiguous.push((name.to_string(), candidates));
         }
         None
     }
 
-    fn ambiguity_error(&self) -> Option<anyhow::Error> {
-        let mut stored = self.ambiguities.lock().ok()?;
-        let ambiguities = std::mem::take(&mut *stored);
-        if ambiguities.is_empty() {
-            return None;
-        }
-
-        let mut entries = ambiguities.into_iter().collect::<Vec<_>>();
-        entries.sort_by(|(left, _), (right, _)| left.cmp(right));
-        let details = entries
-            .into_iter()
-            .map(|(name, paths)| {
-                let mut paths = paths
-                    .into_iter()
-                    .map(|path| path.display().to_string())
-                    .collect::<Vec<_>>();
-                paths.sort();
-                format!("require(\"{name}\") matches {}", paths.join(", "))
-            })
-            .collect::<Vec<_>>()
-            .join("; ");
-        Some(anyhow::anyhow!(
-            "ambiguous module name; use an alias or source path: {details}"
-        ))
+    fn take_ambiguous(&self) -> Vec<(String, Vec<PathBuf>)> {
+        self.ambiguous
+            .lock()
+            .map(|mut stored| std::mem::take(&mut *stored))
+            .unwrap_or_default()
     }
+}
+
+fn ambiguity_error(ambiguities: &[Ambiguity]) -> Option<anyhow::Error> {
+    if ambiguities.is_empty() {
+        return None;
+    }
+    let details = ambiguities
+        .iter()
+        .map(|ambiguity| {
+            let paths = ambiguity
+                .candidates
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>();
+            format!(
+                "{}:{}: require(\"{}\") matches {}",
+                ambiguity.file.display(),
+                ambiguity.line,
+                ambiguity.name,
+                paths.join(", ")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    Some(anyhow::anyhow!(
+        "ambiguous module name; use an alias or source path: {details}"
+    ))
 }
 
 impl FixContext {
@@ -233,38 +270,80 @@ impl FixContext {
     }
 }
 
-pub fn fix_requires_with_context(ctx: &FixContext) -> Result<FixResult> {
+/// A bare `require("name")` that matches several modules, so nothing can be rewritten safely.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Ambiguity {
+    pub name: String,
+    pub candidates: Vec<PathBuf>,
+    /// The file with the require, and the require's 1-based line.
+    pub file: PathBuf,
+    pub line: usize,
+}
+
+/// What scanning one file found: its rewritten content (if anything changed), the rewrites, and
+/// the requires that could not be rewritten because their name is ambiguous.
+struct FileScan {
+    content: Option<String>,
+    rewrites: Vec<RequireRewrite>,
+    ambiguities: Vec<Ambiguity>,
+}
+
+/// Every rewrite `fix-requires` would make, computed without writing anything.
+#[derive(Debug, Default)]
+pub struct FixPlan {
+    pub total_files_scanned: usize,
+    pub pending: Vec<(FileChange, String)>,
+    pub ambiguities: Vec<Ambiguity>,
+}
+
+pub fn plan_fixes(ctx: &FixContext) -> Result<FixPlan> {
     let files = ctx.script_files();
-    let total_files_scanned = files.len();
     let module_index = ctx.module_index();
 
     let mut pending = Vec::new();
+    let mut ambiguities = Vec::new();
     for path in files {
         let content = read_source(path)?;
-        let (new_content, rewrites) =
-            process_file_content_with_index(&content, ctx, Some(&module_index));
-        let Some(new_content) = new_content else {
+        let scan = scan_file(&content, path, ctx, Some(&module_index));
+        ambiguities.extend(scan.ambiguities);
+        let Some(new_content) = scan.content else {
             continue;
         };
-        pending.push((path, new_content, rewrites));
+        pending.push((
+            FileChange {
+                file: path.clone(),
+                rewrites: scan.rewrites,
+            },
+            new_content,
+        ));
     }
-    if let Some(error) = module_index.ambiguity_error() {
+
+    Ok(FixPlan {
+        total_files_scanned: files.len(),
+        pending,
+        ambiguities,
+    })
+}
+
+pub fn fix_requires_with_context(ctx: &FixContext) -> Result<FixResult> {
+    let plan = plan_fixes(ctx)?;
+    if let Some(error) = ambiguity_error(&plan.ambiguities) {
         return Err(error);
     }
+    apply_plan(plan)
+}
 
-    let mut changes = Vec::with_capacity(pending.len());
-    for (path, content, rewrites) in pending {
-        write_source(path, &content)?;
-        changes.push(FileChange {
-            file: path.clone(),
-            rewrites,
-        });
+/// Writes every pending rewrite of a plan that has no ambiguities.
+pub fn apply_plan(plan: FixPlan) -> Result<FixResult> {
+    let mut changes = Vec::with_capacity(plan.pending.len());
+    for (change, content) in plan.pending {
+        write_source(&change.file, &content)?;
+        changes.push(change);
     }
 
-    let files_changed = changes.len();
     Ok(FixResult {
-        files_changed,
-        total_files_scanned,
+        files_changed: changes.len(),
+        total_files_scanned: plan.total_files_scanned,
         changes,
     })
 }
@@ -275,21 +354,20 @@ pub fn fix_single_file_with_index(
     module_index: &ModuleIndex,
 ) -> Result<Option<FileChange>> {
     let content = read_source(file_path)?;
-    let (new_content, rewrites) =
-        process_file_content_with_index(&content, ctx, Some(module_index));
+    let scan = scan_file(&content, file_path, ctx, Some(module_index));
 
-    if let Some(error) = module_index.ambiguity_error() {
+    if let Some(error) = ambiguity_error(&scan.ambiguities) {
         return Err(error);
     }
 
-    let Some(new_content) = new_content else {
+    let Some(new_content) = scan.content else {
         return Ok(None);
     };
 
     write_source(file_path, &new_content)?;
     Ok(Some(FileChange {
         file: file_path.to_path_buf(),
-        rewrites,
+        rewrites: scan.rewrites,
     }))
 }
 
@@ -529,21 +607,40 @@ pub fn process_file_content(
     root_dir: Option<&Path>,
 ) -> (String, Vec<RequireRewrite>) {
     let module_index = root_dir.map(ModuleIndex::build);
-    let (updated, rewrites) = process_file_content_with_index(content, ctx, module_index.as_ref());
-    (updated.unwrap_or_else(|| content.to_string()), rewrites)
+    let scan = scan_file(content, Path::new(""), ctx, module_index.as_ref());
+    (
+        scan.content.unwrap_or_else(|| content.to_string()),
+        scan.rewrites,
+    )
 }
 
-fn process_file_content_with_index(
+fn scan_file(
     content: &str,
+    file: &Path,
     ctx: &FixContext,
     module_index: Option<&ModuleIndex>,
-) -> (Option<String>, Vec<RequireRewrite>) {
+) -> FileScan {
     let mut rewrites: Vec<RequireRewrite> = Vec::new();
+    let mut ambiguities = Vec::new();
     let mut rebuilt: Option<String> = None;
     let mut last_end = 0usize;
+    let mut lines = LineCounter::new(content);
 
     for found in require_matches(content) {
-        if let Some(new_path) = rewrite_require_path(found.path, ctx, module_index) {
+        let new_path = rewrite_require_path(found.path, ctx, module_index);
+        if let Some(index) = module_index {
+            let ambiguous = index.take_ambiguous();
+            if !ambiguous.is_empty() {
+                let line = lines.line_at(found.span.start);
+                ambiguities.extend(ambiguous.into_iter().map(|(name, candidates)| Ambiguity {
+                    name,
+                    candidates,
+                    file: file.to_path_buf(),
+                    line,
+                }));
+            }
+        }
+        if let Some(new_path) = new_path {
             let output = rebuilt.get_or_insert_with(|| String::with_capacity(content.len()));
             output.push_str(&content[last_end..found.span.start]);
             output.push_str("require(\"");
@@ -552,6 +649,7 @@ fn process_file_content_with_index(
             rewrites.push(RequireRewrite {
                 old: found.path.to_string(),
                 new: new_path,
+                line: lines.line_at(found.span.start),
             });
             last_end = found.span.end;
         }
@@ -560,7 +658,11 @@ fn process_file_content_with_index(
     if let Some(output) = &mut rebuilt {
         output.push_str(&content[last_end..]);
     }
-    (rebuilt, rewrites)
+    FileScan {
+        content: rebuilt,
+        rewrites,
+        ambiguities,
+    }
 }
 
 #[cfg(test)]

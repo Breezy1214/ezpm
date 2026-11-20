@@ -12,8 +12,13 @@ function resolvePath(
 	return vscode.Uri.file(path.join(workspaceFolder.uri.fsPath, modulePath));
 }
 
-function fileStartRange(): vscode.Range {
-	return new vscode.Range(new vscode.Position(0, 0), new vscode.Position(0, 1));
+/** The require's line when ezpm reports one, else the start of the file. */
+function lineRange(line?: number): vscode.Range {
+	const index = line && line > 0 ? line - 1 : 0;
+	return new vscode.Range(
+		new vscode.Position(index, 0),
+		new vscode.Position(index, line ? Number.MAX_SAFE_INTEGER : 1),
+	);
 }
 
 export function toDiagnostics(
@@ -40,7 +45,7 @@ export function toDiagnostics(
 		for (const modulePath of cycle.modules) {
 			const fileUri = resolvePath(workspaceFolder, modulePath);
 			const diagnostic = new vscode.Diagnostic(
-				fileStartRange(),
+				lineRange(),
 				`Circular dependency detected: ${cycleText}`,
 				vscode.DiagnosticSeverity.Error,
 			);
@@ -53,8 +58,19 @@ export function toDiagnostics(
 		const fileUri = resolvePath(workspaceFolder, violation.from_module);
 		const reason = violation.reason ? ` Reason: ${violation.reason}` : "";
 		const diagnostic = new vscode.Diagnostic(
-			fileStartRange(),
+			lineRange(violation.line),
 			`Architecture rule violation: ${violation.from_layer} -> ${violation.to_layer} is forbidden (${violation.from_module} -> ${violation.to_module}).${reason}`,
+			vscode.DiagnosticSeverity.Error,
+		);
+		diagnostic.source = "ezpm check";
+		addDiagnostic(fileUri, diagnostic);
+	}
+
+	for (const violation of result.feature_violations) {
+		const fileUri = resolvePath(workspaceFolder, violation.from_module);
+		const diagnostic = new vscode.Diagnostic(
+			lineRange(violation.line),
+			`Feature boundary violation: feature ${violation.from_feature} may not require feature ${violation.to_feature} (${violation.to_module}).`,
 			vscode.DiagnosticSeverity.Error,
 		);
 		diagnostic.source = "ezpm check";
@@ -64,7 +80,7 @@ export function toDiagnostics(
 	for (const modulePath of result.unused_modules) {
 		const fileUri = resolvePath(workspaceFolder, modulePath);
 		const diagnostic = new vscode.Diagnostic(
-			fileStartRange(),
+			lineRange(),
 			`Unused module: ${modulePath}`,
 			vscode.DiagnosticSeverity.Warning,
 		);

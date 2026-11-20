@@ -18,7 +18,7 @@ bench = false
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
 toml = "1.1.5"
 serde_ignored = "0.1"
 inquire = "0.9.4"
@@ -29,7 +29,7 @@ dunce = "1"
 ureq = "3"
 owo-colors = { version = "4", features = ["supports-colors"] }
 indicatif = "0.18"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "signal", "time", "sync"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "signal", "time", "sync", "io-util"] }
 notify-debouncer-full = "0.7"
 tempfile = "3"
 

@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 
+use crate::diagnostics::{self, Diagnostic};
 use crate::services::atomic_file;
 
 #[derive(Debug, Deserialize, Serialize, Default, Clone)]
@@ -10,6 +11,8 @@ pub struct CheckConfig {
     pub entry_points: Option<Vec<String>>,
     pub layers: Option<HashMap<String, String>>,
     pub forbid: Option<Vec<ForbidRule>>,
+    pub feature_roots: Option<Vec<String>>,
+    pub shared_features: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -192,7 +195,7 @@ pub fn save_aliases_preserving_config(
     Ok(())
 }
 
-pub fn load_config_from_str(input: &str) -> Result<(EzpmConfig, Vec<String>)> {
+pub fn load_config_from_str(input: &str) -> Result<(EzpmConfig, Vec<Diagnostic>)> {
     if input.trim().is_empty() {
         return Ok((EzpmConfig::default(), vec![]));
     }
@@ -206,15 +209,55 @@ pub fn load_config_from_str(input: &str) -> Result<(EzpmConfig, Vec<String>)> {
     })
     .map_err(|e| anyhow::anyhow!("Failed to parse ezpm.toml: {}", e))?;
 
-    let warnings: Vec<String> = unknown_fields
+    let warnings = unknown_fields
         .into_iter()
-        .map(|field| format!("Warning: unknown field '{}' in ezpm.toml", field))
+        .map(|field| unknown_field_diagnostic(&field))
         .collect();
 
     Ok((config, warnings))
 }
 
-pub fn load_config() -> Result<(EzpmConfig, Vec<String>)> {
+fn known_fields(section: &str) -> &'static [&'static str] {
+    match section {
+        "" => &[
+            "project", "paths", "display", "aliases", "serve", "rojo", "check",
+        ],
+        "project" => &["name"],
+        "paths" => &["src"],
+        "display" => &["file_changes", "logs_enabled", "check_updates"],
+        "serve" => &["port"],
+        "rojo" => &["project"],
+        "check" => &[
+            "entry_points",
+            "layers",
+            "forbid",
+            "feature_roots",
+            "shared_features",
+        ],
+        "check.forbid" => &["from", "to", "reason"],
+        _ => &[],
+    }
+}
+
+fn unknown_field_diagnostic(raw_path: &str) -> Diagnostic {
+    // serde_ignored marks Option layers with `?` segments: `check.?.forbid.?.0.reson`.
+    let segments: Vec<&str> = raw_path.split('.').filter(|s| *s != "?").collect();
+    let path = segments.join(".");
+    let (key, parents) = segments.split_last().expect("split yields one segment");
+    let section = parents
+        .iter()
+        .filter(|segment| segment.parse::<usize>().is_err())
+        .copied()
+        .collect::<Vec<_>>()
+        .join(".");
+    let mut message = format!("unknown field '{path}' in ezpm.toml");
+    if let Some(suggestion) = diagnostics::closest(key, known_fields(&section)) {
+        message.push_str(&format!(". Did you mean '{suggestion}'?"));
+    }
+    Diagnostic::new("config.unknownField", message).at("ezpm.toml", None)
+}
+
+pub fn load_config() -> Result<(EzpmConfig, Vec<Diagnostic>)> {
     let toml_path = Path::new("ezpm.toml");
     if toml_path.exists() {
         let contents = std::fs::read_to_string(toml_path)
@@ -228,6 +271,27 @@ pub fn load_config() -> Result<(EzpmConfig, Vec<String>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unknown_field_suggests_the_closest_key_in_its_section() {
+        let (_, warnings) =
+            load_config_from_str("[check]\nentry_point = []\n[[check.forbid]]\nfrom = \"a\"\nto = \"b\"\nreson = \"x\"\n")
+                .unwrap();
+        let messages: Vec<&str> = warnings.iter().map(|w| w.message.as_str()).collect();
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.contains("Did you mean 'entry_points'?")),
+            "{messages:?}"
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.contains("Did you mean 'reason'?")),
+            "{messages:?}"
+        );
+        assert!(warnings.iter().all(|w| w.code == "config.unknownField"));
+    }
 
     #[test]
     fn normalize_relative_strips_dot_prefix_and_trailing_slashes() {

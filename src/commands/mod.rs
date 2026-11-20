@@ -1,7 +1,11 @@
 pub mod alias;
 pub mod check;
+pub mod explain;
 pub mod fix_requires;
+pub mod hook;
 pub mod init;
 pub mod install;
 pub mod quality;
+pub mod rojo;
 pub mod serve;
+pub mod where_cmd;

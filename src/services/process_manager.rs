@@ -52,18 +52,33 @@ impl ProcessManager {
     pub async fn spawn(&mut self, name: &str, cmd: &str, args: &[&str]) -> Result<()> {
         self.kill(name).await;
 
+        // In JSON mode the child's output is forwarded as events so stdout stays valid JSON.
+        let forward = output::is_json();
+        let (stdin, stdout, stderr) = if forward {
+            (Stdio::null(), Stdio::piped(), Stdio::piped())
+        } else {
+            (Stdio::inherit(), Stdio::inherit(), Stdio::inherit())
+        };
         let mut command = tokio::process::Command::new(cmd);
         command
             .args(args)
-            .stdin(Stdio::inherit())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
+            .stdin(stdin)
+            .stdout(stdout)
+            .stderr(stderr)
             .kill_on_drop(true);
 
         #[cfg(unix)]
         command.process_group(0);
 
-        let child = command.spawn()?;
+        let mut child = command.spawn()?;
+        if forward {
+            if let Some(stdout) = child.stdout.take() {
+                tokio::spawn(forward_lines(name.to_string(), "stdout", stdout));
+            }
+            if let Some(stderr) = child.stderr.take() {
+                tokio::spawn(forward_lines(name.to_string(), "stderr", stderr));
+            }
+        }
         let pgid = child
             .id()
             .ok_or_else(|| anyhow::anyhow!("{name} exited before its PID could be read"))?;
@@ -103,6 +118,29 @@ impl ProcessManager {
             output::verbose_line(&format!("Stopping {} (PGID {})...", name, proc.pgid));
             let _ = proc.stop.send(());
             let _ = proc.monitor.await;
+        }
+    }
+}
+
+async fn forward_lines(
+    name: String,
+    stream: &'static str,
+    reader: impl tokio::io::AsyncRead + Unpin,
+) {
+    use tokio::io::AsyncBufReadExt;
+    // Read bytes, not `lines()`: that stops at the first invalid UTF-8, and Rojo would then fail
+    // writing to a closed pipe.
+    let mut reader = tokio::io::BufReader::new(reader);
+    let mut buffer = Vec::new();
+    loop {
+        buffer.clear();
+        match reader.read_until(b'\n', &mut buffer).await {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {
+                let line = String::from_utf8_lossy(&buffer);
+                let line = line.trim_end_matches(['\n', '\r']);
+                output::event(&name, serde_json::json!({ "stream": stream, "line": line }));
+            }
         }
     }
 }

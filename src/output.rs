@@ -8,6 +8,7 @@ use owo_colors::Stream;
 pub struct OutputConfig {
     pub verbose: bool,
     pub quiet: bool,
+    pub json: bool,
     pub color: ColorChoice,
 }
 
@@ -34,15 +35,17 @@ macro_rules! err {
 
 static OUTPUT_CONFIG: OnceLock<OutputConfig> = OnceLock::new();
 
-pub fn init(verbose: bool, quiet: bool, color: ColorChoice) {
+/// In JSON mode every human-readable line is suppressed, so stdout carries only JSON.
+pub fn init(verbose: bool, quiet: bool, json: bool, color: ColorChoice) {
     match color {
         ColorChoice::Always => owo_colors::set_override(true),
         ColorChoice::Never => owo_colors::set_override(false),
         ColorChoice::Auto => {}
     }
     let _ = OUTPUT_CONFIG.set(OutputConfig {
-        verbose,
-        quiet,
+        verbose: verbose && !json,
+        quiet: quiet || json,
+        json,
         color,
     });
 }
@@ -59,6 +62,7 @@ fn config() -> &'static OutputConfig {
     OUTPUT_CONFIG.get_or_init(|| OutputConfig {
         verbose: false,
         quiet: false,
+        json: false,
         color: ColorChoice::Auto,
     })
 }
@@ -75,6 +79,9 @@ pub fn success(msg: &str) {
 }
 
 pub fn error(msg: &str) {
+    if config().json {
+        return;
+    }
     err!(
         "{} {}",
         "\u{2717}".if_supports_color(Stream::Stderr, |t| t.red()),
@@ -84,6 +91,9 @@ pub fn error(msg: &str) {
 
 pub fn error_block(error: &str, context: &str, fix: Option<&str>) {
     use std::fmt::Write as _;
+    if config().json {
+        return;
+    }
     let mut label = String::new();
 
     label.clear();
@@ -168,6 +178,76 @@ pub fn is_verbose() -> bool {
     config().verbose
 }
 
+pub fn is_quiet() -> bool {
+    config().quiet
+}
+
+pub fn is_json() -> bool {
+    config().json
+}
+
+fn attached() -> &'static std::sync::Mutex<Vec<serde_json::Value>> {
+    static ATTACHED: OnceLock<std::sync::Mutex<Vec<serde_json::Value>>> = OnceLock::new();
+    ATTACHED.get_or_init(Default::default)
+}
+
+/// Diagnostics found before the command ran (such as `ezpm.toml` warnings), to be added to the
+/// `diagnostics` array of the next JSON document.
+pub fn attach_diagnostics(diagnostics: &[impl serde::Serialize]) {
+    let values = diagnostics
+        .iter()
+        .filter_map(|d| serde_json::to_value(d).ok());
+    if let Ok(mut attached) = attached().lock() {
+        attached.extend(values);
+    }
+}
+
+/// Prints one JSON document on one line of stdout.
+pub fn document(value: &impl serde::Serialize) {
+    let mut value = match serde_json::to_value(value) {
+        Ok(value) => value,
+        Err(e) => {
+            err!("failed to serialize JSON output: {}", e);
+            return;
+        }
+    };
+    let attached = attached()
+        .lock()
+        .map(|mut attached| std::mem::take(&mut *attached))
+        .unwrap_or_default();
+    if !attached.is_empty() {
+        if let Some(object) = value.as_object_mut() {
+            let diagnostics = object
+                .entry("diagnostics")
+                .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            if let Some(list) = diagnostics.as_array_mut() {
+                list.splice(0..0, attached);
+            }
+        }
+    }
+    out!("{}", value);
+}
+
+/// Whether a command may ask the user questions: only on a terminal, and never in JSON mode.
+pub fn can_prompt() -> bool {
+    use std::io::IsTerminal;
+    !is_json() && std::io::stdin().is_terminal()
+}
+
+/// Prints one `serve --json` event, `{"event": kind, ...fields}`, on one line of stdout.
+/// Does nothing outside JSON mode.
+pub fn event(kind: &str, fields: serde_json::Value) {
+    if !is_json() {
+        return;
+    }
+    let mut object = serde_json::Map::new();
+    object.insert("event".into(), kind.into());
+    if let serde_json::Value::Object(fields) = fields {
+        object.extend(fields);
+    }
+    document(&serde_json::Value::Object(object));
+}
+
 pub fn format_duration(duration: Duration) -> String {
     if duration < Duration::from_millis(1) {
         "<1ms".to_string()
@@ -191,6 +271,9 @@ pub fn print_stderr(msg: &str) {
 }
 
 pub fn start_spinner(msg: &str) -> ProgressBar {
+    if config().quiet {
+        return ProgressBar::hidden();
+    }
     let pb = ProgressBar::new_spinner();
     pb.enable_steady_tick(Duration::from_millis(80));
     pb.set_style(

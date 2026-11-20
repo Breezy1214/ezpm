@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use super::types::{CheckResult, Cycle, DepGraph, RuleViolation};
+use super::types::{CheckResult, Cycle, DepGraph, FeatureViolation, RuleViolation};
 
 pub fn find_cycles(graph: &DepGraph) -> Vec<Cycle> {
     let n = graph.node_count();
@@ -33,7 +33,7 @@ pub fn find_cycles(graph: &DepGraph) -> Vec<Cycle> {
             let neighbors = graph.neighbors(node);
 
             if *ni < neighbors.len() {
-                let (neighbor, _) = neighbors[*ni];
+                let neighbor = neighbors[*ni].to;
                 *ni += 1;
 
                 if indices[neighbor].is_none() {
@@ -69,7 +69,7 @@ pub fn find_cycles(graph: &DepGraph) -> Vec<Cycle> {
     }
 
     sccs.into_iter()
-        .filter(|scc| scc.len() > 1 || graph.neighbors(scc[0]).iter().any(|(to, _)| *to == scc[0]))
+        .filter(|scc| scc.len() > 1 || graph.neighbors(scc[0]).iter().any(|edge| edge.to == scc[0]))
         .map(|scc| {
             // Tarjan pushes the component root last; start the reported cycle there.
             let start = *scc.last().expect("components are non-empty");
@@ -91,7 +91,7 @@ fn shortest_cycle(graph: &DepGraph, scc: &[usize], start: usize) -> Vec<usize> {
     let mut queue = VecDeque::from([start]);
 
     while let Some(node) = queue.pop_front() {
-        for &(next, _) in graph.neighbors(node) {
+        for next in graph.neighbors(node).iter().map(|edge| edge.to) {
             if next == start {
                 let mut path = Vec::new();
                 let mut current = node;
@@ -137,8 +137,8 @@ pub fn validate_rules(
         let from_path = graph.interner.resolve(node);
         let from_layer = classify_layer(from_path, layers);
 
-        for (neighbor, _) in graph.neighbors(node) {
-            let to_path = graph.interner.resolve(*neighbor);
+        for edge in graph.neighbors(node) {
+            let to_path = graph.interner.resolve(edge.to);
             let to_layer = classify_layer(to_path, layers);
 
             if let (Some(ref fl), Some(ref tl)) = (&from_layer, &to_layer) {
@@ -153,6 +153,7 @@ pub fn validate_rules(
                             from_layer: fl.clone(),
                             to_layer: tl.clone(),
                             reason: rule.reason.clone(),
+                            line: edge.line,
                         });
                     }
                 }
@@ -172,6 +173,54 @@ fn classify_layer(path: &str, layers: &[(String, String)]) -> Option<String> {
     None
 }
 
+/// The feature a module belongs to: the first folder under the deepest feature root that holds
+/// it. A file directly under that root belongs to no feature.
+fn feature_of<'a>(path: &'a str, roots: &[String]) -> Option<&'a str> {
+    let root = roots
+        .iter()
+        .filter(|root| path.starts_with(root.as_str()))
+        .max_by_key(|root| root.len())?;
+    let (feature, _) = path[root.len()..].split_once('/')?;
+    Some(feature)
+}
+
+/// Requires from one feature into another, unless the target is a shared feature. Features keep
+/// their name across roots, so `server/Shop` may require `shared/Shop`.
+pub fn validate_features(
+    graph: &DepGraph,
+    roots: &[String],
+    shared_features: &[String],
+) -> Vec<FeatureViolation> {
+    if roots.is_empty() {
+        return Vec::new();
+    }
+
+    let mut violations = Vec::new();
+    for node in 0..graph.node_count() {
+        let from_path = graph.interner.resolve(node);
+        let Some(from_feature) = feature_of(from_path, roots) else {
+            continue;
+        };
+        for edge in graph.neighbors(node) {
+            let to_path = graph.interner.resolve(edge.to);
+            let Some(to_feature) = feature_of(to_path, roots) else {
+                continue;
+            };
+            if to_feature == from_feature || shared_features.iter().any(|s| s == to_feature) {
+                continue;
+            }
+            violations.push(FeatureViolation {
+                from_module: from_path.to_string(),
+                to_module: to_path.to_string(),
+                from_feature: from_feature.to_string(),
+                to_feature: to_feature.to_string(),
+                line: edge.line,
+            });
+        }
+    }
+    violations
+}
+
 pub fn find_unused(graph: &DepGraph, entry_points: &[usize]) -> Vec<String> {
     let n = graph.node_count();
     if n == 0 {
@@ -189,10 +238,10 @@ pub fn find_unused(graph: &DepGraph, entry_points: &[usize]) -> Vec<String> {
     }
 
     while let Some(node) = queue.pop_front() {
-        for (neighbor, _) in graph.neighbors(node) {
-            if !visited[*neighbor] {
-                visited[*neighbor] = true;
-                queue.push_back(*neighbor);
+        for edge in graph.neighbors(node) {
+            if !visited[edge.to] {
+                visited[edge.to] = true;
+                queue.push_back(edge.to);
             }
         }
     }
@@ -203,38 +252,88 @@ pub fn find_unused(graph: &DepGraph, entry_points: &[usize]) -> Vec<String> {
         .collect()
 }
 
+/// Feature-boundary settings: the roots whose folders are features, and the features any
+/// feature may require.
+#[derive(Default)]
+pub struct FeatureRules {
+    pub roots: Vec<String>,
+    pub shared: Vec<String>,
+}
+
 pub fn run_all_checks(
     graph: &DepGraph,
     layers: &[(String, String)],
     rules: &[ForbidRule],
+    features: &FeatureRules,
     entry_points: &[usize],
 ) -> CheckResult {
     let cycles = find_cycles(graph);
     let rule_violations = validate_rules(graph, layers, rules);
+    let feature_violations = validate_features(graph, &features.roots, &features.shared);
     let unused_modules = find_unused(graph, entry_points);
 
-    let pass = cycles.is_empty() && rule_violations.is_empty();
-
-    CheckResult {
+    let mut result = CheckResult {
         total_modules: graph.node_count(),
         total_edges: graph.edge_count(),
         cycles,
         rule_violations,
+        feature_violations,
         unused_modules,
-        pass,
-    }
+        pass: false,
+    };
+    result.pass = result.passes();
+    result
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[test]
+    fn feature_boundaries_allow_same_and_shared_features_only() {
+        let mut g = DepGraph::new();
+        let shop = g.add_node("src/server/Shop/init.luau");
+        let shared_shop = g.add_node("src/shared/Shop/Prices.luau");
+        let inventory = g.add_node("src/shared/Inventory/init.luau");
+        let util = g.add_node("src/shared/Util/Signal.luau");
+        let loose = g.add_node("src/shared/Loose.luau");
+        g.add_edge(shop, shared_shop, Some(1));
+        g.add_edge(shop, util, Some(2));
+        g.add_edge(shop, loose, Some(3));
+        g.add_edge(shop, inventory, Some(4));
+
+        let roots = vec!["src/server/".to_string(), "src/shared/".to_string()];
+        let violations = validate_features(&g, &roots, &["Util".to_string()]);
+
+        assert_eq!(violations.len(), 1, "{violations:?}");
+        assert_eq!(violations[0].from_feature, "Shop");
+        assert_eq!(violations[0].to_feature, "Inventory");
+        assert_eq!(violations[0].line, Some(4));
+    }
+
+    #[test]
+    fn nested_feature_roots_use_the_deepest_root() {
+        let mut g = DepGraph::new();
+        let shop = g.add_node("src/features/Shop/a.luau");
+        let inventory = g.add_node("src/features/Inventory/b.luau");
+        g.add_edge(shop, inventory, Some(1));
+
+        for roots in [
+            vec!["src/".to_string(), "src/features/".to_string()],
+            vec!["src/features/".to_string(), "src/".to_string()],
+        ] {
+            let violations = validate_features(&g, &roots, &[]);
+            assert_eq!(violations.len(), 1, "{roots:?}: {violations:?}");
+            assert_eq!(violations[0].from_feature, "Shop");
+        }
+    }
+
     fn make_simple_cycle() -> DepGraph {
         let mut g = DepGraph::new();
         let a = g.add_node("a.luau");
         let b = g.add_node("b.luau");
-        g.add_edge(a, b, "b".to_string());
-        g.add_edge(b, a, "a".to_string());
+        g.add_edge(a, b, None);
+        g.add_edge(b, a, None);
         g
     }
 
@@ -243,7 +342,7 @@ mod tests {
         let mut g = DepGraph::new();
         let a = g.add_node("a.luau");
         g.add_node("b.luau");
-        g.add_edge(a, a, "a".to_string());
+        g.add_edge(a, a, None);
 
         let cycles = find_cycles(&g);
         assert_eq!(cycles.len(), 1);
@@ -256,10 +355,10 @@ mod tests {
         let a = g.add_node("a.luau");
         let b = g.add_node("b.luau");
         let c = g.add_node("c.luau");
-        g.add_edge(a, b, "b".to_string());
-        g.add_edge(b, a, "a".to_string());
-        g.add_edge(a, c, "c".to_string());
-        g.add_edge(c, a, "a".to_string());
+        g.add_edge(a, b, None);
+        g.add_edge(b, a, None);
+        g.add_edge(a, c, None);
+        g.add_edge(c, a, None);
 
         let cycles = find_cycles(&g);
         assert_eq!(cycles.len(), 1);
@@ -269,7 +368,7 @@ mod tests {
             let from_id = g.interner.get(from).unwrap();
             let to_id = g.interner.get(to).unwrap();
             assert!(
-                g.neighbors(from_id).iter().any(|(t, _)| *t == to_id),
+                g.neighbors(from_id).iter().any(|edge| edge.to == to_id),
                 "{from} -> {to} is not an edge in {modules:?}"
             );
         }
@@ -288,7 +387,7 @@ mod tests {
         let mut g = DepGraph::new();
         let client = g.add_node("src/client/ui.luau");
         let server = g.add_node("src/server/handler.luau");
-        g.add_edge(client, server, "@Server/handler".to_string());
+        g.add_edge(client, server, None);
 
         let layers = vec![
             ("client".to_string(), "src/client/".to_string()),
@@ -312,8 +411,8 @@ mod tests {
         let a = g.add_node("a.luau");
         let b = g.add_node("b.luau");
         let c = g.add_node("c.luau");
-        g.add_edge(a, b, "b".to_string());
-        g.add_edge(b, c, "c".to_string());
+        g.add_edge(a, b, None);
+        g.add_edge(b, c, None);
 
         let unused = find_unused(&g, &[a]);
         assert!(unused.is_empty());

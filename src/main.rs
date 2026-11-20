@@ -4,9 +4,14 @@ use std::thread;
 use std::time::Duration;
 
 use ezpm::{
-    cli::{AliasCommands, Cli, ColorArg, Commands},
-    commands::{alias, check, fix_requires, init, install, quality, serve},
-    config, output,
+    cli::{AliasCommands, Cli, ColorArg, Commands, HookCommands},
+    commands::{
+        alias, check, explain, fix_requires, hook, init, install, quality, rojo, serve, where_cmd,
+    },
+    config,
+    diagnostics::{self, Diagnostic},
+    error::{ErrorKind, EzpmError},
+    output,
     services::version,
 };
 
@@ -42,14 +47,49 @@ fn print_update_notice(notice: &str) {
     output::notice(notice);
 }
 
+/// Parses the command line. Under `--json` a bad command line is a JSON error document too.
+fn parse_cli() -> Cli {
+    let error = match Cli::try_parse() {
+        Ok(cli) => return cli,
+        Err(error) => error,
+    };
+    let wants_json = std::env::args_os().any(|arg| arg == "--json");
+    if !wants_json || !error.use_stderr() {
+        error.exit();
+    }
+    let rendered = error.to_string();
+    let message = rendered
+        .split("\n\n")
+        .next()
+        .unwrap_or_default()
+        .trim_start_matches("error: ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    output::document(&serde_json::json!({ "error": { "kind": "usage", "message": message } }));
+    std::process::exit(2);
+}
+
 fn main() {
-    let cli = Cli::parse();
+    let cli = parse_cli();
+    if cli.json && cli.command.is_none() {
+        output::document(&serde_json::json!({
+            "error": { "kind": "usage", "message": "--json needs a command; the menu is interactive" }
+        }));
+        std::process::exit(2);
+    }
     let is_long_running_serve = matches!(&cli.command, Some(Commands::Serve { .. }));
     let is_interactive_menu = cli.command.is_none();
     let is_init = matches!(&cli.command, Some(Commands::Init { .. }));
-    let is_json_output = matches!(&cli.command, Some(Commands::Check { json: true }));
+    // The hook loads the config itself, from the agent's project, and must never fail the agent.
+    let is_hook = matches!(&cli.command, Some(Commands::Hook { .. }));
+    let skips_config = is_hook || matches!(&cli.command, Some(Commands::Explain { .. }));
 
-    let loaded_config_result = config::load_config();
+    let loaded_config_result = if skips_config {
+        Ok((config::EzpmConfig::default(), Vec::new()))
+    } else {
+        config::load_config()
+    };
 
     let logs_enabled = loaded_config_result
         .as_ref()
@@ -63,6 +103,7 @@ fn main() {
     output::init(
         cli.verbose,
         effective_quiet,
+        cli.json,
         match cli.color {
             ColorArg::Auto => output::ColorChoice::Auto,
             ColorArg::Always => output::ColorChoice::Always,
@@ -72,8 +113,10 @@ fn main() {
 
     let loaded_config = match loaded_config_result {
         Ok((cfg, warnings)) => {
-            for w in &warnings {
-                output::warn(w);
+            if output::is_json() {
+                output::attach_diagnostics(&warnings);
+            } else {
+                diagnostics::report(&warnings);
             }
             Some(cfg)
         }
@@ -82,7 +125,12 @@ fn main() {
             None
         }
         Err(e) => {
-            output::error(&format!("Could not load ezpm.toml: {}", e));
+            let diagnostic = Diagnostic::new("config.invalid", e.to_string()).at("ezpm.toml", None);
+            if output::is_json() {
+                output::document(&serde_json::json!({ "diagnostics": [diagnostic] }));
+            } else {
+                diagnostics::report(std::slice::from_ref(&diagnostic));
+            }
             std::process::exit(1);
         }
     };
@@ -90,7 +138,8 @@ fn main() {
     let current_ver = env!("CARGO_PKG_VERSION");
 
     let check_disabled = effective_quiet
-        || is_json_output
+        || cli.json
+        || is_hook
         || std::env::var("EZPM_NO_UPDATE_CHECK").is_ok()
         || std::env::var_os("CI").is_some()
         || loaded_config
@@ -123,16 +172,45 @@ fn main() {
         }
     }
 
+    let result = run_command(cli.command, loaded_config, startup_update_notice.as_deref());
+    let exit_code = report_result(result);
+
+    if !check_disabled && !update_check_already_handled {
+        if let Some(notice) = get_update_notice(&rx, current_ver) {
+            print_update_notice(&notice);
+        }
+    }
+
+    if exit_code != 0 {
+        std::process::exit(exit_code);
+    }
+}
+
+fn run_command(
+    command: Option<Commands>,
+    loaded_config: Option<config::EzpmConfig>,
+    startup_update_notice: Option<&str>,
+) -> anyhow::Result<()> {
     let src = loaded_config
         .as_ref()
         .map_or_else(|| "src".to_string(), config::EzpmConfig::src_dir);
 
-    let result = match cli.command {
+    match command {
         None => {
-            ezpm::menu::run_interactive_menu(startup_update_notice.as_deref());
+            ezpm::menu::run_interactive_menu(startup_update_notice);
             Ok(())
         }
-        Some(Commands::Init { dry_run }) => init::run_init(dry_run),
+        Some(Commands::Init {
+            dry_run,
+            no_agent_rules,
+            agent_rules,
+            agent_hook,
+        }) => init::run_init(init::InitOptions {
+            dry_run,
+            agent_rules: !no_agent_rules,
+            agent_rules_only: agent_rules,
+            agent_hook,
+        }),
         Some(Commands::Install) => {
             let aliases = loaded_config.as_ref().and_then(|c| c.aliases.as_ref());
             install::install_tools(&src, aliases)
@@ -143,14 +221,45 @@ fn main() {
         }
         Some(Commands::Lint) => quality::lint(&src),
         Some(Commands::Format { check }) => quality::format_code(&src, check),
-        Some(Commands::FixRequires) => {
-            let cfg = loaded_config.unwrap_or_default();
-            fix_requires::run(&cfg)
+        Some(Commands::FixRequires {
+            dry_run,
+            check,
+            paths,
+        }) => {
+            let mode = if check {
+                fix_requires::Mode::Check
+            } else if dry_run {
+                fix_requires::Mode::DryRun
+            } else {
+                fix_requires::Mode::Write
+            };
+            fix_requires::run(&loaded_config.unwrap_or_default(), mode, &paths)
         }
-        Some(Commands::Check { json }) => check::run_check(loaded_config.as_ref(), json),
+        Some(Commands::Check { paths }) => check::run_check(loaded_config.as_ref(), &paths),
+        Some(Commands::Build { args }) => rojo::run(
+            &loaded_config.unwrap_or_default(),
+            rojo::RojoCommand::Build,
+            &args,
+        ),
+        Some(Commands::Sourcemap { args }) => rojo::run(
+            &loaded_config.unwrap_or_default(),
+            rojo::RojoCommand::Sourcemap,
+            &args,
+        ),
+        Some(Commands::Where { paths }) => {
+            where_cmd::run(&loaded_config.unwrap_or_default(), &paths)
+        }
+        Some(Commands::Explain { code, list }) => explain::run(code.as_deref(), list),
+        Some(Commands::Hook {
+            hook: HookCommands::Stop { format },
+        }) => hook::stop(format),
         Some(Commands::Alias { subcommand }) => match subcommand {
-            Some(AliasCommands::Add) => alias::alias_add(),
-            Some(AliasCommands::Remove) => alias::alias_remove(),
+            Some(AliasCommands::Add {
+                name,
+                path,
+                create_dir,
+            }) => alias::alias_add(name, path, create_dir),
+            Some(AliasCommands::Remove { names }) => alias::alias_remove(&names),
             Some(AliasCommands::List) => {
                 let aliases = loaded_config.and_then(|c| c.aliases);
                 alias::alias_list(&aliases)
@@ -168,21 +277,55 @@ fn main() {
             rt.shutdown_timeout(std::time::Duration::from_secs(1));
             result
         }
+    }
+}
+
+/// Prints a failed command's error (as text, or as a JSON error document) and returns the exit
+/// code: 0 done, 1 project or tool errors, 2 bad usage, 130 interrupted.
+fn report_result(result: anyhow::Result<()>) -> i32 {
+    let Err(error) = result else {
+        return 0;
     };
 
-    if let Err(e) = result {
-        output::error(&format!("{}", e));
-        if !check_disabled && !update_check_already_handled {
-            if let Some(notice) = get_update_notice(&rx, current_ver) {
-                print_update_notice(&notice);
-            }
-        }
-        std::process::exit(1);
+    if let Some(inquire::InquireError::OperationInterrupted) =
+        error.downcast_ref::<inquire::InquireError>()
+    {
+        return 130;
     }
 
-    if !check_disabled && !update_check_already_handled {
-        if let Some(notice) = get_update_notice(&rx, current_ver) {
-            print_update_notice(&notice);
+    let (kind, exit_code, hint, diagnostic_code, reported) = match error.downcast_ref::<EzpmError>()
+    {
+        Some(ezpm_error) => (
+            ezpm_error.kind_name(),
+            ezpm_error.exit_code(),
+            ezpm_error.hint.clone(),
+            ezpm_error.code,
+            matches!(ezpm_error.kind, ErrorKind::Reported(_)),
+        ),
+        None => ("project", 1, None, None, false),
+    };
+    let message = error.to_string();
+
+    if output::is_json() {
+        if !reported {
+            let mut body = serde_json::json!({ "kind": kind, "message": message });
+            if let Some(code) = diagnostic_code {
+                body["code"] = code.into();
+            }
+            if let Some(hint) = hint {
+                body["hint"] = hint.into();
+            }
+            output::document(&serde_json::json!({ "error": body }));
+        }
+    } else if !message.is_empty() {
+        match diagnostic_code {
+            Some(code) => output::error(&format!("{message} ({code})")),
+            None => output::error(&message),
+        }
+        if let Some(hint) = hint {
+            output::hint(&hint);
         }
     }
+
+    exit_code
 }

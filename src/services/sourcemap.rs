@@ -2,7 +2,6 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use crate::services::toolchain;
 
@@ -18,14 +17,11 @@ pub fn generate_sourcemap_for_project(
     project_dir: &Path,
     project: &Path,
 ) -> Result<SourcemapResult> {
-    let output = Command::new("rojo")
-        .arg("sourcemap")
-        .arg(project)
+    let output = toolchain::rojo("sourcemap", project, project_dir)
         .arg("-o")
         .arg(SOURCEMAP_FILE)
-        .current_dir(project_dir)
         .output()
-        .with_context(|| toolchain::missing_tool_context("rojo"))?;
+        .map_err(|error| toolchain::spawn_error("rojo", error))?;
 
     Ok(SourcemapResult {
         success: output.status.success(),
@@ -34,18 +30,17 @@ pub fn generate_sourcemap_for_project(
 }
 
 pub fn generate_index(project_dir: &Path, project: &Path) -> Result<SourcemapIndex> {
-    let output = Command::new("rojo")
-        .arg("sourcemap")
-        .arg(project)
+    let output = toolchain::rojo("sourcemap", project, project_dir)
         .arg("--absolute")
-        .current_dir(project_dir)
         .output()
-        .with_context(|| toolchain::missing_tool_context("rojo"))?;
-    anyhow::ensure!(
-        output.status.success(),
-        "Rojo sourcemap failed: {}",
-        String::from_utf8_lossy(&output.stderr).trim()
-    );
+        .map_err(|error| toolchain::spawn_error("rojo", error))?;
+    if !output.status.success() {
+        return Err(crate::error::EzpmError::tool(format!(
+            "Rojo sourcemap failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
+        .into());
+    }
     SourcemapIndex::parse(project_dir, &output.stdout)
 }
 
@@ -60,8 +55,17 @@ struct SourcemapNode {
     children: Vec<SourcemapNode>,
 }
 
+/// Where a file lands in the game.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Placement {
+    /// Dotted instance path, such as `ReplicatedStorage.Shared.Signal`.
+    pub instance_path: String,
+    pub class_name: String,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct SourcemapIndex {
+    placements: HashMap<PathBuf, Placement>,
     source_to_game: HashMap<PathBuf, String>,
     game_paths: HashSet<String>,
     game_to_source: HashMap<String, PathBuf>,
@@ -95,6 +99,11 @@ impl SourcemapIndex {
         self.source_to_game
             .get(&normalize_source_path(source_path))
             .map(String::as_str)
+    }
+
+    /// The instance a file becomes, for any file Rojo reads (scripts, models, JSON, meta files).
+    pub fn placement(&self, source_path: &Path) -> Option<&Placement> {
+        self.placements.get(&normalize_source_path(source_path))
     }
 
     pub fn contains_game_path(&self, game_path: &str) -> bool {
@@ -142,18 +151,23 @@ impl SourcemapIndex {
     ) -> Result<()> {
         instance_path.push(node.name.clone());
 
-        let lua_files = node
+        let file_paths: Vec<PathBuf> = node
             .file_paths
             .iter()
+            .map(|file_path| normalize_source_path(&project_dir.join(file_path)))
+            .collect();
+        for path in &file_paths {
+            self.placements
+                .entry(path.clone())
+                .or_insert_with(|| Placement {
+                    instance_path: instance_path.join("."),
+                    class_name: node.class_name.clone(),
+                });
+        }
+
+        let lua_files = file_paths
+            .into_iter()
             .filter(|path| is_lua_file(path))
-            .map(|file_path| {
-                let source_path = if file_path.is_absolute() {
-                    file_path.clone()
-                } else {
-                    project_dir.join(file_path)
-                };
-                normalize_source_path(&source_path)
-            })
             .collect::<Vec<_>>();
 
         // Vendored Wally sources are resolvable modules but are never rewritten:
@@ -294,6 +308,13 @@ mod tests {
         assert!(!index
             .source_files()
             .contains(&dir.path().join("src/main.server.luau")));
+        assert_eq!(
+            index.placement(&dir.path().join("src/main.server.luau")),
+            Some(&Placement {
+                instance_path: "ServerScriptService.Main".to_string(),
+                class_name: "Script".to_string(),
+            })
+        );
     }
 
     #[test]

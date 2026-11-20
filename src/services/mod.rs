@@ -1,8 +1,12 @@
+pub mod agents;
 pub mod atomic_file;
 pub mod config_gen;
 pub mod file_watcher;
+pub mod fs_txn;
 pub mod graph;
+pub mod path_filter;
 pub mod port;
+pub mod prepare;
 pub mod process_manager;
 pub mod require_fixer;
 pub mod rojo_project;

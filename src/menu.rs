@@ -11,6 +11,8 @@ const MENU_ITEMS: &[(&str, &str, &str)] = &[
         "Resolve shorthand require paths",
         "fix-requires",
     ),
+    ("build", "Build the place to build.rbxl with Rojo", "build"),
+    ("sourcemap", "Write sourcemap.json with Rojo", "sourcemap"),
     ("install", "Install tools and packages", "install"),
     (
         "setup-wally-packages",
@@ -91,7 +93,10 @@ pub fn run_interactive_menu(update_notice: Option<&str>) {
                 }
 
                 if let Err(e) = run_command(cmd) {
-                    output::error(&format!("Error: {}", e));
+                    // An empty message means the command already reported it (e.g. serve stopped).
+                    if !e.to_string().is_empty() {
+                        output::error(&format!("Error: {}", e));
+                    }
                 }
 
                 output::print_line("");
@@ -114,15 +119,16 @@ fn run_command(cmd: &str) -> Result<()> {
         Err(e) => return Err(e),
     };
 
-    for w in &warnings {
-        output::warn(w);
-    }
+    crate::diagnostics::report(&warnings);
 
     let src = cfg.src_dir();
     let src = src.as_str();
 
     match cmd {
-        "init" => crate::commands::init::run_init(false),
+        "init" => crate::commands::init::run_init(crate::commands::init::InitOptions {
+            agent_rules: true,
+            ..Default::default()
+        }),
         "install" => crate::commands::install::install_tools(src, cfg.aliases.as_ref()),
         "setup-wally-packages" => {
             crate::commands::install::setup_wally_packages(src, cfg.aliases.as_ref())
@@ -130,7 +136,21 @@ fn run_command(cmd: &str) -> Result<()> {
         "alias-menu" => crate::commands::alias::alias_menu(),
         "lint" => crate::commands::quality::lint(src),
         "format" => crate::commands::quality::format_code(src, false),
-        "fix-requires" => crate::commands::fix_requires::run(&cfg),
+        "fix-requires" => crate::commands::fix_requires::run(
+            &cfg,
+            crate::commands::fix_requires::Mode::Write,
+            &[],
+        ),
+        "build" => crate::commands::rojo::run(
+            &cfg,
+            crate::commands::rojo::RojoCommand::Build,
+            &["-o".to_string(), "build.rbxl".to_string()],
+        ),
+        "sourcemap" => crate::commands::rojo::run(
+            &cfg,
+            crate::commands::rojo::RojoCommand::Sourcemap,
+            &["-o".to_string(), "sourcemap.json".to_string()],
+        ),
         "serve" => {
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
