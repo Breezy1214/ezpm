@@ -21,7 +21,7 @@ pub fn lint(src_path: &str) -> Result<()> {
     let has_stylua = is_tool_available("stylua");
 
     if !has_selene && !has_stylua {
-        return Err(EzpmError::tool(
+        return Err(EzpmError::tool_missing(
             "No linting tools installed (selene and stylua are both missing)",
         )
         .with_hint(toolchain::tool_install_hint("selene"))
@@ -87,7 +87,7 @@ pub fn lint(src_path: &str) -> Result<()> {
 
 pub fn format_code(src_path: &str, check: bool) -> Result<()> {
     if !is_tool_available("stylua") {
-        return Err(EzpmError::tool("StyLua is not installed")
+        return Err(EzpmError::tool_missing("StyLua is not installed")
             .with_hint(toolchain::tool_install_hint("stylua"))
             .into());
     }

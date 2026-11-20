@@ -93,7 +93,10 @@ pub fn run_interactive_menu(update_notice: Option<&str>) {
                 }
 
                 if let Err(e) = run_command(cmd) {
-                    output::error(&format!("Error: {}", e));
+                    // An empty message means the command already reported it (e.g. serve stopped).
+                    if !e.to_string().is_empty() {
+                        output::error(&format!("Error: {}", e));
+                    }
                 }
 
                 output::print_line("");

@@ -186,12 +186,46 @@ pub fn is_json() -> bool {
     config().json
 }
 
+fn attached() -> &'static std::sync::Mutex<Vec<serde_json::Value>> {
+    static ATTACHED: OnceLock<std::sync::Mutex<Vec<serde_json::Value>>> = OnceLock::new();
+    ATTACHED.get_or_init(Default::default)
+}
+
+/// Diagnostics found before the command ran (such as `ezpm.toml` warnings), to be added to the
+/// `diagnostics` array of the next JSON document.
+pub fn attach_diagnostics(diagnostics: &[impl serde::Serialize]) {
+    let values = diagnostics
+        .iter()
+        .filter_map(|d| serde_json::to_value(d).ok());
+    if let Ok(mut attached) = attached().lock() {
+        attached.extend(values);
+    }
+}
+
 /// Prints one JSON document on one line of stdout.
 pub fn document(value: &impl serde::Serialize) {
-    match serde_json::to_string(value) {
-        Ok(json) => out!("{}", json),
-        Err(e) => err!("failed to serialize JSON output: {}", e),
+    let mut value = match serde_json::to_value(value) {
+        Ok(value) => value,
+        Err(e) => {
+            err!("failed to serialize JSON output: {}", e);
+            return;
+        }
+    };
+    let attached = attached()
+        .lock()
+        .map(|mut attached| std::mem::take(&mut *attached))
+        .unwrap_or_default();
+    if !attached.is_empty() {
+        if let Some(object) = value.as_object_mut() {
+            let diagnostics = object
+                .entry("diagnostics")
+                .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            if let Some(list) = diagnostics.as_array_mut() {
+                list.splice(0..0, attached);
+            }
+        }
     }
+    out!("{}", value);
 }
 
 /// Whether a command may ask the user questions: only on a terminal, and never in JSON mode.

@@ -204,12 +204,11 @@ fn serve_json_streams_only_json_events_and_exits_143_on_sigterm() {
     let status = child.wait().unwrap();
     assert_eq!(status.code(), Some(143));
 
-    let rest: Vec<serde_json::Value> = rx
-        .try_iter()
-        .map(|line| {
-            serde_json::from_str(&line).unwrap_or_else(|e| panic!("not JSON ({e}): {line}"))
-        })
-        .collect();
+    // Wait for the reader to see the pipe close, so the last events aren't missed.
+    let mut rest: Vec<serde_json::Value> = Vec::new();
+    while let Ok(line) = rx.recv_timeout(Duration::from_secs(10)) {
+        rest.push(serde_json::from_str(&line).unwrap_or_else(|e| panic!("not JSON ({e}): {line}")));
+    }
     assert!(
         rest.iter()
             .any(|e| e["event"] == "stopped" && e["reason"] == "terminate"),

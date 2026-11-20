@@ -26,6 +26,18 @@ impl RojoCommand {
 
 /// Syncs `.luaurc`, then runs `rojo <command> <project> <args...>` and exits with Rojo's code.
 pub fn run(config: &EzpmConfig, command: RojoCommand, args: &[String]) -> Result<()> {
+    let before_separator = args.iter().take_while(|arg| *arg != "--");
+    if before_separator.into_iter().any(|arg| arg == "--json") {
+        return Err(EzpmError::usage(format!(
+            "--json after `ezpm {}` would be passed to Rojo",
+            command.name()
+        ))
+        .with_hint(format!(
+            "put ezpm flags first: ezpm --json {} ...",
+            command.name()
+        ))
+        .into());
+    }
     let project_dir = std::env::current_dir().context("could not determine current directory")?;
     let rojo = prepare::prepare_project(&project_dir, config)?;
     if !project_dir.join(&rojo.project).is_file() {

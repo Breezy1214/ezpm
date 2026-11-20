@@ -32,7 +32,7 @@ pub fn stop(format: HookFormat) -> Result<()> {
         return Ok(());
     }
 
-    let lines = error_lines(&changed);
+    let errors = errors_in(&changed);
 
     let session = session_id(&payload);
     let seen_file = git(&["rev-parse", "--git-dir"])
@@ -42,20 +42,22 @@ pub fn stop(format: HookFormat) -> Result<()> {
         .and_then(|path| std::fs::read_to_string(path).ok())
         .map(|text| text.lines().map(str::to_string).collect())
         .unwrap_or_default();
-    let new_lines: Vec<String> = lines
-        .into_iter()
-        .filter(|line| !seen.contains(line))
+    let new_errors: Vec<&Diagnostic> = errors
+        .iter()
+        .filter(|diagnostic| !seen.contains(&seen_key(diagnostic)))
         .collect();
-    if new_lines.is_empty() {
+    if new_errors.is_empty() {
         return Ok(());
     }
     if let Some(path) = &seen_file {
-        remember(path, &new_lines);
+        let keys: Vec<String> = new_errors.iter().map(|d| seen_key(d)).collect();
+        remember(path, &keys);
     }
 
+    let lines: Vec<String> = new_errors.iter().map(|d| d.render("error")).collect();
     let message = format!(
         "ezpm found problems in files you changed. Fix each, or tell the user why it stays:\n{}",
-        new_lines.join("\n")
+        lines.join("\n")
     );
     let response = match format {
         HookFormat::Claude => json!({ "decision": "block", "reason": message }),
@@ -63,6 +65,17 @@ pub fn stop(format: HookFormat) -> Result<()> {
     };
     println!("{response}");
     Ok(())
+}
+
+/// What makes an error the same one across turns: everything but its line, which moves when
+/// the agent edits code above it.
+fn seen_key(diagnostic: &Diagnostic) -> String {
+    format!(
+        "{}\t{}\t{}",
+        diagnostic.code,
+        diagnostic.file.as_deref().unwrap_or_default(),
+        diagnostic.message.replace('\n', " ")
+    )
 }
 
 fn session_id(payload: &Value) -> String {
@@ -113,15 +126,13 @@ fn changed_lua_files() -> Vec<String> {
     files
 }
 
-/// Every error `check` and `fix-requires --check` report about `files`, one line each. Both
-/// share one Rojo sourcemap.
-fn error_lines(files: &[String]) -> Vec<String> {
+/// Every error `check` and `fix-requires --check` report about `files`. Both share one Rojo
+/// sourcemap.
+fn errors_in(files: &[String]) -> Vec<Diagnostic> {
     let config = match config::load_config() {
         Ok((config, _warnings)) => config,
         Err(error) => {
-            let diagnostic =
-                Diagnostic::new("config.invalid", error.to_string()).at("ezpm.toml", None);
-            return vec![diagnostic.render("error")];
+            return vec![Diagnostic::new("config.invalid", error.to_string()).at("ezpm.toml", None)];
         }
     };
     let Ok(project_dir) = std::env::current_dir() else {
@@ -141,11 +152,8 @@ fn error_lines(files: &[String]) -> Vec<String> {
             found.extend(diagnostics);
         }
     }
+    found.retain(Diagnostic::is_error);
     found
-        .iter()
-        .filter(|diagnostic| diagnostic.is_error())
-        .map(|diagnostic| diagnostic.render("error"))
-        .collect()
 }
 
 fn remember(path: &Path, lines: &[String]) {

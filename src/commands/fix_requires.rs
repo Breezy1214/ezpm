@@ -131,8 +131,8 @@ impl Review {
 }
 
 fn review(ctx: &FixContext, project_dir: &Path, mode: Mode, paths: &[String]) -> Result<Review> {
+    let filter = PathFilter::new(project_dir, paths)?;
     let plan = require_fixer::plan_fixes(ctx)?;
-    let filter = PathFilter::new(project_dir, paths);
     let selected: Vec<usize> = (0..plan.pending.len())
         .filter(|&i| filter.matches(project_dir, &plan.pending[i].0.file))
         .collect();
@@ -140,13 +140,7 @@ fn review(ctx: &FixContext, project_dir: &Path, mode: Mode, paths: &[String]) ->
     let mut diagnostics: Vec<Diagnostic> = plan
         .ambiguities
         .iter()
-        .filter(|ambiguity| {
-            filter.is_empty()
-                || ambiguity
-                    .candidates
-                    .iter()
-                    .any(|path| filter.matches(project_dir, path))
-        })
+        .filter(|ambiguity| filter.matches(project_dir, &ambiguity.file))
         .map(|ambiguity| ambiguity_diagnostic(project_dir, ambiguity))
         .collect();
     if mode == Mode::Check {
@@ -186,6 +180,10 @@ fn ambiguity_diagnostic(project_dir: &Path, ambiguity: &Ambiguity) -> Diagnostic
     Diagnostic::new(
         "require.ambiguous",
         format!("require(\"{}\") matches {candidates}", ambiguity.name),
+    )
+    .at(
+        path_filter::display(project_dir, &ambiguity.file),
+        Some(ambiguity.line),
     )
     .hint("use an alias or the full @game/... path")
 }

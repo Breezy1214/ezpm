@@ -47,12 +47,43 @@ fn print_update_notice(notice: &str) {
     output::notice(notice);
 }
 
+/// Parses the command line. Under `--json` a bad command line is a JSON error document too.
+fn parse_cli() -> Cli {
+    let error = match Cli::try_parse() {
+        Ok(cli) => return cli,
+        Err(error) => error,
+    };
+    let wants_json = std::env::args_os().any(|arg| arg == "--json");
+    if !wants_json || !error.use_stderr() {
+        error.exit();
+    }
+    let rendered = error.to_string();
+    let message = rendered
+        .split("\n\n")
+        .next()
+        .unwrap_or_default()
+        .trim_start_matches("error: ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    output::document(&serde_json::json!({ "error": { "kind": "usage", "message": message } }));
+    std::process::exit(2);
+}
+
 fn main() {
-    let cli = Cli::parse();
+    let cli = parse_cli();
+    if cli.json && cli.command.is_none() {
+        output::document(&serde_json::json!({
+            "error": { "kind": "usage", "message": "--json needs a command; the menu is interactive" }
+        }));
+        std::process::exit(2);
+    }
     let is_long_running_serve = matches!(&cli.command, Some(Commands::Serve { .. }));
     let is_interactive_menu = cli.command.is_none();
     let is_init = matches!(&cli.command, Some(Commands::Init { .. }));
-    let skips_config = matches!(&cli.command, Some(Commands::Explain { .. }));
+    // The hook loads the config itself, from the agent's project, and must never fail the agent.
+    let is_hook = matches!(&cli.command, Some(Commands::Hook { .. }));
+    let skips_config = is_hook || matches!(&cli.command, Some(Commands::Explain { .. }));
 
     let loaded_config_result = if skips_config {
         Ok((config::EzpmConfig::default(), Vec::new()))
@@ -82,7 +113,11 @@ fn main() {
 
     let loaded_config = match loaded_config_result {
         Ok((cfg, warnings)) => {
-            diagnostics::report(&warnings);
+            if output::is_json() {
+                output::attach_diagnostics(&warnings);
+            } else {
+                diagnostics::report(&warnings);
+            }
             Some(cfg)
         }
         Err(e) if is_init || is_interactive_menu => {
@@ -104,6 +139,7 @@ fn main() {
 
     let check_disabled = effective_quiet
         || cli.json
+        || is_hook
         || std::env::var("EZPM_NO_UPDATE_CHECK").is_ok()
         || std::env::var_os("CI").is_some()
         || loaded_config
@@ -257,31 +293,39 @@ fn report_result(result: anyhow::Result<()>) -> i32 {
         return 130;
     }
 
-    let (kind, code, hint, reported) = match error.downcast_ref::<EzpmError>() {
+    let (kind, exit_code, hint, diagnostic_code, reported) = match error.downcast_ref::<EzpmError>()
+    {
         Some(ezpm_error) => (
             ezpm_error.kind_name(),
             ezpm_error.exit_code(),
             ezpm_error.hint.clone(),
+            ezpm_error.code,
             matches!(ezpm_error.kind, ErrorKind::Reported(_)),
         ),
-        None => ("project", 1, None, false),
+        None => ("project", 1, None, None, false),
     };
     let message = error.to_string();
 
     if output::is_json() {
         if !reported {
             let mut body = serde_json::json!({ "kind": kind, "message": message });
+            if let Some(code) = diagnostic_code {
+                body["code"] = code.into();
+            }
             if let Some(hint) = hint {
                 body["hint"] = hint.into();
             }
             output::document(&serde_json::json!({ "error": body }));
         }
     } else if !message.is_empty() {
-        output::error(&message);
+        match diagnostic_code {
+            Some(code) => output::error(&format!("{message} ({code})")),
+            None => output::error(&message),
+        }
         if let Some(hint) = hint {
             output::hint(&hint);
         }
     }
 
-    code
+    exit_code
 }

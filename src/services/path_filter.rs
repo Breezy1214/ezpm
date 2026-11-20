@@ -1,18 +1,28 @@
 use std::path::{Component, Path, PathBuf};
 
+use crate::error::EzpmError;
+
 /// The files or folders a command was asked to report on. Empty means everything.
 pub struct PathFilter {
     roots: Vec<PathBuf>,
 }
 
 impl PathFilter {
-    pub fn new(project_dir: &Path, paths: &[String]) -> Self {
-        Self {
-            roots: paths
-                .iter()
-                .map(|path| absolute(project_dir, Path::new(path)))
-                .collect(),
-        }
+    /// Fails with a usage error for a path that doesn't exist, so a typo can't make a check
+    /// pass by matching nothing.
+    pub fn new(project_dir: &Path, paths: &[String]) -> Result<Self, EzpmError> {
+        let roots = paths
+            .iter()
+            .map(|path| {
+                let root = absolute(project_dir, Path::new(path));
+                if root.exists() {
+                    Ok(root)
+                } else {
+                    Err(EzpmError::usage(format!("path not found: {path}")))
+                }
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(Self { roots })
     }
 
     pub fn is_empty(&self) -> bool {
@@ -43,7 +53,12 @@ pub fn absolute(project_dir: &Path, path: &Path) -> PathBuf {
         .find_map(|ancestor| {
             let canonical = dunce::canonicalize(ancestor).ok()?;
             let rest = joined.strip_prefix(ancestor).ok()?;
-            Some(canonical.join(rest))
+            // Joining an empty rest would add a trailing separator, which a file doesn't have.
+            Some(if rest.as_os_str().is_empty() {
+                canonical
+            } else {
+                canonical.join(rest)
+            })
         })
         .unwrap_or(joined)
 }
@@ -83,10 +98,12 @@ mod tests {
         std::fs::write(dir.path().join("src/client/a.luau"), "").unwrap();
         std::fs::write(dir.path().join("src/b.luau"), "").unwrap();
 
-        let filter = PathFilter::new(dir.path(), &["./src/client/".to_string()]);
+        let filter = PathFilter::new(dir.path(), &["./src/client/".to_string()]).expect("filter");
         assert!(filter.matches(dir.path(), Path::new("src/client/a.luau")));
         assert!(!filter.matches(dir.path(), Path::new("src/b.luau")));
-        assert!(PathFilter::new(dir.path(), &[]).matches(dir.path(), Path::new("anything")));
+        assert!(PathFilter::new(dir.path(), &[])
+            .expect("filter")
+            .matches(dir.path(), Path::new("anything")));
     }
 
     #[test]

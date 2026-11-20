@@ -128,9 +128,20 @@ async fn forward_lines(
     reader: impl tokio::io::AsyncRead + Unpin,
 ) {
     use tokio::io::AsyncBufReadExt;
-    let mut lines = tokio::io::BufReader::new(reader).lines();
-    while let Ok(Some(line)) = lines.next_line().await {
-        output::event(&name, serde_json::json!({ "stream": stream, "line": line }));
+    // Read bytes, not `lines()`: that stops at the first invalid UTF-8, and Rojo would then fail
+    // writing to a closed pipe.
+    let mut reader = tokio::io::BufReader::new(reader);
+    let mut buffer = Vec::new();
+    loop {
+        buffer.clear();
+        match reader.read_until(b'\n', &mut buffer).await {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {
+                let line = String::from_utf8_lossy(&buffer);
+                let line = line.trim_end_matches(['\n', '\r']);
+                output::event(&name, serde_json::json!({ "stream": stream, "line": line }));
+            }
+        }
     }
 }
 

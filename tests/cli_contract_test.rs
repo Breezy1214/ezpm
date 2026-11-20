@@ -42,6 +42,84 @@ fn json_errors_are_one_document_on_stdout() {
     let document = common::json_document(&out);
     assert_eq!(document["error"]["kind"], "usage");
     assert!(document["error"]["hint"].is_string());
+
+    for args in [
+        &["--json", "where"][..],
+        &["--json", "no-such-command"],
+        &["--json"],
+    ] {
+        let out = common::run_ezpm(dir.path(), args);
+        common::assert_exit(&out, 2);
+        assert_eq!(
+            common::json_document(&out)["error"]["kind"],
+            "usage",
+            "{args:?}"
+        );
+    }
+
+    let out = common::run_ezpm(dir.path(), &["build", "-o", "game.rbxl", "--json"]);
+    common::assert_exit(&out, 2);
+    assert!(common::stderr(&out).contains("ezpm --json build"));
+}
+
+#[test]
+fn missing_paths_are_usage_errors() {
+    let dir = common::create_project();
+    common::assert_exit(&common::run_ezpm(dir.path(), &["check", "src/clinet"]), 2);
+    common::assert_exit(
+        &common::run_ezpm(
+            dir.path(),
+            &["fix-requires", "--check", "src/clinet/init.luau"],
+        ),
+        2,
+    );
+}
+
+#[test]
+fn ambiguous_requires_are_reported_on_the_requiring_file() {
+    let dir = common::create_project();
+    let p = dir.path();
+    fs::create_dir_all(p.join("src/shared/A")).unwrap();
+    fs::create_dir_all(p.join("src/shared/B")).unwrap();
+    fs::write(p.join("src/shared/A/Signal.luau"), "return {}\n").unwrap();
+    fs::write(p.join("src/shared/B/Signal.luau"), "return {}\n").unwrap();
+    fs::write(
+        p.join("src/client/init.luau"),
+        "\nreturn require(\"Signal\")\n",
+    )
+    .unwrap();
+
+    let out = common::run_ezpm(
+        p,
+        &["--json", "fix-requires", "--check", "src/client/init.luau"],
+    );
+    common::assert_exit(&out, 1);
+    let document = common::json_document(&out);
+    let ambiguous = &document["diagnostics"][0];
+    assert_eq!(ambiguous["code"], "require.ambiguous");
+    assert_eq!(ambiguous["file"], "src/client/init.luau");
+    assert_eq!(ambiguous["line"], 2);
+
+    let out = common::run_ezpm(p, &["fix-requires", "--check", "src/shared/A/Signal.luau"]);
+    common::assert_success(&out);
+}
+
+#[test]
+fn config_warnings_reach_json_documents() {
+    let dir = common::create_project();
+    let mut toml = fs::read_to_string(dir.path().join("ezpm.toml")).unwrap();
+    toml.push_str("\n[serve]\nprot = 1\n");
+    fs::write(dir.path().join("ezpm.toml"), toml).unwrap();
+
+    let out = common::run_ezpm(dir.path(), &["--json", "where", "src/shared/util.luau"]);
+    let document = common::json_document(&out);
+    let codes: Vec<&str> = document["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|d| d["code"].as_str())
+        .collect();
+    assert!(codes.contains(&"config.unknownField"), "{document}");
 }
 
 #[test]

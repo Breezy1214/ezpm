@@ -34,11 +34,13 @@ pub fn generate_index(project_dir: &Path, project: &Path) -> Result<SourcemapInd
         .arg("--absolute")
         .output()
         .map_err(|error| toolchain::spawn_error("rojo", error))?;
-    anyhow::ensure!(
-        output.status.success(),
-        "Rojo sourcemap failed: {}",
-        String::from_utf8_lossy(&output.stderr).trim()
-    );
+    if !output.status.success() {
+        return Err(crate::error::EzpmError::tool(format!(
+            "Rojo sourcemap failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
+        .into());
+    }
     SourcemapIndex::parse(project_dir, &output.stdout)
 }
 

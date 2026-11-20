@@ -231,7 +231,7 @@ pub fn rojo(subcommand: &str, project: &Path, project_dir: &Path) -> Command {
 /// isn't installed, the I/O error otherwise.
 pub fn spawn_error(tool: &str, error: std::io::Error) -> anyhow::Error {
     if error.kind() == std::io::ErrorKind::NotFound {
-        crate::error::EzpmError::tool(format!("Failed to run {tool}: it is not installed"))
+        crate::error::EzpmError::tool_missing(format!("Failed to run {tool}: it is not installed"))
             .with_hint(tool_install_hint(tool))
             .into()
     } else {
