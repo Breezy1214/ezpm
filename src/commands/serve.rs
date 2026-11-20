@@ -780,6 +780,16 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
 
     loop {
         tokio::select! {
+            // On Windows Rojo shares the console and dies from the same Ctrl-C; checking
+            // the stop signal first keeps that exit from being treated as a crash.
+            biased;
+            signal = &mut stop_signal => {
+                output::info(match signal {
+                    StopSignal::Interrupt => "Stopping...",
+                    StopSignal::TerminalClosed => "Terminal closed — stopping...",
+                });
+                break;
+            }
             event = watcher_rx.recv() => {
                 match event {
                     Some(WatchEvent::Changes(mut changes)) => {
@@ -853,6 +863,7 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
                                                 watch_tx.clone(),
                                             ) {
                                                 Ok(new_watcher) => {
+                                                    watcher = new_watcher;
                                                     if let Err(error) = restart_rojo(
                                                         &mut process_manager,
                                                         &mut process_rx,
@@ -865,7 +876,6 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
                                                     } else {
                                                         rojo_restart_count = 0;
                                                     }
-                                                    watcher = new_watcher;
                                                     rojo_settings = new_settings;
                                                     fix_ctx = new_fix_ctx;
                                                     module_index = fix_ctx.module_index();
@@ -979,13 +989,6 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
                     )
                     .await;
                 }
-            }
-            signal = &mut stop_signal => {
-                output::info(match signal {
-                    StopSignal::Interrupt => "Stopping...",
-                    StopSignal::TerminalClosed => "Terminal closed — stopping...",
-                });
-                break;
             }
         }
     }

@@ -13,8 +13,9 @@ const SELENE_CONFIG_PATH: &str = "selene.toml";
 const REGENERATE_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// Generation downloads the Roblox API dump, so skip it without selene.toml or while
-/// roblox.yml is recent. A failed attempt also counts as recent, so an offline machine
-/// does not retry the download on every command.
+/// roblox.yml is recent. A failed attempt refreshes an existing roblox.yml's timestamp, so
+/// an offline machine does not retry the download on every command; with no roblox.yml
+/// yet, selene has nothing to lint against, so it keeps trying.
 pub fn generate_selene_roblox_std() {
     let roblox_yml = Path::new(ROBLOX_YML_PATH);
     if !Path::new(SELENE_CONFIG_PATH).exists() || is_fresh(roblox_yml) {

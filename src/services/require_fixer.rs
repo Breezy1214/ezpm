@@ -161,12 +161,18 @@ impl FixContext {
         let managed_aliases = alias_paths
             .iter()
             .filter(|(_, path)| {
+                if is_within(path, source_root) {
+                    return true;
+                }
                 let dir = project_root.join(path.trim_end_matches('/'));
                 let first_at_or_after = module_files.partition_point(|file| *file < dir);
-                is_within(path, source_root)
-                    || module_files
-                        .get(first_at_or_after)
-                        .is_some_and(|file| file.starts_with(&dir))
+                let mut mapped = module_files[first_at_or_after..]
+                    .iter()
+                    .map_while(|file| file.strip_prefix(&dir).ok())
+                    .peekable();
+                // A Wally package folder is mapped too, but a missing package must not
+                // fall back to a same-named local module.
+                mapped.peek().is_some() && mapped.all(|relative| !is_wally_index_path(relative))
             })
             .map(|(alias, _)| alias.clone())
             .collect();
@@ -618,6 +624,44 @@ mod tests {
 
         let content =
             "local a = require(\"@Packages/Signal\")\nlocal b = require(\"@lune/Signal\")\n";
+        let (new_content, rewrites) = process_file_content(content, &context, Some(dir.path()));
+
+        assert!(rewrites.is_empty(), "unexpected rewrites: {rewrites:?}");
+        assert_eq!(new_content, content);
+    }
+
+    #[test]
+    fn installed_package_alias_is_not_redirected_by_module_name() {
+        let aliases = standard_aliases();
+        let dir = make_temp_tree(&[
+            ("src/shared/Signal.luau", "return {}\n"),
+            ("Packages/Promise.lua", "return {}\n"),
+            (
+                "Packages/_Index/evaera_promise@4.0.0/promise/init.lua",
+                "return {}\n",
+            ),
+        ]);
+        let context = context(
+            dir.path(),
+            &aliases,
+            &[
+                (
+                    dir.path().join("src/shared/Signal.luau"),
+                    "@game/ReplicatedStorage/Shared/Signal",
+                ),
+                (
+                    dir.path().join("Packages/Promise.lua"),
+                    "@game/ReplicatedStorage/Packages/Promise",
+                ),
+                (
+                    dir.path()
+                        .join("Packages/_Index/evaera_promise@4.0.0/promise/init.lua"),
+                    "@game/ReplicatedStorage/Packages/_Index/evaera_promise@4.0.0/promise",
+                ),
+            ],
+        );
+
+        let content = "local Signal = require(\"@Packages/Signal\")\n";
         let (new_content, rewrites) = process_file_content(content, &context, Some(dir.path()));
 
         assert!(rewrites.is_empty(), "unexpected rewrites: {rewrites:?}");

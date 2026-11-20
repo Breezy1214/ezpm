@@ -36,10 +36,10 @@ Shared = "src/shared/"
         .spawn()
         .expect("failed to spawn ezpm serve");
 
+    // The initial require fix lands before the watcher starts, so wait for the banner.
     let ready_deadline = Instant::now() + Duration::from_secs(30);
     while Instant::now() < ready_deadline
-        && !std::fs::read_to_string(&source)
-            .is_ok_and(|contents| contents.contains("@game/ReplicatedStorage/Shared/util"))
+        && !std::fs::read_to_string(&log_path).is_ok_and(|log| log.contains("Press Ctrl-C to stop"))
     {
         std::thread::sleep(Duration::from_millis(100));
     }

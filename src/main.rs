@@ -163,7 +163,10 @@ fn main() {
                 .enable_all()
                 .build()
                 .expect("failed to build tokio runtime");
-            rt.block_on(serve::run(loaded_config, port))
+            let result = rt.block_on(serve::run(loaded_config, port));
+            // Don't wait on a background selene download after serve has stopped.
+            rt.shutdown_timeout(std::time::Duration::from_secs(1));
+            result
         }
     };
 
