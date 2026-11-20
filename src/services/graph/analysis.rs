@@ -1,3 +1,5 @@
+use std::collections::{HashMap, HashSet, VecDeque};
+
 use super::types::{CheckResult, Cycle, DepGraph, RuleViolation};
 
 pub fn find_cycles(graph: &DepGraph) -> Vec<Cycle> {
@@ -67,17 +69,50 @@ pub fn find_cycles(graph: &DepGraph) -> Vec<Cycle> {
     }
 
     sccs.into_iter()
-        .filter(|scc| scc.len() > 1)
-        .map(|mut scc| {
-            scc.reverse();
+        .filter(|scc| scc.len() > 1 || graph.neighbors(scc[0]).iter().any(|(to, _)| *to == scc[0]))
+        .map(|scc| {
+            // Tarjan pushes the component root last; start the reported cycle there.
+            let start = *scc.last().expect("components are non-empty");
             Cycle {
-                modules: scc
+                modules: shortest_cycle(graph, &scc, start)
                     .iter()
                     .map(|&id| graph.interner.resolve(id).to_string())
                     .collect(),
             }
         })
         .collect()
+}
+
+/// Tarjan's stack order is not a path; report a real cycle so every printed arrow
+/// in `a -> b -> ... -> a` is an existing edge.
+fn shortest_cycle(graph: &DepGraph, scc: &[usize], start: usize) -> Vec<usize> {
+    let members: HashSet<usize> = scc.iter().copied().collect();
+    let mut parent: HashMap<usize, usize> = HashMap::new();
+    let mut queue = VecDeque::from([start]);
+
+    while let Some(node) = queue.pop_front() {
+        for &(next, _) in graph.neighbors(node) {
+            if next == start {
+                let mut path = Vec::new();
+                let mut current = node;
+                loop {
+                    path.push(current);
+                    match parent.get(&current) {
+                        Some(&prev) => current = prev,
+                        None => break,
+                    }
+                }
+                path.reverse();
+                return path;
+            }
+            if members.contains(&next) && !parent.contains_key(&next) {
+                parent.insert(next, node);
+                queue.push_back(next);
+            }
+        }
+    }
+
+    unreachable!("a strongly connected component always contains a cycle through its root")
 }
 
 pub struct ForbidRule {
@@ -201,6 +236,43 @@ mod tests {
         g.add_edge(a, b, "b".to_string());
         g.add_edge(b, a, "a".to_string());
         g
+    }
+
+    #[test]
+    fn detects_self_require_cycle() {
+        let mut g = DepGraph::new();
+        let a = g.add_node("a.luau");
+        g.add_node("b.luau");
+        g.add_edge(a, a, "a".to_string());
+
+        let cycles = find_cycles(&g);
+        assert_eq!(cycles.len(), 1);
+        assert_eq!(cycles[0].modules, vec!["a.luau"]);
+    }
+
+    #[test]
+    fn reported_cycle_only_uses_existing_edges() {
+        let mut g = DepGraph::new();
+        let a = g.add_node("a.luau");
+        let b = g.add_node("b.luau");
+        let c = g.add_node("c.luau");
+        g.add_edge(a, b, "b".to_string());
+        g.add_edge(b, a, "a".to_string());
+        g.add_edge(a, c, "c".to_string());
+        g.add_edge(c, a, "a".to_string());
+
+        let cycles = find_cycles(&g);
+        assert_eq!(cycles.len(), 1);
+        let modules = &cycles[0].modules;
+        for (i, from) in modules.iter().enumerate() {
+            let to = &modules[(i + 1) % modules.len()];
+            let from_id = g.interner.get(from).unwrap();
+            let to_id = g.interner.get(to).unwrap();
+            assert!(
+                g.neighbors(from_id).iter().any(|(t, _)| *t == to_id),
+                "{from} -> {to} is not an edge in {modules:?}"
+            );
+        }
     }
 
     #[test]

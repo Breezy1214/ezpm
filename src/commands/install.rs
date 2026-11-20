@@ -6,7 +6,7 @@ use std::process::Command;
 use crate::output;
 use crate::services::{
     rojo_project::{RojoProjectSettings, DEFAULT_PROJECT_TEMPLATE},
-    sourcemap, toolchain,
+    selene, sourcemap, toolchain,
 };
 
 fn source_rojo_project() -> PathBuf {
@@ -225,47 +225,16 @@ fn ensure_required_tools() -> Result<()> {
     Ok(())
 }
 
-#[allow(dead_code)]
-fn is_tool_available(tool: &str) -> bool {
-    Command::new(tool)
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
 pub fn install_tools(src_prefix: &str, aliases: Option<&HashMap<String, String>>) -> Result<()> {
     ensure_required_tools()?;
 
     let pb = output::start_spinner("Installing development tools...");
 
-    if output::is_verbose() {
-        pb.suspend(|| {});
-        let rokit_status = Command::new("rokit")
-            .arg("install")
-            .status()
-            .with_context(|| toolchain::missing_tool_context("rokit"))?;
-
-        if !rokit_status.success() {
-            pb.finish_and_clear();
-            anyhow::bail!(
-                "rokit install failed with exit code: {:?}",
-                rokit_status.code()
-            );
-        }
-    } else {
-        let rokit_out = Command::new("rokit")
-            .arg("install")
-            .output()
-            .with_context(|| toolchain::missing_tool_context("rokit"))?;
-
-        if !rokit_out.status.success() {
-            pb.finish_and_clear();
-            anyhow::bail!(
-                "rokit install failed with exit code: {:?}",
-                rokit_out.status.code()
-            );
-        }
+    let mut rokit = Command::new("rokit");
+    rokit.arg("install");
+    if !toolchain::run_tool(rokit, Some(&pb))? {
+        pb.finish_and_clear();
+        anyhow::bail!("rokit install failed (see output above)");
     }
 
     pb.finish_and_clear();
@@ -275,6 +244,7 @@ pub fn install_tools(src_prefix: &str, aliases: Option<&HashMap<String, String>>
         setup_wally_packages(src_prefix, aliases)?;
     }
 
+    selene::generate_selene_roblox_std();
     output::success("All tools installed successfully!");
     Ok(())
 }
@@ -299,41 +269,21 @@ pub fn setup_wally_packages(
 
     let staging = tempfile::tempdir().context("Failed to create Wally staging directory")?;
     std::fs::copy(cwd.join("wally.toml"), staging.path().join("wally.toml"))?;
+    if cwd.join("wally.lock").exists() {
+        std::fs::copy(cwd.join("wally.lock"), staging.path().join("wally.lock"))
+            .context("Failed to stage wally.lock")?;
+    }
 
     pb.set_message("Installing Wally packages...");
 
-    if output::is_verbose() {
-        pb.suspend(|| {});
-        let wally_status = Command::new("wally")
-            .arg("install")
-            .arg("--project-path")
-            .arg(staging.path())
-            .status()
-            .with_context(|| toolchain::missing_tool_context("wally"))?;
-
-        if !wally_status.success() {
-            pb.finish_and_clear();
-            anyhow::bail!(
-                "wally install failed with exit code: {:?}",
-                wally_status.code()
-            );
-        }
-    } else {
-        let wally_out = Command::new("wally")
-            .arg("install")
-            .arg("--project-path")
-            .arg(staging.path())
-            .output()
-            .with_context(|| toolchain::missing_tool_context("wally"))?;
-
-        if !wally_out.status.success() {
-            pb.finish_and_clear();
-            anyhow::bail!(
-                "wally install failed with exit code: {:?}: {}",
-                wally_out.status.code(),
-                String::from_utf8_lossy(&wally_out.stderr).trim()
-            );
-        }
+    let mut wally = Command::new("wally");
+    wally
+        .arg("install")
+        .arg("--project-path")
+        .arg(staging.path());
+    if !toolchain::run_tool(wally, Some(&pb))? {
+        pb.finish_and_clear();
+        anyhow::bail!("wally install failed (see output above)");
     }
 
     pb.set_message("Updating package files...");
@@ -371,9 +321,8 @@ pub fn setup_wally_packages(
             .args(&type_dirs);
 
         if output::is_verbose() {
-            pb.suspend(|| {});
-            let status = command
-                .status()
+            let status = pb
+                .suspend(|| command.status())
                 .with_context(|| toolchain::missing_tool_context("wally-package-types"))?;
             (!status.success()).then(String::new)
         } else {

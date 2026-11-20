@@ -6,9 +6,9 @@ use std::path::{Path, PathBuf};
 
 use crate::config;
 use crate::output;
-use crate::services::config_gen;
 pub use crate::services::rojo_project::generate_rojo_project;
 use crate::services::toolchain;
+use crate::services::{atomic_file, config_gen};
 
 pub fn run_init(dry_run: bool) -> Result<()> {
     let discovery = discover_rojo_projects(Path::new("."))?;
@@ -85,13 +85,18 @@ pub fn run_init(dry_run: bool) -> Result<()> {
     let src_dir = Text::new("Source directory:")
         .with_default(inferred_src)
         .prompt()?;
+    let src_dir = match config::normalize_relative(&src_dir) {
+        dir if dir.is_empty() => "src".to_string(),
+        dir => dir,
+    };
 
     if has_rokit {
         let choice =
             Select::new("rokit.toml already exists —", vec!["keep", "overwrite"]).prompt()?;
         if choice == "overwrite" {
             let rokit_content = generate_rokit_toml();
-            std::fs::write("rokit.toml", rokit_content).context("Failed to write rokit.toml")?;
+            atomic_file::write(Path::new("rokit.toml"), rokit_content)
+                .context("Failed to write rokit.toml")?;
             output::success("Generated rokit.toml");
         }
     } else {
@@ -100,7 +105,8 @@ pub fn run_init(dry_run: bool) -> Result<()> {
             .prompt()?;
         if create_rokit {
             let rokit_content = generate_rokit_toml();
-            std::fs::write("rokit.toml", rokit_content).context("Failed to write rokit.toml")?;
+            atomic_file::write(Path::new("rokit.toml"), rokit_content)
+                .context("Failed to write rokit.toml")?;
             output::success("Generated rokit.toml");
         }
     }
@@ -165,7 +171,7 @@ pub fn run_init(dry_run: bool) -> Result<()> {
 
     if regenerate_project_json {
         let project_json_str = generate_rojo_project(&project_name, &aliases, &src_dir);
-        std::fs::write("default.project.json", project_json_str)
+        atomic_file::write(Path::new("default.project.json"), project_json_str)
             .context("Failed to write default.project.json")?;
         output::success("Generated default.project.json");
     }
@@ -403,7 +409,7 @@ fn record_rojo_template(config_path: &Path, project_path: &Path) -> Result<()> {
         toml::Value::String(project_path.display().to_string()),
     );
     table.insert("rojo".into(), toml::Value::Table(rojo));
-    std::fs::write(config_path, toml::to_string_pretty(&value)?)?;
+    atomic_file::write(config_path, toml::to_string_pretty(&value)?)?;
     Ok(())
 }
 
@@ -414,6 +420,7 @@ pub fn generate_rokit_toml() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use std::fs;
     use tempfile::TempDir;
 

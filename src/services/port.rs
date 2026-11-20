@@ -146,20 +146,30 @@ fn terminate(owner: &PortOwner, _force: bool) -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("could not stop {}: {}", owner, e))
 }
 
+/// A failed signal is only an error if the port stays busy: the owner may already have
+/// exited since it was looked up.
 pub fn kill_owners(owners: &[PortOwner], port: u16) -> anyhow::Result<()> {
+    let mut first_error = None;
     for owner in owners {
-        terminate(owner, false)?;
+        if let Err(error) = terminate(owner, false) {
+            first_error.get_or_insert(error);
+        }
     }
     if wait_until_free(port, Duration::from_secs(3)) {
         return Ok(());
     }
     for owner in owners {
-        let _ = terminate(owner, true);
+        if let Err(error) = terminate(owner, true) {
+            first_error.get_or_insert(error);
+        }
     }
     if wait_until_free(port, Duration::from_secs(2)) {
         return Ok(());
     }
-    anyhow::bail!("port {} is still in use after stopping its process", port)
+    match first_error {
+        Some(error) => Err(error.context(format!("port {} is still in use", port))),
+        None => anyhow::bail!("port {} is still in use after stopping its process", port),
+    }
 }
 
 fn wait_until_free(port: u16, timeout: Duration) -> bool {

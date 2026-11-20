@@ -9,17 +9,15 @@ use crate::services::graph::{
     build,
     types::CheckResult,
 };
+use crate::services::{rojo_project::RojoProjectSettings, sourcemap};
 
 pub fn run_check(config: Option<&EzpmConfig>, json_output: bool) -> Result<()> {
     let default_config = EzpmConfig::default();
     let cfg = config.unwrap_or(&default_config);
 
     let aliases = cfg.aliases.clone().unwrap_or_default();
-    let src_prefix = cfg
-        .paths
-        .as_ref()
-        .and_then(|p| p.src.as_deref())
-        .unwrap_or("src");
+    let src_prefix = cfg.src_dir();
+    let src_prefix = src_prefix.as_str();
 
     let src_dir = Path::new(src_prefix);
     if !src_dir.exists() {
@@ -29,7 +27,8 @@ pub fn run_check(config: Option<&EzpmConfig>, json_output: bool) -> Result<()> {
         );
     }
 
-    let project_root = Path::new(".");
+    let project_root = std::env::current_dir()?;
+    let project_root = project_root.as_path();
 
     let spinner = if !json_output {
         Some(output::start_spinner("Building dependency graph..."))
@@ -38,7 +37,13 @@ pub fn run_check(config: Option<&EzpmConfig>, json_output: bool) -> Result<()> {
     };
 
     let start = Instant::now();
-    let graph = build::build_graph(project_root, &aliases, src_prefix)?;
+    let rojo = RojoProjectSettings::from_config(cfg);
+    let sourcemap = sourcemap::generate_index(project_root, &rojo.project)
+        .inspect_err(|error| {
+            output::verbose_line(&format!("@game requires are not resolved: {error}"));
+        })
+        .ok();
+    let graph = build::build_graph(project_root, &aliases, src_prefix, sourcemap.as_ref())?;
     let build_time = start.elapsed();
 
     if let Some(sp) = &spinner {
@@ -111,13 +116,11 @@ fn resolve_entry_points(
         return configured
             .iter()
             .filter_map(|path| {
-                for i in 0..n {
-                    if graph.interner.resolve(i) == *path {
-                        return Some(i);
-                    }
+                let id = graph.interner.get(path);
+                if id.is_none() {
+                    output::verbose_line(&format!("Configured entry point not found: {}", path));
                 }
-                output::verbose_line(&format!("Configured entry point not found: {}", path));
-                None
+                id
             })
             .collect();
     }

@@ -1,8 +1,8 @@
 use serde_json::{json, Map, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use crate::config::EzpmConfig;
+use crate::config::{normalize_relative, EzpmConfig};
 
 pub const DEFAULT_PROJECT_TEMPLATE: &str = "default.project.json";
 
@@ -33,12 +33,12 @@ fn generated_instance_path(alias_name: &str) -> Vec<&str> {
     }
 }
 
-fn is_source_alias(path: &str, source_root: &str) -> bool {
-    let path = path.trim_end_matches('/').replace('\\', "/");
-    let source_root = source_root.trim_end_matches('/').replace('\\', "/");
-    path == source_root
+pub fn is_within(path: &str, dir: &str) -> bool {
+    let path = normalize_relative(path);
+    let dir = normalize_relative(dir);
+    path == dir
         || path
-            .strip_prefix(&source_root)
+            .strip_prefix(&dir)
             .is_some_and(|suffix| suffix.starts_with('/'))
 }
 
@@ -64,10 +64,24 @@ pub fn generate_rojo_project(
     let mut tree = Map::new();
     tree.insert("$className".to_string(), json!("DataModel"));
 
-    let mut aliases = aliases.iter().collect::<Vec<_>>();
-    aliases.sort_by(|(left, _), (right, _)| left.cmp(right));
-    for (name, path) in aliases {
-        if is_source_alias(path, source_root) {
+    let source_root = normalize_relative(source_root);
+    let mut source_aliases = aliases
+        .iter()
+        .map(|(name, path)| (name, path, normalize_relative(path)))
+        .filter(|(_, _, dir)| *dir != source_root && is_within(dir, &source_root))
+        .collect::<Vec<_>>();
+    source_aliases.sort_by(|(left, ..), (right, ..)| left.cmp(right));
+
+    // An alias nested inside another (Components inside Shared) would map the same files
+    // twice, which Rojo's sourcemap reports and the require fixer rejects. The outer
+    // mapping already places those files; the inner alias still resolves through it.
+    let mut seen = HashSet::new();
+    source_aliases.retain(|(_, _, dir)| seen.insert(dir.clone()));
+    for (name, path, dir) in &source_aliases {
+        let nested = source_aliases
+            .iter()
+            .any(|(_, _, outer)| outer != dir && is_within(dir, outer));
+        if !nested {
             insert_path(&mut tree, &generated_instance_path(name), path);
         }
     }
@@ -99,5 +113,26 @@ mod tests {
             "src/shared/"
         );
         assert!(project["tree"]["ReplicatedStorage"]["Packages"].is_null());
+    }
+
+    #[test]
+    fn generated_project_skips_nested_and_root_aliases() {
+        let aliases = HashMap::from([
+            ("Src".to_string(), "src/".to_string()),
+            ("Shared".to_string(), "src/shared/".to_string()),
+            (
+                "Components".to_string(),
+                "src/shared/components/".to_string(),
+            ),
+            ("Common".to_string(), "src/shared".to_string()),
+        ]);
+        let project: Value = serde_json::from_str(&generate_rojo_project("Game", &aliases, "src"))
+            .expect("valid project");
+
+        let storage = &project["tree"]["ReplicatedStorage"];
+        assert_eq!(storage["Common"]["$path"], "src/shared");
+        assert!(storage["Shared"].is_null(), "duplicate path maps once");
+        assert!(storage["Components"].is_null());
+        assert!(storage["Src"].is_null());
     }
 }

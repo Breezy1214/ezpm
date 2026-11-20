@@ -7,7 +7,7 @@ use ezpm::{
     cli::{AliasCommands, Cli, ColorArg, Commands},
     commands::{alias, check, fix_requires, init, install, quality, serve},
     config, output,
-    services::{selene, version},
+    services::version,
 };
 
 fn fetch_latest_version() -> Option<String> {
@@ -39,14 +39,15 @@ fn get_update_notice(rx: &mpsc::Receiver<Option<String>>, current_ver: &str) -> 
 
 fn print_update_notice(notice: &str) {
     output::print_stderr("");
-    output::info(notice);
+    output::notice(notice);
 }
 
 fn main() {
     let cli = Cli::parse();
     let is_long_running_serve = matches!(&cli.command, Some(Commands::Serve { .. }));
     let is_interactive_menu = cli.command.is_none();
-    let is_init_dry_run = matches!(&cli.command, Some(Commands::Init { dry_run: true }));
+    let is_init = matches!(&cli.command, Some(Commands::Init { .. }));
+    let is_json_output = matches!(&cli.command, Some(Commands::Check { json: true }));
 
     let loaded_config_result = config::load_config();
 
@@ -76,15 +77,21 @@ fn main() {
             }
             Some(cfg)
         }
-        Err(e) => {
+        Err(e) if is_init || is_interactive_menu => {
             output::warn(&format!("Could not load ezpm.toml: {}", e));
             None
+        }
+        Err(e) => {
+            output::error(&format!("Could not load ezpm.toml: {}", e));
+            std::process::exit(1);
         }
     };
 
     let current_ver = env!("CARGO_PKG_VERSION");
 
-    let check_disabled = std::env::var("EZPM_NO_UPDATE_CHECK").is_ok()
+    let check_disabled = effective_quiet
+        || is_json_output
+        || std::env::var("EZPM_NO_UPDATE_CHECK").is_ok()
         || std::env::var_os("CI").is_some()
         || loaded_config
             .as_ref()
@@ -116,16 +123,9 @@ fn main() {
         }
     }
 
-    if !is_init_dry_run {
-        selene::generate_selene_roblox_std();
-    }
-
     let src = loaded_config
         .as_ref()
-        .and_then(|c| c.paths.as_ref())
-        .and_then(|p| p.src.as_deref())
-        .unwrap_or("src")
-        .to_string();
+        .map_or_else(|| "src".to_string(), config::EzpmConfig::src_dir);
 
     let result = match cli.command {
         None => {

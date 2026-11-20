@@ -67,8 +67,21 @@ impl FileWatcher {
         targets: WatchTargets,
         extra_ignores: &[String],
     ) -> Result<(FileWatcher, mpsc::Receiver<WatchEvent>)> {
-        let (tx, rx) = mpsc::channel::<WatchEvent>(64);
+        let (tx, rx) = Self::channel();
+        Ok((Self::with_sender(targets, extra_ignores, tx)?, rx))
+    }
 
+    pub fn channel() -> (mpsc::Sender<WatchEvent>, mpsc::Receiver<WatchEvent>) {
+        mpsc::channel(64)
+    }
+
+    /// Sends into an existing channel, so a replacement watcher keeps the receiver and
+    /// events queued by the old one are not lost.
+    pub fn with_sender(
+        targets: WatchTargets,
+        extra_ignores: &[String],
+        tx: mpsc::Sender<WatchEvent>,
+    ) -> Result<FileWatcher> {
         let mut ignore_patterns: Vec<String> = vec![
             ".git".to_string(),
             "node_modules".to_string(),
@@ -77,13 +90,11 @@ impl FileWatcher {
         ignore_patterns.extend_from_slice(extra_ignores);
         let rules = ClassificationRules::new(&targets);
 
-        let tx_clone = tx.clone();
-
         let callback = move |result: DebounceEventResult| match result {
             Ok(events) => {
                 let changes = classify_events_with_rules(&events, &ignore_patterns, &rules);
                 if !changes.is_empty() {
-                    let _ = tx_clone.blocking_send(WatchEvent::Changes(changes));
+                    let _ = tx.blocking_send(WatchEvent::Changes(changes));
                 }
             }
             Err(errors) => {
@@ -92,7 +103,7 @@ impl FileWatcher {
                     .map(|e| format!("{e}"))
                     .collect::<Vec<_>>()
                     .join("; ");
-                let _ = tx_clone.blocking_send(WatchEvent::Error(msg));
+                let _ = tx.blocking_send(WatchEvent::Error(msg));
             }
         };
 
@@ -140,12 +151,9 @@ impl FileWatcher {
                 .join(", ")
         ));
 
-        Ok((
-            FileWatcher {
-                _debouncer: debouncer,
-            },
-            rx,
-        ))
+        Ok(FileWatcher {
+            _debouncer: debouncer,
+        })
     }
 }
 
@@ -206,10 +214,20 @@ impl ClassificationRules {
         }
     }
 
+    /// Ignore patterns apply only below the source root, so a project that itself lives
+    /// under e.g. `~/Packages/` still works.
+    fn source_relative<'a>(&self, path: &'a Path) -> Option<&'a Path> {
+        match &self.source_roots {
+            None => Some(path),
+            Some(roots) => roots
+                .iter()
+                .filter_map(|root| path.strip_prefix(root).ok())
+                .min_by_key(|relative| relative.components().count()),
+        }
+    }
+
     fn is_in_source(&self, path: &Path) -> bool {
-        self.source_roots
-            .as_ref()
-            .is_none_or(|roots| roots.iter().any(|root| path.starts_with(root)))
+        self.source_relative(path).is_some()
     }
 }
 
@@ -280,11 +298,11 @@ fn classify_events_with_rules(
                 continue;
             }
 
-            if !rules.is_in_source(&normalized_path) {
+            let Some(relative) = rules.source_relative(&normalized_path) else {
                 continue;
-            }
+            };
 
-            if should_ignore(path, ignore_patterns) {
+            if should_ignore(relative, ignore_patterns) {
                 continue;
             }
 
@@ -695,6 +713,24 @@ mod tests {
 
         let result = classify_events_with_rules(&events, &[], &scoped_rules(&tmp));
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_ignore_patterns_only_apply_inside_the_source_root() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().join("Packages/my-game");
+        std::fs::create_dir_all(root.join("src/Packages")).unwrap();
+        let rules = ClassificationRules::new(&WatchTargets::source_only(root.join("src")));
+        let module = root.join("src/module.luau");
+        let vendored = root.join("src/Packages/vendored.luau");
+        let events = vec![make_debounced_event(
+            EventKind::Create(CreateKind::File),
+            vec![module.clone(), vendored],
+        )];
+
+        let result = classify_events_with_rules(&events, &["Packages".to_string()], &rules);
+        assert_eq!(result.len(), 1, "{result:?}");
+        assert!(matches!(&result[0], FileChange::FileCreated(path) if path == &module));
     }
 
     #[tokio::test]

@@ -107,21 +107,19 @@ fn run_command(cmd: &str) -> Result<()> {
     let loaded = crate::config::load_config();
     let (cfg, warnings) = match loaded {
         Ok(pair) => pair,
-        Err(e) => {
+        Err(e) if cmd == "init" => {
             output::warn(&format!("Warning: could not load ezpm.toml: {}", e));
             (crate::config::EzpmConfig::default(), vec![])
         }
+        Err(e) => return Err(e),
     };
 
     for w in &warnings {
         output::warn(w);
     }
 
-    let src = cfg
-        .paths
-        .as_ref()
-        .and_then(|p| p.src.as_deref())
-        .unwrap_or("src");
+    let src = cfg.src_dir();
+    let src = src.as_str();
 
     match cmd {
         "init" => crate::commands::init::run_init(false),

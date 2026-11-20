@@ -1,11 +1,13 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use regex::Regex;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use walkdir::WalkDir;
 
-use crate::services::sourcemap::SourcemapIndex;
+use crate::services::rojo_project::is_within;
+use crate::services::sourcemap::{is_wally_index_path, SourcemapIndex};
 
 #[derive(Debug, Default)]
 pub struct FixResult {
@@ -29,8 +31,12 @@ pub struct RequireRewrite {
 #[derive(Clone)]
 pub struct FixContext {
     alias_paths: HashMap<String, String>,
+    /// Only these may be repaired by module name: redirecting e.g. `@Packages/Signal` to a
+    /// local `Signal` module would hijack the require.
+    managed_aliases: HashSet<String>,
     project_root: PathBuf,
-    sourcemap: SourcemapIndex,
+    source_root: String,
+    sourcemap: Arc<SourcemapIndex>,
 }
 
 #[derive(Debug, Default)]
@@ -139,30 +145,47 @@ impl ModuleIndex {
     }
 }
 
-fn is_wally_index_path(path: &Path) -> bool {
-    path.components()
-        .any(|component| component.as_os_str() == "_Index")
-}
-
 impl FixContext {
     pub fn new(
         project_root: &Path,
+        source_root: &str,
         aliases: &HashMap<String, String>,
-        sourcemap: SourcemapIndex,
+        sourcemap: impl Into<Arc<SourcemapIndex>>,
     ) -> Self {
-        let alias_paths = aliases
+        let sourcemap = sourcemap.into();
+        let alias_paths: HashMap<String, String> = aliases
             .iter()
             .map(|(name, path)| (format!("@{name}"), normalize_separators(path)))
             .collect();
+        let module_files = sourcemap.source_files();
+        let managed_aliases = alias_paths
+            .iter()
+            .filter(|(_, path)| {
+                let dir = project_root.join(path.trim_end_matches('/'));
+                let first_at_or_after = module_files.partition_point(|file| *file < dir);
+                is_within(path, source_root)
+                    || module_files
+                        .get(first_at_or_after)
+                        .is_some_and(|file| file.starts_with(&dir))
+            })
+            .map(|(alias, _)| alias.clone())
+            .collect();
         Self {
             alias_paths,
+            managed_aliases,
             project_root: project_root.to_path_buf(),
+            source_root: source_root.to_string(),
             sourcemap,
         }
     }
 
     pub fn with_aliases(&self, aliases: &HashMap<String, String>) -> Self {
-        Self::new(&self.project_root, aliases, self.sourcemap.clone())
+        Self::new(
+            &self.project_root,
+            &self.source_root,
+            aliases,
+            Arc::clone(&self.sourcemap),
+        )
     }
 
     pub fn game_require_for_source(&self, source_path: &Path) -> Option<String> {
@@ -211,10 +234,7 @@ pub fn fix_requires_with_context(ctx: &FixContext) -> Result<FixResult> {
 
     let mut pending = Vec::new();
     for path in files {
-        let content = std::fs::read_to_string(path)?;
-        if !content.contains("require(\"") {
-            continue;
-        }
+        let content = read_source(path)?;
         let (new_content, rewrites) =
             process_file_content_with_index(&content, ctx, Some(&module_index));
         let Some(new_content) = new_content else {
@@ -228,7 +248,7 @@ pub fn fix_requires_with_context(ctx: &FixContext) -> Result<FixResult> {
 
     let mut changes = Vec::with_capacity(pending.len());
     for (path, content, rewrites) in pending {
-        std::fs::write(path, content)?;
+        write_source(path, &content)?;
         changes.push(FileChange {
             file: path.clone(),
             rewrites,
@@ -248,10 +268,7 @@ pub fn fix_single_file_with_index(
     ctx: &FixContext,
     module_index: &ModuleIndex,
 ) -> Result<Option<FileChange>> {
-    let content = std::fs::read_to_string(file_path)?;
-    if !content.contains("require(\"") {
-        return Ok(None);
-    }
+    let content = read_source(file_path)?;
     let (new_content, rewrites) =
         process_file_content_with_index(&content, ctx, Some(module_index));
 
@@ -263,7 +280,7 @@ pub fn fix_single_file_with_index(
         return Ok(None);
     };
 
-    std::fs::write(file_path, new_content)?;
+    write_source(file_path, &new_content)?;
     Ok(Some(FileChange {
         file: file_path.to_path_buf(),
         rewrites,
@@ -284,29 +301,20 @@ pub fn rewrite_require_prefixes(
         .collect::<HashMap<_, _>>();
     let mut changed = 0;
     for path in files {
-        let content = std::fs::read_to_string(path)?;
-        if !content.contains("require(\"") {
-            continue;
-        }
-        let mut rewrites = Vec::new();
-        for captures in require_regex().captures_iter(&content) {
-            let whole = captures.get(0).expect("require match");
-            let path = captures.get(1).expect("require path").as_str();
-            if let Some((old_path, new_path)) = matching_prefix(path, &replacements) {
-                let suffix = &path[old_path.len()..];
-                rewrites.push((
-                    whole.start(),
-                    whole.end(),
-                    format!("require(\"{new_path}{suffix}\")"),
-                ));
-            }
-        }
+        let content = read_source(path)?;
+        let rewrites = require_matches(&content)
+            .filter_map(|found| {
+                let (old_path, new_path) = matching_prefix(found.path, &replacements)?;
+                let suffix = &found.path[old_path.len()..];
+                Some((found.span, format!("require(\"{new_path}{suffix}\")")))
+            })
+            .collect::<Vec<_>>();
         if !rewrites.is_empty() {
             let mut updated = content;
-            for (start, end, replacement) in rewrites.into_iter().rev() {
-                updated.replace_range(start..end, &replacement);
+            for (span, replacement) in rewrites.into_iter().rev() {
+                updated.replace_range(span, &replacement);
             }
-            std::fs::write(path, updated)?;
+            write_source(path, &updated)?;
             changed += 1;
         }
     }
@@ -325,6 +333,16 @@ fn matching_prefix<'a>(
         let slash = candidate.rfind('/')?;
         candidate = &candidate[..slash];
     }
+}
+
+fn read_source(path: &Path) -> Result<String> {
+    std::fs::read_to_string(path).with_context(|| format!("Failed to read {}", path.display()))
+}
+
+/// Source files are rewritten in place rather than via rename: the watcher in `serve`
+/// would otherwise see every fix as a temp-file-to-module rename.
+fn write_source(path: &Path, contents: &str) -> Result<()> {
+    std::fs::write(path, contents).with_context(|| format!("Failed to write {}", path.display()))
 }
 
 fn normalize_separators(s: &str) -> String {
@@ -347,10 +365,88 @@ pub fn is_lua_file(path: &Path) -> bool {
     )
 }
 
-pub fn require_regex() -> &'static Regex {
+pub struct RequireMatch<'a> {
+    pub span: Range<usize>,
+    pub path: &'a str,
+}
+
+pub fn require_matches(content: &str) -> impl Iterator<Item = RequireMatch<'_>> {
     static REQUIRE_RE: OnceLock<Regex> = OnceLock::new();
-    REQUIRE_RE
-        .get_or_init(|| Regex::new(r#"require\("([^"]+)"\)"#).expect("require regex is valid"))
+    let re = REQUIRE_RE
+        .get_or_init(|| Regex::new(r#"\brequire\("([^"]+)"\)"#).expect("require regex is valid"));
+    let comments = if content.contains("require(\"") {
+        comment_ranges(content)
+    } else {
+        Vec::new()
+    };
+    re.captures_iter(content).filter_map(move |caps| {
+        let whole = caps.get(0)?;
+        let in_comment = comments
+            .get(comments.partition_point(|comment| comment.end <= whole.start()))
+            .is_some_and(|comment| comment.start <= whole.start());
+        (!in_comment).then(|| RequireMatch {
+            span: whole.range(),
+            path: caps.get(1).map_or("", |path| path.as_str()),
+        })
+    })
+}
+
+fn comment_ranges(content: &str) -> Vec<Range<usize>> {
+    let bytes = content.as_bytes();
+    let mut comments = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            quote @ (b'"' | b'\'' | b'`') => {
+                i += 1;
+                while i < bytes.len() && bytes[i] != quote && bytes[i] != b'\n' {
+                    i += if bytes[i] == b'\\' { 2 } else { 1 };
+                }
+                i += 1;
+            }
+            b'[' => match long_bracket_level(bytes, i) {
+                Some(level) => i = long_bracket_end(bytes, i + level + 2, level),
+                None => i += 1,
+            },
+            b'-' if bytes.get(i + 1) == Some(&b'-') => {
+                let start = i;
+                i = match long_bracket_level(bytes, i + 2) {
+                    Some(level) => long_bracket_end(bytes, i + level + 4, level),
+                    None => bytes[i..]
+                        .iter()
+                        .position(|&b| b == b'\n')
+                        .map_or(bytes.len(), |offset| i + offset),
+                };
+                comments.push(start..i);
+            }
+            _ => i += 1,
+        }
+    }
+    comments
+}
+
+fn long_bracket_level(bytes: &[u8], start: usize) -> Option<usize> {
+    if bytes.get(start) != Some(&b'[') {
+        return None;
+    }
+    let level = bytes[start + 1..]
+        .iter()
+        .take_while(|&&b| b == b'=')
+        .count();
+    (bytes.get(start + 1 + level) == Some(&b'[')).then_some(level)
+}
+
+fn long_bracket_end(bytes: &[u8], mut i: usize, level: usize) -> usize {
+    while i < bytes.len() {
+        if bytes[i] == b']'
+            && bytes[i + 1..].iter().take(level).all(|&b| b == b'=')
+            && bytes.get(i + 1 + level) == Some(&b']')
+        {
+            return i + level + 2;
+        }
+        i += 1;
+    }
+    bytes.len()
 }
 
 fn rewrite_require_path(
@@ -383,6 +479,14 @@ fn rewrite_require_path(
         {
             return Some(game_path.to_string());
         }
+        let alias = required_path
+            .split_once('/')
+            .map_or(required_path, |(alias, _)| alias);
+        if !ctx.managed_aliases.contains(alias) {
+            return None;
+        }
+    } else if required_path.starts_with('@') {
+        return None;
     }
 
     let file_name = required_path.rsplit('/').next()?;
@@ -428,34 +532,22 @@ fn process_file_content_with_index(
     ctx: &FixContext,
     module_index: Option<&ModuleIndex>,
 ) -> (Option<String>, Vec<RequireRewrite>) {
-    let re = require_regex();
     let mut rewrites: Vec<RequireRewrite> = Vec::new();
     let mut rebuilt: Option<String> = None;
     let mut last_end = 0usize;
 
-    for caps in re.captures_iter(content) {
-        let Some(whole_match) = caps.get(0) else {
-            continue;
-        };
-        let Some(path_match) = caps.get(1) else {
-            continue;
-        };
-
-        let required_path = path_match.as_str();
-        if let Some(new_path) = rewrite_require_path(required_path, ctx, module_index) {
+    for found in require_matches(content) {
+        if let Some(new_path) = rewrite_require_path(found.path, ctx, module_index) {
             let output = rebuilt.get_or_insert_with(|| String::with_capacity(content.len()));
-            output.push_str(&content[last_end..whole_match.start()]);
+            output.push_str(&content[last_end..found.span.start]);
             output.push_str("require(\"");
             output.push_str(&new_path);
             output.push_str("\")");
             rewrites.push(RequireRewrite {
-                old: required_path.to_string(),
+                old: found.path.to_string(),
                 new: new_path,
             });
-            last_end = whole_match.end();
-        } else if let Some(output) = &mut rebuilt {
-            output.push_str(&content[last_end..whole_match.end()]);
-            last_end = whole_match.end();
+            last_end = found.span.end;
         }
     }
 
@@ -486,17 +578,9 @@ mod tests {
         aliases: &HashMap<String, String>,
         pairs: &[(PathBuf, &str)],
     ) -> FixContext {
-        let alias_paths = aliases
-            .iter()
-            .map(|(name, path)| (format!("@{name}"), normalize_separators(path)))
-            .collect();
         let mut sourcemap = SourcemapIndex::from_pairs(pairs);
         sourcemap.add_script_files(&lua_files(project_root));
-        FixContext {
-            alias_paths,
-            project_root: project_root.to_path_buf(),
-            sourcemap,
-        }
+        FixContext::new(project_root, "src", aliases, sourcemap)
     }
 
     #[test]
@@ -519,6 +603,60 @@ mod tests {
             new_content,
             r#"local m = require("@game/ReplicatedStorage/Shared/Util")"#
         );
+    }
+
+    #[test]
+    fn unmanaged_alias_requires_are_not_redirected_by_module_name() {
+        let aliases = standard_aliases();
+        let dir = make_temp_tree(&[("src/shared/Signal.luau", "return {}\n")]);
+        let source = dir.path().join("src/shared/Signal.luau");
+        let context = context(
+            dir.path(),
+            &aliases,
+            &[(source, "@game/ReplicatedStorage/Shared/Signal")],
+        );
+
+        let content =
+            "local a = require(\"@Packages/Signal\")\nlocal b = require(\"@lune/Signal\")\n";
+        let (new_content, rewrites) = process_file_content(content, &context, Some(dir.path()));
+
+        assert!(rewrites.is_empty(), "unexpected rewrites: {rewrites:?}");
+        assert_eq!(new_content, content);
+    }
+
+    #[test]
+    fn commented_out_and_lookalike_requires_are_ignored() {
+        let aliases = standard_aliases();
+        let dir = make_temp_tree(&[("src/shared/Util.luau", "return {}\n")]);
+        let source = dir.path().join("src/shared/Util.luau");
+        let context = context(
+            dir.path(),
+            &aliases,
+            &[(source, "@game/ReplicatedStorage/Shared/Util")],
+        );
+
+        let content = concat!(
+            "-- local old = require(\"src/shared/Util\")\n",
+            "--[==[ require(\"src/shared/Util\") ]==]\n",
+            "local custom = myrequire(\"src/shared/Util\")\n",
+            "local url = \"http://x\" local m = require(\"src/shared/Util\") -- é\n",
+        );
+        let (new_content, rewrites) = process_file_content(content, &context, None);
+
+        assert_eq!(rewrites.len(), 1);
+        assert!(new_content.starts_with("-- local old = require(\"src/shared/Util\")\n"));
+        assert!(new_content.contains("myrequire(\"src/shared/Util\")"));
+        assert!(new_content
+            .contains("local m = require(\"@game/ReplicatedStorage/Shared/Util\") -- é\n"));
+    }
+
+    #[test]
+    fn comment_ranges_skip_strings_and_cover_long_comments() {
+        let content = "local s = \"--not\" -- gone\nlocal t = [[--kept]] --[[x\ny]] z";
+        let ranges = comment_ranges(content);
+
+        let comments: Vec<&str> = ranges.iter().map(|r| &content[r.clone()]).collect();
+        assert_eq!(comments, vec!["-- gone", "--[[x\ny]]"]);
     }
 
     #[test]

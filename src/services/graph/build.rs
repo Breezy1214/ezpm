@@ -1,10 +1,13 @@
 use anyhow::Result;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use walkdir::WalkDir;
 
+use crate::config::normalize_relative;
 use crate::output;
-use crate::services::require_fixer::{is_lua_file, require_regex};
+use crate::services::require_fixer::{is_lua_file, require_matches};
+use crate::services::rojo_project::is_within;
+use crate::services::sourcemap::SourcemapIndex;
 
 use super::types::DepGraph;
 
@@ -12,28 +15,12 @@ pub fn build_graph(
     project_root: &Path,
     aliases: &HashMap<String, String>,
     src_prefix: &str,
+    sourcemap: Option<&SourcemapIndex>,
 ) -> Result<DepGraph> {
+    let src_prefix = normalize_relative(src_prefix);
     let mut graph = DepGraph::new();
-    let re = require_regex();
-    let scan_dir = project_root.join(src_prefix);
-
-    let mut inverted: Vec<(String, String)> = aliases
-        .iter()
-        .filter(|(_, path)| {
-            path.starts_with(src_prefix)
-                || path.starts_with(&format!("{}/", src_prefix))
-                || *path == src_prefix
-        })
-        .map(|(name, path)| {
-            let normalized = if path.ends_with('/') {
-                path.clone()
-            } else {
-                format!("{}/", path)
-            };
-            (normalized, name.clone())
-        })
-        .collect();
-    inverted.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+    let scan_dir = project_root.join(&src_prefix);
+    let resolver = Resolver::new(aliases, &src_prefix, project_root, sourcemap);
 
     let files: Vec<_> = WalkDir::new(&scan_dir)
         .into_iter()
@@ -57,18 +44,14 @@ pub fn build_graph(
             }
         };
 
-        if !content.contains("require(\"") {
-            continue;
-        }
-
         let from_id = graph.add_node(&rel_from);
-        for caps in re.captures_iter(&content) {
-            let require_path = &caps[1];
-            if let Some(resolved) =
-                resolve_require(require_path, aliases, src_prefix, project_root, &inverted)
-            {
+        let mut seen_targets = HashSet::new();
+        for found in require_matches(&content) {
+            if let Some(resolved) = resolver.resolve(found.path) {
                 let to_id = graph.add_node(&resolved);
-                graph.add_edge(from_id, to_id, require_path.to_string());
+                if seen_targets.insert(to_id) {
+                    graph.add_edge(from_id, to_id, found.path.to_string());
+                }
             }
         }
     }
@@ -76,77 +59,112 @@ pub fn build_graph(
     Ok(graph)
 }
 
-fn resolve_require(
-    require_path: &str,
-    aliases: &HashMap<String, String>,
-    src_prefix: &str,
-    project_root: &Path,
-    inverted: &[(String, String)],
-) -> Option<String> {
-    if require_path.starts_with("@self") || require_path.starts_with("@game") {
-        return None;
+struct Resolver<'a> {
+    aliases: HashMap<&'a str, Option<String>>,
+    inverted: Vec<(String, &'a str)>,
+    src_prefix: &'a str,
+    project_root: &'a Path,
+    sourcemap: Option<&'a SourcemapIndex>,
+}
+
+impl<'a> Resolver<'a> {
+    fn new(
+        aliases: &'a HashMap<String, String>,
+        src_prefix: &'a str,
+        project_root: &'a Path,
+        sourcemap: Option<&'a SourcemapIndex>,
+    ) -> Self {
+        let aliases: HashMap<&str, Option<String>> = aliases
+            .iter()
+            .map(|(name, path)| {
+                let dir = normalize_relative(path);
+                (name.as_str(), is_within(&dir, src_prefix).then_some(dir))
+            })
+            .collect();
+        let mut inverted: Vec<(String, &str)> = aliases
+            .iter()
+            .filter_map(|(name, dir)| Some((format!("{}/", dir.as_ref()?), *name)))
+            .collect();
+        inverted.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+        Self {
+            aliases,
+            inverted,
+            src_prefix,
+            project_root,
+            sourcemap,
+        }
     }
 
-    if require_path.starts_with("./") || require_path.starts_with("../") {
-        return None;
-    }
+    fn resolve(&self, require_path: &str) -> Option<String> {
+        if require_path.starts_with("@game/") {
+            let source = self.sourcemap?.source_for_game_path(require_path)?;
+            let resolved = normalize_path(source, self.project_root);
+            return self.is_internal(&resolved).then_some(resolved);
+        }
 
-    if let Some(without_at) = require_path.strip_prefix('@') {
-        let (alias_name, remainder) = match without_at.find('/') {
-            Some(idx) => (&without_at[..idx], &without_at[idx + 1..]),
-            None => (without_at, ""),
-        };
+        if require_path.starts_with("@self")
+            || require_path == "@game"
+            || require_path.starts_with("./")
+            || require_path.starts_with("../")
+        {
+            return None;
+        }
 
-        if let Some(real_path) = aliases.get(alias_name) {
-            let is_internal = real_path.starts_with(src_prefix)
-                || real_path.starts_with(&format!("{}/", src_prefix))
-                || real_path == src_prefix;
-
-            if !is_internal {
+        if let Some(without_at) = require_path.strip_prefix('@') {
+            let (alias_name, remainder) = without_at.split_once('/').unwrap_or((without_at, ""));
+            let Some(dir) = self.aliases.get(alias_name) else {
+                output::verbose_line(&format!("Unresolvable alias in require: {}", require_path));
                 return None;
-            }
-
-            let base = if real_path.ends_with('/') {
-                format!("{}{}", real_path, remainder)
-            } else if remainder.is_empty() {
-                real_path.clone()
-            } else {
-                format!("{}/{}", real_path, remainder)
             };
-
-            return try_resolve_file(&base, project_root);
+            let dir = dir.as_deref()?;
+            let base = if remainder.is_empty() {
+                dir.to_string()
+            } else {
+                format!("{}/{}", dir, remainder)
+            };
+            return try_resolve_file(&base, self.project_root);
         }
 
-        output::verbose_line(&format!("Unresolvable alias in require: {}", require_path));
+        if self.is_internal(require_path) {
+            return try_resolve_file(require_path, self.project_root);
+        }
+
+        for (real_prefix, alias_name) in &self.inverted {
+            if let Some(remainder) = strip_segment_prefix_ignore_case(require_path, alias_name) {
+                let base = format!("{}{}", real_prefix, remainder);
+                if let Some(resolved) = try_resolve_file(&base, self.project_root) {
+                    return Some(resolved);
+                }
+            }
+        }
+
+        output::verbose_line(&format!("Unresolvable require path: {}", require_path));
+        None
+    }
+
+    fn is_internal(&self, path: &str) -> bool {
+        path != self.src_prefix && is_within(path, self.src_prefix)
+    }
+}
+
+fn strip_segment_prefix_ignore_case<'a>(path: &'a str, prefix: &str) -> Option<&'a str> {
+    let head = path.get(..prefix.len())?;
+    if !head.eq_ignore_ascii_case(prefix) {
         return None;
     }
-
-    if require_path.starts_with(src_prefix) {
-        return try_resolve_file(require_path, project_root);
+    let rest = &path[prefix.len()..];
+    if rest.is_empty() {
+        Some(rest)
+    } else {
+        rest.strip_prefix('/')
     }
-
-    for (real_prefix, alias_name) in inverted {
-        let alias_lower = alias_name.to_lowercase();
-        let path_lower = require_path.to_lowercase();
-        if path_lower.starts_with(&alias_lower) {
-            let remainder = &require_path[alias_name.len()..];
-            let remainder = remainder.strip_prefix('/').unwrap_or(remainder);
-            let base = format!("{}{}", real_prefix, remainder);
-            if let Some(resolved) = try_resolve_file(&base, project_root) {
-                return Some(resolved);
-            }
-        }
-    }
-
-    output::verbose_line(&format!("Unresolvable require path: {}", require_path));
-    None
 }
 
 fn try_resolve_file(base: &str, project_root: &Path) -> Option<String> {
     let base = base.trim_end_matches('/');
 
     if base.ends_with(".luau") || base.ends_with(".lua") {
-        if project_root.join(base).exists() {
+        if project_root.join(base).is_file() {
             return Some(normalize_str(base));
         }
         return None;
@@ -160,7 +178,7 @@ fn try_resolve_file(base: &str, project_root: &Path) -> Option<String> {
     ];
 
     for candidate in &candidates {
-        if project_root.join(candidate).exists() {
+        if project_root.join(candidate).is_file() {
             return Some(normalize_str(candidate));
         }
     }
@@ -223,7 +241,7 @@ mod tests {
     #[test]
     fn build_graph_creates_edges() {
         let dir = setup_project();
-        let graph = build_graph(dir.path(), &test_aliases(), "src").unwrap();
+        let graph = build_graph(dir.path(), &test_aliases(), "src", None).unwrap();
         assert_eq!(graph.edge_count(), 2);
     }
 
@@ -240,7 +258,7 @@ mod tests {
         )
         .unwrap();
 
-        let graph = build_graph(p, &test_aliases(), "src").unwrap();
+        let graph = build_graph(p, &test_aliases(), "src", None).unwrap();
         assert_eq!(graph.edge_count(), 0);
     }
 
@@ -258,7 +276,7 @@ mod tests {
         )
         .unwrap();
 
-        let graph = build_graph(p, &test_aliases(), "src").unwrap();
+        let graph = build_graph(p, &test_aliases(), "src", None).unwrap();
         assert_eq!(graph.edge_count(), 1);
     }
 
@@ -268,16 +286,74 @@ mod tests {
         let p = dir.path();
         let aliases = test_aliases();
 
-        let graph = build_graph(p, &aliases, "src").unwrap();
+        let graph = build_graph(p, &aliases, "src", None).unwrap();
         assert_eq!(graph.edge_count(), 2);
 
         fs::write(p.join("src/shared/util.luau"), "local x = 1\nreturn x\n").unwrap();
 
-        let graph = build_graph(p, &aliases, "src").unwrap();
+        let graph = build_graph(p, &aliases, "src", None).unwrap();
         assert_eq!(
             graph.edge_count(),
             2,
             "repeated builds must retain edges from all files"
+        );
+    }
+
+    #[test]
+    fn build_graph_resolves_game_paths_through_the_sourcemap() {
+        let dir = setup_project();
+        let p = dir.path();
+        fs::write(
+            p.join("src/client/init.luau"),
+            "local util = require(\"@game/ReplicatedStorage/Shared/util\")\n",
+        )
+        .unwrap();
+        let sourcemap = SourcemapIndex::from_pairs(&[(
+            p.join("src/shared/util.luau"),
+            "@game/ReplicatedStorage/Shared/util",
+        )]);
+
+        let graph = build_graph(p, &test_aliases(), "src", Some(&sourcemap)).unwrap();
+        let client = graph.interner.get("src/client/init.luau").unwrap();
+        let util = graph.interner.get("src/shared/util.luau").unwrap();
+
+        assert!(graph.neighbors(client).iter().any(|(to, _)| *to == util));
+    }
+
+    #[test]
+    fn build_graph_ignores_comments_and_duplicate_requires() {
+        let dir = setup_project();
+        let p = dir.path();
+        fs::write(
+            p.join("src/client/init.luau"),
+            "-- local old = require(\"@Shared/util\")\nlocal a = require(\"@Shared/util\")\nlocal b = require(\"@Shared/util\")\n",
+        )
+        .unwrap();
+        fs::write(p.join("src/server/main.luau"), "return nil\n").unwrap();
+
+        let graph = build_graph(p, &test_aliases(), "src", None).unwrap();
+
+        assert_eq!(graph.edge_count(), 1);
+    }
+
+    #[test]
+    fn build_graph_normalizes_src_prefix_and_respects_segment_boundaries() {
+        let dir = setup_project();
+        let p = dir.path();
+        fs::create_dir_all(p.join("src/shared/Utils")).unwrap();
+        fs::write(p.join("src/shared/Utils/x.luau"), "return {}\n").unwrap();
+        fs::write(
+            p.join("src/server/main.luau"),
+            "local a = require(\"SharedUtils/x\")\nlocal b = require(\"\u{212A}/x\")\n",
+        )
+        .unwrap();
+
+        let graph = build_graph(p, &test_aliases(), "./src/", None).unwrap();
+
+        assert_eq!(
+            graph.edge_count(),
+            1,
+            "only the client's @Shared/util edge remains"
         );
     }
 }

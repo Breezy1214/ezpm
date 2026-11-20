@@ -47,10 +47,20 @@ pub fn init(verbose: bool, quiet: bool, color: ColorChoice) {
     });
 }
 
+#[cfg(not(test))]
 fn config() -> &'static OutputConfig {
     OUTPUT_CONFIG
         .get()
         .expect("output::init must be called before any output function")
+}
+
+#[cfg(test)]
+fn config() -> &'static OutputConfig {
+    OUTPUT_CONFIG.get_or_init(|| OutputConfig {
+        verbose: false,
+        quiet: false,
+        color: ColorChoice::Auto,
+    })
 }
 
 pub fn success(msg: &str) {
@@ -135,11 +145,23 @@ pub fn warn(msg: &str) {
     );
 }
 
+/// Diagnostics go to stderr so stdout stays parseable (e.g. `check --json --verbose`).
 pub fn verbose_line(msg: &str) {
     if !config().verbose {
         return;
     }
-    out!("{}", msg.if_supports_color(Stream::Stdout, |t| t.dimmed()));
+    err!("{}", msg.if_supports_color(Stream::Stderr, |t| t.dimmed()));
+}
+
+pub fn notice(msg: &str) {
+    if config().quiet {
+        return;
+    }
+    err!(
+        "{} {}",
+        "\u{25B8}".if_supports_color(Stream::Stderr, |t| t.cyan()),
+        msg
+    );
 }
 
 pub fn is_verbose() -> bool {

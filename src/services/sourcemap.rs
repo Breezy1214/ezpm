@@ -64,6 +64,7 @@ struct SourcemapNode {
 pub struct SourcemapIndex {
     source_to_game: HashMap<PathBuf, String>,
     game_paths: HashSet<String>,
+    game_to_source: HashMap<String, PathBuf>,
     module_files: Vec<PathBuf>,
     script_files: Vec<PathBuf>,
 }
@@ -100,16 +101,25 @@ impl SourcemapIndex {
         self.game_paths.contains(game_path)
     }
 
+    pub fn source_for_game_path(&self, game_path: &str) -> Option<&Path> {
+        self.game_to_source.get(game_path).map(PathBuf::as_path)
+    }
+
     pub fn game_path_for_logical_source(
         &self,
         project_dir: &Path,
         logical_path: &str,
     ) -> Option<&str> {
         let base = project_dir.join(logical_path);
+        let with_suffix = |suffix: &str| {
+            let mut path = base.clone().into_os_string();
+            path.push(suffix);
+            PathBuf::from(path)
+        };
         let candidates = [
             base.clone(),
-            base.with_extension("luau"),
-            base.with_extension("lua"),
+            with_suffix(".luau"),
+            with_suffix(".lua"),
             base.join("init.luau"),
             base.join("init.lua"),
         ];
@@ -146,17 +156,27 @@ impl SourcemapIndex {
             })
             .collect::<Vec<_>>();
 
+        // Vendored Wally sources are resolvable modules but are never rewritten:
+        // edits there would be lost on the next `wally install`.
         if matches!(
             node.class_name.as_str(),
             "ModuleScript" | "Script" | "LocalScript"
         ) {
-            self.script_files.extend(lua_files.iter().cloned());
+            self.script_files.extend(
+                lua_files
+                    .iter()
+                    .filter(|path| !is_wally_index_path(path))
+                    .cloned(),
+            );
         }
 
         if node.class_name == "ModuleScript" {
             let game_path = format!("@game/{}", instance_path.join("/"));
             self.game_paths.insert(game_path.clone());
             for source_path in lua_files {
+                self.game_to_source
+                    .entry(game_path.clone())
+                    .or_insert_with(|| source_path.clone());
                 if let Some(existing) = self
                     .source_to_game
                     .insert(source_path.clone(), game_path.clone())
@@ -189,9 +209,13 @@ impl SourcemapIndex {
                 .source_to_game
                 .insert(source.clone(), (*game).to_string());
             index.game_paths.insert((*game).to_string());
+            index
+                .game_to_source
+                .insert((*game).to_string(), source.clone());
             index.module_files.push(source.clone());
             index.script_files.push(source);
         }
+        index.module_files.sort();
         index
     }
 
@@ -201,6 +225,11 @@ impl SourcemapIndex {
         self.script_files.sort();
         self.script_files.dedup();
     }
+}
+
+pub(crate) fn is_wally_index_path(path: &Path) -> bool {
+    path.components()
+        .any(|component| component.as_os_str() == "_Index")
 }
 
 fn normalize_source_path(path: &Path) -> PathBuf {
@@ -265,5 +294,21 @@ mod tests {
         assert!(!index
             .source_files()
             .contains(&dir.path().join("src/main.server.luau")));
+    }
+
+    #[test]
+    fn logical_source_lookup_keeps_dotted_module_names() {
+        let dir = TempDir::new().expect("temp dir");
+        let button = dir.path().join("src/Button.luau");
+        let story = dir.path().join("src/Button.story.luau");
+        let index = SourcemapIndex::from_pairs(&[
+            (button, "@game/ReplicatedStorage/Button"),
+            (story, "@game/ReplicatedStorage/Button.story"),
+        ]);
+
+        assert_eq!(
+            index.game_path_for_logical_source(dir.path(), "src/Button.story"),
+            Some("@game/ReplicatedStorage/Button.story")
+        );
     }
 }

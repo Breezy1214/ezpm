@@ -25,6 +25,10 @@ impl Interner {
         id
     }
 
+    pub fn get(&self, s: &str) -> Option<usize> {
+        self.map.get(s).copied()
+    }
+
     pub fn resolve(&self, id: usize) -> &str {
         &self.strings[id]
     }
