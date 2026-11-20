@@ -85,6 +85,7 @@ fn main() {
     let current_ver = env!("CARGO_PKG_VERSION");
 
     let check_disabled = std::env::var("EZPM_NO_UPDATE_CHECK").is_ok()
+        || std::env::var_os("CI").is_some()
         || loaded_config
             .as_ref()
             .and_then(|c| c.display.as_ref())

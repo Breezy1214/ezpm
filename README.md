@@ -100,7 +100,7 @@ src = "src"
 [display]
 file_changes = true
 logs_enabled = true
-check_updates = true      # or set EZPM_NO_UPDATE_CHECK=1
+check_updates = true      # or set EZPM_NO_UPDATE_CHECK=1; always off when CI is set
 
 [aliases]
 Client = "src/client/"

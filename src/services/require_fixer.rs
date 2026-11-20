@@ -729,5 +729,4 @@ mod tests {
             "return require(\"Config\")\n"
         );
     }
-
 }
