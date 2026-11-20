@@ -29,14 +29,23 @@ impl PathFilter {
     }
 }
 
-/// `path` as an absolute, lexically normalized path, resolving symlinks when it exists.
+/// `path` as an absolute, canonical path. A path that doesn't exist yet is resolved through its
+/// nearest existing ancestor, so it shares the form of existing paths (symlinks and Windows
+/// 8.3 short names expanded) and prefix comparisons between the two work.
 pub fn absolute(project_dir: &Path, path: &Path) -> PathBuf {
-    let joined = if path.is_absolute() {
+    let joined = normalize(&if path.is_absolute() {
         path.to_path_buf()
     } else {
         project_dir.join(path)
-    };
-    dunce::canonicalize(&joined).unwrap_or_else(|_| normalize(&joined))
+    });
+    joined
+        .ancestors()
+        .find_map(|ancestor| {
+            let canonical = dunce::canonicalize(ancestor).ok()?;
+            let rest = joined.strip_prefix(ancestor).ok()?;
+            Some(canonical.join(rest))
+        })
+        .unwrap_or(joined)
 }
 
 fn normalize(path: &Path) -> PathBuf {
@@ -78,6 +87,30 @@ mod tests {
         assert!(filter.matches(dir.path(), Path::new("src/client/a.luau")));
         assert!(!filter.matches(dir.path(), Path::new("src/b.luau")));
         assert!(PathFilter::new(dir.path(), &[]).matches(dir.path(), Path::new("anything")));
+    }
+
+    #[test]
+    fn missing_paths_resolve_through_their_nearest_existing_ancestor() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("real/src")).unwrap();
+        let link = dir.path().join("link");
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink(dir.path().join("real"), &link);
+        #[cfg(windows)]
+        let linked = std::os::windows::fs::symlink_dir(dir.path().join("real"), &link);
+        if linked.is_err() {
+            // Windows needs developer mode or admin rights to create a symlink.
+            return;
+        }
+
+        assert_eq!(
+            display(&link, Path::new("src/missing.luau")),
+            "src/missing.luau"
+        );
+        assert_eq!(
+            display(&link, &link.join("src/new/missing.luau")),
+            "src/new/missing.luau"
+        );
     }
 
     #[test]
