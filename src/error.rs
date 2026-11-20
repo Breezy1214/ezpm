@@ -18,6 +18,8 @@ pub struct EzpmError {
     pub kind: ErrorKind,
     pub message: String,
     pub hint: Option<String>,
+    /// The diagnostic code (see `diagnostics::CODES`), when one applies.
+    pub code: Option<&'static str>,
 }
 
 impl EzpmError {
@@ -26,6 +28,7 @@ impl EzpmError {
             kind,
             message: message.into(),
             hint: None,
+            code: None,
         }
     }
 
@@ -37,8 +40,19 @@ impl EzpmError {
         Self::new(ErrorKind::Project, message)
     }
 
+    /// A tool that ran and failed (`tool.failed`).
     pub fn tool(message: impl Into<String>) -> Self {
-        Self::new(ErrorKind::Tool, message)
+        Self::new(ErrorKind::Tool, message).with_code("tool.failed")
+    }
+
+    /// A tool that isn't installed (`tool.missing`).
+    pub fn tool_missing(message: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Tool, message).with_code("tool.missing")
+    }
+
+    pub fn with_code(mut self, code: &'static str) -> Self {
+        self.code = Some(code);
+        self
     }
 
     /// A failure the command has already reported (diagnostics, a JSON document, a child's output).

@@ -475,11 +475,22 @@ fn write_agent_files(
             agents::AGENTS_FILE,
             agents::upsert_rules(agents_md.as_deref()),
         ));
-        let claude_md = read(agents::CLAUDE_FILE);
-        changes.push((
-            agents::CLAUDE_FILE,
-            agents::with_claude_import(claude_md.as_deref()),
-        ));
+        // CLAUDE.md linked to AGENTS.md already has the rules; importing would rewrite the
+        // shared file without them.
+        let same_file = matches!(
+            (
+                std::fs::canonicalize(agents::AGENTS_FILE),
+                std::fs::canonicalize(agents::CLAUDE_FILE),
+            ),
+            (Ok(agents_path), Ok(claude_path)) if agents_path == claude_path
+        );
+        if !same_file {
+            let claude_md = read(agents::CLAUDE_FILE);
+            changes.push((
+                agents::CLAUDE_FILE,
+                agents::with_claude_import(claude_md.as_deref()),
+            ));
+        }
     }
     if hook {
         let settings = read(agents::CLAUDE_SETTINGS_FILE);

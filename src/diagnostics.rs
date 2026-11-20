@@ -219,7 +219,8 @@ pub fn annotate(diagnostics: &[Diagnostic]) {
 fn workflow_command(diagnostic: &Diagnostic) -> String {
     let mut properties = Vec::new();
     if let Some(file) = &diagnostic.file {
-        properties.push(format!("file={}", escape_property(file)));
+        let file = workspace_path(file);
+        properties.push(format!("file={}", escape_property(&file)));
     }
     if let Some(line) = diagnostic.line {
         properties.push(format!("line={line}"));
@@ -231,6 +232,22 @@ fn workflow_command(diagnostic: &Diagnostic) -> String {
         properties.join(","),
         escape_data(&diagnostic.message)
     )
+}
+
+/// GitHub resolves annotation paths against `GITHUB_WORKSPACE`, so a project in a subfolder of
+/// the repository needs that folder in front of its project-relative paths.
+fn workspace_path(file: &str) -> String {
+    let prefix = std::env::var_os("GITHUB_WORKSPACE").and_then(|workspace| {
+        let workspace = std::fs::canonicalize(workspace).ok()?;
+        let project = std::env::current_dir().ok()?.canonicalize().ok()?;
+        let relative = project.strip_prefix(workspace).ok()?;
+        let relative = relative.to_string_lossy().replace('\\', "/");
+        (!relative.is_empty()).then_some(relative)
+    });
+    match prefix {
+        Some(prefix) => format!("{prefix}/{file}"),
+        None => file.to_string(),
+    }
 }
 
 fn escape_data(value: &str) -> String {
@@ -247,7 +264,9 @@ fn escape_property(value: &str) -> String {
 /// The candidate closest to `input`, when it is close enough to be a likely typo.
 pub fn closest<'a>(input: &str, candidates: &[&'a str]) -> Option<&'a str> {
     let input = input.to_ascii_lowercase();
-    let max_distance = (input.chars().count() / 3).max(2);
+    let length = input.chars().count();
+    // One edit for very short keys, so `id` doesn't become `to`; a transposition otherwise.
+    let max_distance = if length <= 3 { 1 } else { (length / 3).max(2) };
     candidates
         .iter()
         .map(|candidate| {
@@ -297,6 +316,8 @@ mod tests {
         assert_eq!(closest("entry_point", &keys), Some("entry_points"));
         assert_eq!(closest("layer", &keys), Some("layers"));
         assert_eq!(closest("unrelated", &keys), None);
+        assert_eq!(closest("foo", &["from", "to"]), None);
+        assert_eq!(closest("id", &["from", "to"]), None);
     }
 
     #[test]

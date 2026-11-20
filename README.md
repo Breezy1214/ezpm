@@ -79,7 +79,7 @@ Global flags: `--json`, `--verbose`, `--quiet`, `--color <auto|always|never>`.
 
 `build` and `sourcemap` exit with Rojo's own code.
 
-With `--json`, every command prints one JSON document on one line of stdout and nothing else. A failure before a command has anything to show prints `{"error": {"kind", "message", "hint"}}`. `serve --json` instead prints one event per line: `ready`, `synced`, `rebuilt`, `fixFailed`, `sourcemapFailed`, `configReloaded`, `rojoRestarted`, `rojoCrashed`, `watcherError`, `stopped`, and `rojo` for each line Rojo prints.
+With `--json`, every command prints one JSON document on one line of stdout and nothing else. A failure before a command has anything to show prints `{"error": {"kind", "message", "hint"}}`, plus `code` (`tool.missing`, `tool.failed`) when a tool is at fault. A wrong command line under `--json` is such an error too, and `ezpm.toml` warnings are added to the document's `diagnostics` array. `serve --json` instead prints one event per line: `ready`, `synced`, `rebuilt`, `fixFailed`, `sourcemapFailed`, `configReloaded`, `rojoRestarted`, `rojoCrashed`, `watcherError`, `stopped`, and `rojo` for each line Rojo prints.
 
 Every problem has a stable code, such as `check.cycle`. Match on the code, not the message. [docs/diagnostics.md](docs/diagnostics.md) lists them all, and `ezpm explain <code>` prints the same text in your terminal. Under GitHub Actions, diagnostics are also written as workflow commands, so they show on the pull request's files:
 
@@ -128,7 +128,7 @@ ezpm fix-requires --check     # same, but exit 1 if there are any (for CI)
 
 ### `ezpm build` and `ezpm sourcemap`
 
-Each syncs `.luaurc` from `ezpm.toml`, then runs Rojo on the project that `[rojo] project` selects, passing your arguments through: `ezpm build -o game.rbxl`, `ezpm build --watch -o game.rbxl`, `ezpm sourcemap -o sourcemap.json`.
+Each syncs `.luaurc` from `ezpm.toml`, then runs Rojo on the project that `[rojo] project` selects, passing your arguments through: `ezpm build -o game.rbxl`, `ezpm build --watch -o game.rbxl`, `ezpm sourcemap -o sourcemap.json`. Put ezpm's own flags first (`ezpm --json build -o game.rbxl`); everything after the command goes to Rojo.
 
 ### `ezpm where`
 

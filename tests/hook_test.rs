@@ -74,4 +74,19 @@ fn stop_hook_reports_new_problems_in_changed_files_once() {
     assert!(reason.contains("src/shared/a.luau:1"), "{reason}");
 
     assert_eq!(run_hook(p), "", "the same problems are reported only once");
+
+    std::fs::write(
+        p.join("src/shared/a.luau"),
+        "\n\nreturn require(\"@game/ReplicatedStorage/Shared/b\")\n",
+    )
+    .unwrap();
+    assert_eq!(run_hook(p), "", "a problem that only moved is not new");
+
+    std::fs::write(p.join("ezpm.toml"), "[serve]\nport = \"x\"\n").unwrap();
+    let response: serde_json::Value =
+        serde_json::from_str(run_hook(p).trim()).expect("a broken config is reported");
+    assert!(response["reason"]
+        .as_str()
+        .unwrap()
+        .contains("(config.invalid)"));
 }

@@ -180,7 +180,9 @@ pub fn alias_remove(names: &[String]) -> Result<()> {
                 }
                 return Err(error.into());
             }
-            resolved.push(name);
+            if !resolved.contains(&name) {
+                resolved.push(name);
+            }
         }
         resolved
     };

@@ -70,6 +70,7 @@ pub fn analyze(
         .into());
     }
 
+    let filter = PathFilter::new(project_root, paths)?;
     let graph = build::build_graph(project_root, &aliases, src_prefix, sourcemap)?;
 
     let check_config = cfg.check.clone().unwrap_or_default();
@@ -79,7 +80,6 @@ pub fn analyze(
     let entry_point_ids = resolve_entry_points(&graph, &check_config, src_prefix);
 
     let mut result = analysis::run_all_checks(&graph, &layers, &rules, &features, &entry_point_ids);
-    let filter = PathFilter::new(project_root, paths);
     if !filter.is_empty() {
         retain_about(&mut result, &filter, project_root);
     }

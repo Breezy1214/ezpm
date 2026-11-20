@@ -173,14 +173,15 @@ fn classify_layer(path: &str, layers: &[(String, String)]) -> Option<String> {
     None
 }
 
-/// The feature a module belongs to: the first folder under the feature root that holds it.
-/// A file directly under a root belongs to no feature.
+/// The feature a module belongs to: the first folder under the deepest feature root that holds
+/// it. A file directly under that root belongs to no feature.
 fn feature_of<'a>(path: &'a str, roots: &[String]) -> Option<&'a str> {
-    roots.iter().find_map(|root| {
-        let rest = path.strip_prefix(root.as_str())?;
-        let (feature, _) = rest.split_once('/')?;
-        Some(feature)
-    })
+    let root = roots
+        .iter()
+        .filter(|root| path.starts_with(root.as_str()))
+        .max_by_key(|root| root.len())?;
+    let (feature, _) = path[root.len()..].split_once('/')?;
+    Some(feature)
 }
 
 /// Requires from one feature into another, unless the target is a shared feature. Features keep
@@ -308,6 +309,23 @@ mod tests {
         assert_eq!(violations[0].from_feature, "Shop");
         assert_eq!(violations[0].to_feature, "Inventory");
         assert_eq!(violations[0].line, Some(4));
+    }
+
+    #[test]
+    fn nested_feature_roots_use_the_deepest_root() {
+        let mut g = DepGraph::new();
+        let shop = g.add_node("src/features/Shop/a.luau");
+        let inventory = g.add_node("src/features/Inventory/b.luau");
+        g.add_edge(shop, inventory, Some(1));
+
+        for roots in [
+            vec!["src/".to_string(), "src/features/".to_string()],
+            vec!["src/features/".to_string(), "src/".to_string()],
+        ] {
+            let violations = validate_features(&g, &roots, &[]);
+            assert_eq!(violations.len(), 1, "{roots:?}: {violations:?}");
+            assert_eq!(violations[0].from_feature, "Shop");
+        }
     }
 
     fn make_simple_cycle() -> DepGraph {

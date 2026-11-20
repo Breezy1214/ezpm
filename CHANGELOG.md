@@ -11,7 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `ezpm build` and `ezpm sourcemap` sync `.luaurc`, then run `rojo build` or `rojo sourcemap` on the project with your arguments, and exit with Rojo's code.
 - `ezpm where <paths>` prints where each file lands in the game and the `@game/...` require for it.
 - `ezpm fix-requires --dry-run` lists every rewrite with its line, and `--check` also exits 1 when there are any, for CI. Both take paths to report on only those files.
-- `ezpm check <paths>` reports only the findings about those files or folders.
+- `ezpm check <paths>` reports only the findings about those files or folders. A path that doesn't exist is a usage error, so a typo can't make CI pass.
 - `[check] feature_roots` and `shared_features`: `check` reports a feature that requires another feature (`check.featureBoundary`).
 - Every problem has a stable diagnostic code, documented in `docs/diagnostics.md`. `ezpm explain <code>` prints the same text, and `ezpm explain --list` lists every code.
 - Under GitHub Actions, diagnostics are also written as workflow commands, so they show on the pull request's files.
