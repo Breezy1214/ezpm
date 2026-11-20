@@ -784,6 +784,9 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
                 match event {
                     Some(WatchEvent::Changes(mut changes)) => {
                         let topology_changed = changes_project_topology(&changes);
+                        // Captured before the config/project branches below can replace the
+                        // context, so renames are resolved against the pre-batch sourcemap.
+                        let previous_fix_ctx = topology_changed.then(|| fix_ctx.clone());
                         let current_snapshot = topology_changed
                             .then(|| snapshot_modules(&require_fixer::lua_files(&src_path)));
                         if let Some(snapshot) = &current_snapshot {
@@ -927,20 +930,17 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
                             })
                             .collect::<Vec<_>>();
                         if !source_changes.is_empty() {
-                            let mut previous_fix_ctx = None;
                             if topology_changed {
-                                // On failure keep the previous context so the batch is still fixed.
+                                // On failure keep the current context so the batch is still fixed.
                                 if let Some(index) =
                                     refresh_sourcemap(&project_dir, &rojo_settings.project).await
                                 {
-                                    let new_fix_ctx = require_fixer::FixContext::new(
+                                    fix_ctx = require_fixer::FixContext::new(
                                         &project_dir,
                                         &src,
                                         &aliases,
                                         index,
                                     );
-                                    previous_fix_ctx =
-                                        Some(std::mem::replace(&mut fix_ctx, new_fix_ctx));
                                     module_index = fix_ctx.module_index();
                                 }
                             }

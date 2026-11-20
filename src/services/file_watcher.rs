@@ -292,7 +292,15 @@ fn classify_events_with_rules(
             let normalized_path = clean_path(path);
 
             if let Some(change) = rules.control_change(&normalized_path) {
-                if seen.insert(change.clone()) {
+                // inotify reports Rojo opening the project file; treating reads as changes
+                // makes every Rojo restart trigger another one.
+                let changes_contents = !matches!(
+                    kind,
+                    EventKind::Access(_)
+                        | EventKind::Modify(ModifyKind::Metadata(_))
+                        | EventKind::Other
+                );
+                if changes_contents && seen.insert(change.clone()) {
                     result.push(change);
                 }
                 continue;
@@ -713,6 +721,30 @@ mod tests {
 
         let result = classify_events_with_rules(&events, &[], &scoped_rules(&tmp));
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_reading_control_files_is_not_a_change() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let project = tmp.path().join("default.project.json");
+        std::fs::write(&project, b"{}").unwrap();
+        let events = vec![
+            make_debounced_event(
+                EventKind::Access(notify_debouncer_full::notify::event::AccessKind::Close(
+                    notify_debouncer_full::notify::event::AccessMode::Read,
+                )),
+                vec![project.clone()],
+            ),
+            make_debounced_event(
+                EventKind::Modify(ModifyKind::Metadata(
+                    notify_debouncer_full::notify::event::MetadataKind::AccessTime,
+                )),
+                vec![project],
+            ),
+        ];
+
+        let result = classify_events_with_rules(&events, &[], &scoped_rules(&tmp));
+        assert!(result.is_empty(), "{result:?}");
     }
 
     #[test]
