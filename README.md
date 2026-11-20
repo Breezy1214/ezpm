@@ -41,22 +41,54 @@ ezpm serve    # dev server is live
 ezpm init --dry-run   # print what init would create or change; writes nothing
 ```
 
+If `init` fails or you cancel it part-way through, it puts every file and folder back as it was.
+
 ## Commands
 
 ```
-ezpm                      Interactive menu (arrow-key navigation)
-ezpm serve [-p <port>]    Watch + transform + Rojo live sync
-ezpm init [--dry-run]     Create or adopt a project
-ezpm check [--json]       Dependency analysis (cycles, layer rules, unused modules)
-ezpm fix-requires         Rewrite requires across the source tree to @game/... form
-ezpm install              Rokit tools + Wally packages + type generation
-ezpm setup-wally-packages Staged reinstall of Wally deps + sourcemap/types
-ezpm lint                 Selene + StyLua --check
-ezpm format [--check]     StyLua format (or verify only, for CI)
-ezpm alias <add|remove|list|sync>   Manage path aliases
+ezpm                                 Interactive menu (arrow-key navigation)
+ezpm serve [-p <port>]               Watch + transform + Rojo live sync
+ezpm init [--dry-run]                Create or adopt a project
+ezpm check [PATHS]                   Dependency analysis (cycles, layer and feature rules, unused modules)
+ezpm fix-requires [--check|--dry-run] [PATHS]
+                                     Rewrite requires to @game/... form, or only report them
+ezpm build [ROJO_ARGS]               rojo build on the project, e.g. ezpm build -o game.rbxl
+ezpm sourcemap [ROJO_ARGS]           rojo sourcemap on the project, e.g. ezpm sourcemap -o sourcemap.json
+ezpm where <PATHS>                   Where files land in the game, and the require for each
+ezpm explain <code> | --list         What a diagnostic code means, and how to fix it
+ezpm install                         Rokit tools + Wally packages + type generation
+ezpm setup-wally-packages            Staged reinstall of Wally deps + sourcemap/types
+ezpm lint                            Selene + StyLua --check
+ezpm format [--check]                StyLua format (or verify only, for CI)
+ezpm alias add <Name> <path> [--create-dir]
+ezpm alias remove <Name>...
+ezpm alias list | sync               Manage path aliases (add/remove prompt when run without arguments)
+ezpm hook stop [--format cursor]     Stop hook for coding agents (see below)
 ```
 
-Global flags: `--verbose`, `--quiet`, `--color <auto|always|never>`.
+Global flags: `--json`, `--verbose`, `--quiet`, `--color <auto|always|never>`.
+
+### Exit codes, JSON and CI
+
+| Exit | Meaning |
+|---|---|
+| 0 | Done (warnings included) |
+| 1 | The project has errors, or a tool failed |
+| 2 | The command line is wrong |
+| 130 / 143 / 129 | Stopped by Ctrl-C / SIGTERM / a closed terminal |
+
+`build` and `sourcemap` exit with Rojo's own code.
+
+With `--json`, every command prints one JSON document on one line of stdout and nothing else. A failure before a command has anything to show prints `{"error": {"kind", "message", "hint"}}`. `serve --json` instead prints one event per line: `ready`, `synced`, `rebuilt`, `fixFailed`, `sourcemapFailed`, `configReloaded`, `rojoRestarted`, `rojoCrashed`, `watcherError`, `stopped`, and `rojo` for each line Rojo prints.
+
+Every problem has a stable code, such as `check.cycle`. Match on the code, not the message. [docs/diagnostics.md](docs/diagnostics.md) lists them all, and `ezpm explain <code>` prints the same text in your terminal. Under GitHub Actions, diagnostics are also written as workflow commands, so they show on the pull request's files:
+
+```yaml
+- uses: CompeyDev/setup-rokit@v0.2.1
+- run: ezpm check
+- run: ezpm fix-requires --check
+- run: ezpm build -o game.rbxl
+```
 
 ### `ezpm serve`
 
@@ -75,16 +107,38 @@ Static analysis of your require graph:
 
 - **Circular dependencies** — A → B → C → A
 - **Architecture violations** — client importing server, per your `[check.forbid]` rules
+- **Feature boundaries** — one feature requiring another, per `[check] feature_roots`
 - **Unused modules** — nothing requires them
 
 ```bash
-ezpm check          # human-readable
-ezpm check --json   # for CI
+ezpm check                        # human-readable
+ezpm check --json                 # for CI and editors
+ezpm check src/shared/Shop        # only findings about these files or folders
 ```
 
 ### `ezpm fix-requires`
 
 Resolves simple module names and editor aliases to Roblox-supported string requires. For example, `require("Signal")` becomes `require("@game/ReplicatedStorage/Shared/Utils/Signal")`. Existing paths are repaired when uniquely identifiable modules move. If two modules have the same name, ezpm reports the ambiguity instead of guessing.
+
+```bash
+ezpm fix-requires             # rewrite them
+ezpm fix-requires --dry-run   # list each rewrite with its line; write nothing
+ezpm fix-requires --check     # same, but exit 1 if there are any (for CI)
+```
+
+### `ezpm build` and `ezpm sourcemap`
+
+Each syncs `.luaurc` from `ezpm.toml`, then runs Rojo on the project that `[rojo] project` selects, passing your arguments through: `ezpm build -o game.rbxl`, `ezpm build --watch -o game.rbxl`, `ezpm sourcemap -o sourcemap.json`.
+
+### `ezpm where`
+
+```
+$ ezpm where src/shared/Utils/Signal.luau
+src/shared/Utils/Signal.luau → ReplicatedStorage.Shared.Utils.Signal (ModuleScript)
+  require("@game/ReplicatedStorage/Shared/Utils/Signal")
+```
+
+A file that Rojo doesn't sync is reported as `where.unmapped`, with exit code 1.
 
 ## Configuration
 
@@ -149,6 +203,18 @@ reason = "Client must never import server modules"
 - Only cross-layer imports are checked; same-layer imports are always allowed.
 - With no `entry_points` and no `src/<layer>/init.lua(u)`, every module counts as reachable.
 
+To keep features from depending on each other, name the folders that hold them:
+
+```toml
+[check]
+feature_roots = ["src/server/", "src/client/", "src/shared/"]
+shared_features = ["Util"]
+```
+
+Every folder directly under a root is a feature. A feature may require itself and the `shared_features`, and nothing else. A feature keeps its name across roots, so `src/server/Shop` may require `src/shared/Shop` but not `src/shared/Inventory`.
+
+Unknown keys in `ezpm.toml` get a `config.unknownField` warning that suggests the closest key.
+
 ## Toolchain
 
 Managed through [Rokit](https://github.com/rojo-rbx/rokit). `ezpm serve` bumps any pin older than ezpm's tested version and reinstalls; newer pins are left alone.
@@ -165,13 +231,27 @@ Managed through [Rokit](https://github.com/rojo-rbx/rokit). `ezpm serve` bumps a
 
 ## VS Code extension
 
-`vscode-ezpm/` wraps the CLI: serve start/stop/status, `ezpm check` results as inline diagnostics (cycles and rule violations as errors, unused modules as warnings), and every other command from the palette. Point it at a binary with `ezpm.binaryPath`, or leave it empty to use `PATH`. See [its README](vscode-ezpm/README.md).
+`vscode-ezpm/` wraps the CLI: serve start/stop/status, `ezpm check` results as inline diagnostics on the line of the offending require (cycles, rule and feature violations as errors, unused modules as warnings), and every other command from the palette. Point it at a binary with `ezpm.binaryPath`, or leave it empty to use `PATH`. See [its README](vscode-ezpm/README.md).
+
+## Coding agents
+
+`ezpm init` adds a short block of rules to `AGENTS.md`, between `<!-- ezpm -->` markers, and imports it into `CLAUDE.md` with `@AGENTS.md`. The rules tell an agent how requires work here and to run `ezpm check` and `ezpm fix-requires --check` on the files it changes. Running init again replaces an outdated block and keeps your text around it. Pass `--no-agent-rules` to skip this, or run `ezpm init --agent-rules` in a project that is already set up.
+
+An agent can still forget to run the checks, so `ezpm hook stop` runs them on the Luau files changed in git when the agent ends its turn. It sends each new error back as the agent's next prompt and never repeats one. `ezpm init --agent-hook` registers it for Claude Code in `.claude/settings.json`. For other agents, add it to their Stop event by hand:
+
+| Agent | File | Event | Command |
+|---|---|---|---|
+| Claude Code | `.claude/settings.json` | `Stop` | `ezpm hook stop` |
+| Codex | `.codex/hooks.json` | `Stop` | `ezpm hook stop` |
+| Cursor | `.cursor/hooks.json` | `stop` | `ezpm hook stop --format cursor` |
+| Copilot | `.github/hooks/ezpm.json` | `agentStop` | `ezpm hook stop` |
 
 ## Limitations
 
 - Dynamic (non-string) requires are passed through unchanged
 - Needs a Rojo project file in the project root (`default.project.json`, or one named under `[rojo]`)
-- v0.2 — the config format may still evolve
+- One Rojo project per `ezpm.toml`; roblox-ts and multi-place setups aren't supported yet
+- Pre-1.0 — the config format may still evolve; see [CHANGELOG.md](CHANGELOG.md)
 
 ## Contributing
 
