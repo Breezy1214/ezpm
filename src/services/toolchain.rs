@@ -126,14 +126,14 @@ pub fn apply_tool_updates(contents: &str, updates: &[ToolUpdate]) -> String {
         .map(|line| {
             let trimmed = line.trim();
 
-            if trimmed.starts_with('[') && trimmed.ends_with(']') {
-                in_tools = trimmed == "[tools]";
+            if let Some(header) = table_header(trimmed) {
+                in_tools = header == "[tools]";
                 return line.to_string();
             }
 
             if in_tools && !trimmed.is_empty() && !trimmed.starts_with('#') {
                 if let Some((name_part, _)) = trimmed.split_once('=') {
-                    let name = name_part.trim();
+                    let name = tool_key(name_part);
                     if let Some(update) = updates.iter().find(|u| u.name == name) {
                         return line.replace(&update.old_spec, &update.new_spec);
                     }
@@ -264,8 +264,7 @@ fn parse_ordered_tool_names(contents: &str) -> Result<Vec<String>> {
             continue;
         }
 
-        let header = line.split('#').next().unwrap_or_default().trim_end();
-        if header.starts_with('[') && header.ends_with(']') {
+        if let Some(header) = table_header(line) {
             in_tools = header == "[tools]";
             continue;
         }
@@ -277,7 +276,7 @@ fn parse_ordered_tool_names(contents: &str) -> Result<Vec<String>> {
         let (name, _) = line
             .split_once('=')
             .with_context(|| format!("invalid tool entry in [tools]: {line}"))?;
-        names.push(name.trim().trim_matches(['"', '\'']).to_string());
+        names.push(tool_key(name).to_string());
     }
 
     if names.is_empty() {
@@ -285,6 +284,15 @@ fn parse_ordered_tool_names(contents: &str) -> Result<Vec<String>> {
     }
 
     Ok(names)
+}
+
+fn table_header(line: &str) -> Option<&str> {
+    let header = line.split('#').next().unwrap_or_default().trim_end();
+    (header.starts_with('[') && header.ends_with(']')).then_some(header)
+}
+
+fn tool_key(name: &str) -> &str {
+    name.trim().trim_matches(['"', '\''])
 }
 
 #[cfg(test)]
@@ -299,6 +307,33 @@ mod tests {
         assert_eq!(tools[0].name, "rojo");
         assert_eq!(tools[0].spec, "rojo-rbx/rojo@7.4.4");
         assert_eq!(tools[1].name, "selene");
+    }
+
+    #[test]
+    fn applies_updates_under_commented_header_and_quoted_keys() {
+        let contents = "[tools] # managed by ezpm\n\"rojo\" = \"rojo-rbx/rojo@7.0.0\"\nselene = \"Kampfkarren/selene@0.1.0\"\n";
+        let updates = [
+            ToolUpdate {
+                name: "rojo".to_string(),
+                old_spec: "rojo-rbx/rojo@7.0.0".to_string(),
+                new_spec: "rojo-rbx/rojo@7.4.4".to_string(),
+            },
+            ToolUpdate {
+                name: "selene".to_string(),
+                old_spec: "Kampfkarren/selene@0.1.0".to_string(),
+                new_spec: "Kampfkarren/selene@0.28.0".to_string(),
+            },
+        ];
+
+        let updated = apply_tool_updates(contents, &updates);
+        assert!(
+            updated.contains("\"rojo\" = \"rojo-rbx/rojo@7.4.4\""),
+            "{updated}"
+        );
+        assert!(
+            updated.contains("selene = \"Kampfkarren/selene@0.28.0\""),
+            "{updated}"
+        );
     }
 
     #[test]

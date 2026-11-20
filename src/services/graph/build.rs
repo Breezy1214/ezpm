@@ -86,7 +86,7 @@ impl<'a> Resolver<'a> {
             .iter()
             .filter_map(|(name, dir)| Some((format!("{}/", dir.as_ref()?), *name)))
             .collect();
-        inverted.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+        inverted.sort_by_key(|(prefix, _)| std::cmp::Reverse(prefix.len()));
         Self {
             aliases,
             inverted,

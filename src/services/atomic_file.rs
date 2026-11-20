@@ -2,6 +2,9 @@ use std::io::{self, Write};
 use std::path::Path;
 
 pub fn write(path: &Path, contents: impl AsRef<[u8]>) -> io::Result<()> {
+    // Replace the symlink's target, not the link, so shared config files stay shared.
+    let resolved = std::fs::canonicalize(path).ok();
+    let path = resolved.as_deref().unwrap_or(path);
     let parent = match path.parent() {
         Some(parent) if !parent.as_os_str().is_empty() => parent,
         _ => Path::new("."),
@@ -31,6 +34,27 @@ mod tests {
 
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn writes_through_symlinks() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let shared = dir.path().join("shared.luaurc");
+        let link = dir.path().join(".luaurc");
+        std::fs::write(&shared, "{}").unwrap();
+        std::os::unix::fs::symlink(&shared, &link).unwrap();
+
+        write(&link, "{\"aliases\":{}}").unwrap();
+
+        assert!(std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            std::fs::read_to_string(&shared).unwrap(),
+            "{\"aliases\":{}}"
+        );
     }
 
     #[cfg(unix)]

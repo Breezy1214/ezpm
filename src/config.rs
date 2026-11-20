@@ -180,7 +180,7 @@ pub fn save_aliases_preserving_config(
 
     let mut aliases_table = toml::map::Map::new();
     let mut sorted_aliases: Vec<(&String, &String)> = aliases.iter().collect();
-    sorted_aliases.sort_by(|(a, _), (b, _)| a.cmp(b));
+    sorted_aliases.sort_by_key(|(name, _)| *name);
 
     for (name, path) in sorted_aliases {
         aliases_table.insert(name.clone(), toml::Value::String(path.clone()));

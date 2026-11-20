@@ -143,6 +143,12 @@ async fn monitor(
 ) {
     tokio::select! {
         status = child.wait() => {
+            // Anything the leader left running in its group would hold the port.
+            #[cfg(unix)]
+            let _ = nix::sys::signal::killpg(
+                nix::unistd::Pid::from_raw(pgid as i32),
+                nix::sys::signal::Signal::SIGKILL,
+            );
             let code = status.ok().and_then(|status| status.code());
             let _ = status_tx.try_send(ProcessEvent::Exited { name, code });
         }

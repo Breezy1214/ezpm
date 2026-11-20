@@ -70,7 +70,7 @@ pub fn generate_rojo_project(
         .map(|(name, path)| (name, path, normalize_relative(path)))
         .filter(|(_, _, dir)| *dir != source_root && is_within(dir, &source_root))
         .collect::<Vec<_>>();
-    source_aliases.sort_by(|(left, ..), (right, ..)| left.cmp(right));
+    source_aliases.sort_by_key(|(name, ..)| *name);
 
     // An alias nested inside another (Components inside Shared) would map the same files
     // twice, which Rojo's sourcemap reports and the require fixer rejects. The outer
