@@ -60,8 +60,17 @@ struct SourcemapNode {
     children: Vec<SourcemapNode>,
 }
 
+/// Where a file lands in the game.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Placement {
+    /// Dotted instance path, such as `ReplicatedStorage.Shared.Signal`.
+    pub instance_path: String,
+    pub class_name: String,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct SourcemapIndex {
+    placements: HashMap<PathBuf, Placement>,
     source_to_game: HashMap<PathBuf, String>,
     game_paths: HashSet<String>,
     game_to_source: HashMap<String, PathBuf>,
@@ -95,6 +104,11 @@ impl SourcemapIndex {
         self.source_to_game
             .get(&normalize_source_path(source_path))
             .map(String::as_str)
+    }
+
+    /// The instance a file becomes, for any file Rojo reads (scripts, models, JSON, meta files).
+    pub fn placement(&self, source_path: &Path) -> Option<&Placement> {
+        self.placements.get(&normalize_source_path(source_path))
     }
 
     pub fn contains_game_path(&self, game_path: &str) -> bool {
@@ -141,6 +155,20 @@ impl SourcemapIndex {
         instance_path: &mut Vec<String>,
     ) -> Result<()> {
         instance_path.push(node.name.clone());
+
+        for file_path in &node.file_paths {
+            let source_path = if file_path.is_absolute() {
+                file_path.clone()
+            } else {
+                project_dir.join(file_path)
+            };
+            self.placements
+                .entry(normalize_source_path(&source_path))
+                .or_insert_with(|| Placement {
+                    instance_path: instance_path.join("."),
+                    class_name: node.class_name.clone(),
+                });
+        }
 
         let lua_files = node
             .file_paths
@@ -294,6 +322,13 @@ mod tests {
         assert!(!index
             .source_files()
             .contains(&dir.path().join("src/main.server.luau")));
+        assert_eq!(
+            index.placement(&dir.path().join("src/main.server.luau")),
+            Some(&Placement {
+                instance_path: "ServerScriptService.Main".to_string(),
+                class_name: "Script".to_string(),
+            })
+        );
     }
 
     #[test]

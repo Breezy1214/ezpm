@@ -139,3 +139,70 @@ fn serve_exits_nonzero_without_config() {
 
     common::assert_failure(&output);
 }
+
+#[cfg(unix)]
+#[test]
+fn serve_json_streams_only_json_events_and_exits_143_on_sigterm() {
+    use std::io::{BufRead, BufReader};
+
+    let dir = common::create_project();
+    let mut child = Command::new(common::ezpm_bin())
+        .args(["--json", "serve", "--port", "44877"])
+        .current_dir(dir.path())
+        .env("EZPM_NO_UPDATE_CHECK", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn ezpm serve");
+
+    let stdout = child.stdout.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+
+    let mut events = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while Instant::now() < deadline {
+        let Ok(line) = rx.recv_timeout(Duration::from_millis(200)) else {
+            continue;
+        };
+        let event: serde_json::Value =
+            serde_json::from_str(&line).unwrap_or_else(|e| panic!("not JSON ({e}): {line}"));
+        let is_ready = event["event"] == "ready";
+        events.push(event);
+        if is_ready {
+            break;
+        }
+    }
+    assert!(
+        events
+            .iter()
+            .any(|e| e["event"] == "ready" && e["port"] == 44877),
+        "no ready event: {events:?}"
+    );
+
+    let _ = nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(child.id() as i32),
+        nix::sys::signal::Signal::SIGTERM,
+    );
+    let status = child.wait().unwrap();
+    assert_eq!(status.code(), Some(143));
+
+    let rest: Vec<serde_json::Value> = rx
+        .try_iter()
+        .map(|line| {
+            serde_json::from_str(&line).unwrap_or_else(|e| panic!("not JSON ({e}): {line}"))
+        })
+        .collect();
+    assert!(
+        rest.iter()
+            .any(|e| e["event"] == "stopped" && e["reason"] == "terminate"),
+        "no stopped event: {rest:?}"
+    );
+}

@@ -32,7 +32,7 @@ unknown_field = "value"
 
     assert!(!warnings.is_empty(), "should have at least one warning");
     assert!(
-        warnings.iter().any(|w| w.contains("unknown_field")),
+        warnings.iter().any(|w| w.message.contains("unknown_field")),
         "warning should mention the unknown field name, got: {:?}",
         warnings
     );

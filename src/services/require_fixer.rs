@@ -26,6 +26,13 @@ pub struct FileChange {
 pub struct RequireRewrite {
     pub old: String,
     pub new: String,
+    /// 1-based line of the `require` in the original file.
+    pub line: usize,
+}
+
+/// The 1-based line that byte `offset` of `content` is on.
+pub fn line_of(content: &str, offset: usize) -> usize {
+    content[..offset].matches('\n').count() + 1
 }
 
 #[derive(Clone)]
@@ -118,31 +125,45 @@ impl ModuleIndex {
         None
     }
 
-    fn ambiguity_error(&self) -> Option<anyhow::Error> {
-        let mut stored = self.ambiguities.lock().ok()?;
-        let ambiguities = std::mem::take(&mut *stored);
-        if ambiguities.is_empty() {
-            return None;
-        }
-
-        let mut entries = ambiguities.into_iter().collect::<Vec<_>>();
-        entries.sort_by(|(left, _), (right, _)| left.cmp(right));
-        let details = entries
+    fn take_ambiguities(&self) -> Vec<Ambiguity> {
+        let Ok(mut stored) = self.ambiguities.lock() else {
+            return Vec::new();
+        };
+        let mut ambiguities = std::mem::take(&mut *stored)
             .into_iter()
-            .map(|(name, paths)| {
-                let mut paths = paths
-                    .into_iter()
-                    .map(|path| path.display().to_string())
-                    .collect::<Vec<_>>();
-                paths.sort();
-                format!("require(\"{name}\") matches {}", paths.join(", "))
+            .map(|(name, mut candidates)| {
+                candidates.sort();
+                Ambiguity { name, candidates }
             })
-            .collect::<Vec<_>>()
-            .join("; ");
-        Some(anyhow::anyhow!(
-            "ambiguous module name; use an alias or source path: {details}"
-        ))
+            .collect::<Vec<_>>();
+        ambiguities.sort_by(|left, right| left.name.cmp(&right.name));
+        ambiguities
     }
+}
+
+fn ambiguity_error(ambiguities: &[Ambiguity]) -> Option<anyhow::Error> {
+    if ambiguities.is_empty() {
+        return None;
+    }
+    let details = ambiguities
+        .iter()
+        .map(|ambiguity| {
+            let paths = ambiguity
+                .candidates
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>();
+            format!(
+                "require(\"{}\") matches {}",
+                ambiguity.name,
+                paths.join(", ")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    Some(anyhow::anyhow!(
+        "ambiguous module name; use an alias or source path: {details}"
+    ))
 }
 
 impl FixContext {
@@ -227,9 +248,23 @@ impl FixContext {
     }
 }
 
-pub fn fix_requires_with_context(ctx: &FixContext) -> Result<FixResult> {
+/// A bare `require("name")` that matches several modules, so nothing can be rewritten safely.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Ambiguity {
+    pub name: String,
+    pub candidates: Vec<PathBuf>,
+}
+
+/// Every rewrite `fix-requires` would make, computed without writing anything.
+#[derive(Debug, Default)]
+pub struct FixPlan {
+    pub total_files_scanned: usize,
+    pub pending: Vec<(FileChange, String)>,
+    pub ambiguities: Vec<Ambiguity>,
+}
+
+pub fn plan_fixes(ctx: &FixContext) -> Result<FixPlan> {
     let files = ctx.script_files();
-    let total_files_scanned = files.len();
     let module_index = ctx.module_index();
 
     let mut pending = Vec::new();
@@ -240,25 +275,37 @@ pub fn fix_requires_with_context(ctx: &FixContext) -> Result<FixResult> {
         let Some(new_content) = new_content else {
             continue;
         };
-        pending.push((path, new_content, rewrites));
+        pending.push((
+            FileChange {
+                file: path.clone(),
+                rewrites,
+            },
+            new_content,
+        ));
     }
-    if let Some(error) = module_index.ambiguity_error() {
+
+    Ok(FixPlan {
+        total_files_scanned: files.len(),
+        pending,
+        ambiguities: module_index.take_ambiguities(),
+    })
+}
+
+pub fn fix_requires_with_context(ctx: &FixContext) -> Result<FixResult> {
+    let plan = plan_fixes(ctx)?;
+    if let Some(error) = ambiguity_error(&plan.ambiguities) {
         return Err(error);
     }
 
-    let mut changes = Vec::with_capacity(pending.len());
-    for (path, content, rewrites) in pending {
-        write_source(path, &content)?;
-        changes.push(FileChange {
-            file: path.clone(),
-            rewrites,
-        });
+    let mut changes = Vec::with_capacity(plan.pending.len());
+    for (change, content) in plan.pending {
+        write_source(&change.file, &content)?;
+        changes.push(change);
     }
 
-    let files_changed = changes.len();
     Ok(FixResult {
-        files_changed,
-        total_files_scanned,
+        files_changed: changes.len(),
+        total_files_scanned: plan.total_files_scanned,
         changes,
     })
 }
@@ -272,7 +319,7 @@ pub fn fix_single_file_with_index(
     let (new_content, rewrites) =
         process_file_content_with_index(&content, ctx, Some(module_index));
 
-    if let Some(error) = module_index.ambiguity_error() {
+    if let Some(error) = ambiguity_error(&module_index.take_ambiguities()) {
         return Err(error);
     }
 
@@ -546,6 +593,7 @@ fn process_file_content_with_index(
             rewrites.push(RequireRewrite {
                 old: found.path.to_string(),
                 new: new_path,
+                line: line_of(content, found.span.start),
             });
             last_end = found.span.end;
         }

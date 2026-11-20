@@ -493,7 +493,7 @@ mod tests {
     use super::*;
 
     fn init_output() {
-        output::init(false, false, output::ColorChoice::Auto);
+        output::init(false, false, false, output::ColorChoice::Auto);
     }
 
     fn make_debounced_event(kind: EventKind, paths: Vec<PathBuf>) -> DebouncedEvent {

@@ -108,6 +108,43 @@ pub fn assert_success(output: &Output) {
     }
 }
 
+pub fn assert_exit(output: &Output, code: i32) {
+    if output.status.code() != Some(code) {
+        eprintln!(
+            "--- stdout ---\n{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        eprintln!(
+            "--- stderr ---\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        panic!("expected exit {code}, got {:?}", output.status.code());
+    }
+}
+
+/// The single JSON document a `--json` command prints on stdout.
+pub fn json_document(output: &Output) -> serde_json::Value {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    assert_eq!(
+        lines.len(),
+        1,
+        "expected one JSON line on stdout, got:\n{stdout}"
+    );
+    serde_json::from_str(lines[0]).unwrap_or_else(|e| panic!("invalid JSON ({e}): {stdout}"))
+}
+
+pub fn stderr(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+pub fn stdout(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
 pub fn assert_failure(output: &Output) {
     if output.status.success() {
         eprintln!(

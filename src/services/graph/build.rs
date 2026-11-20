@@ -5,7 +5,7 @@ use walkdir::WalkDir;
 
 use crate::config::normalize_relative;
 use crate::output;
-use crate::services::require_fixer::{is_lua_file, require_matches};
+use crate::services::require_fixer::{is_lua_file, line_of, require_matches};
 use crate::services::rojo_project::is_within;
 use crate::services::sourcemap::SourcemapIndex;
 
@@ -50,7 +50,8 @@ pub fn build_graph(
             if let Some(resolved) = resolver.resolve(found.path) {
                 let to_id = graph.add_node(&resolved);
                 if seen_targets.insert(to_id) {
-                    graph.add_edge(from_id, to_id, found.path.to_string());
+                    let line = line_of(&content, found.span.start);
+                    graph.add_edge_at(from_id, to_id, found.path.to_string(), Some(line));
                 }
             }
         }
@@ -317,7 +318,7 @@ mod tests {
         let client = graph.interner.get("src/client/init.luau").unwrap();
         let util = graph.interner.get("src/shared/util.luau").unwrap();
 
-        assert!(graph.neighbors(client).iter().any(|(to, _)| *to == util));
+        assert!(graph.neighbors(client).iter().any(|edge| edge.to == util));
     }
 
     #[test]

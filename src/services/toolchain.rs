@@ -199,7 +199,11 @@ pub fn run_tool(mut cmd: Command, spinner: Option<&ProgressBar>) -> Result<bool>
             }
             let stdout = String::from_utf8_lossy(&out.stdout);
             if !stdout.trim().is_empty() {
-                print!("{}", stdout);
+                if output::is_json() {
+                    eprint!("{}", stdout);
+                } else {
+                    print!("{}", stdout);
+                }
             }
         });
     }

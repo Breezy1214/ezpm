@@ -246,6 +246,9 @@ pub fn install_tools(src_prefix: &str, aliases: Option<&HashMap<String, String>>
 
     selene::generate_selene_roblox_std();
     output::success("All tools installed successfully!");
+    if output::is_json() {
+        output::document(&serde_json::json!({ "ok": true, "command": "install" }));
+    }
     Ok(())
 }
 
@@ -369,6 +372,9 @@ pub fn setup_wally_packages(
         sm_result2.stderr
     );
     output::success("Wally packages set up!");
+    if output::is_json() {
+        output::document(&serde_json::json!({ "ok": true, "command": "setup-wally-packages" }));
+    }
     Ok(())
 }
 

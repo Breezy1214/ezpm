@@ -52,18 +52,39 @@ impl ProcessManager {
     pub async fn spawn(&mut self, name: &str, cmd: &str, args: &[&str]) -> Result<()> {
         self.kill(name).await;
 
+        // In JSON mode the child's output is forwarded as events so stdout stays valid JSON.
+        let forward = output::is_json();
+        let stdio = || {
+            if forward {
+                Stdio::piped()
+            } else {
+                Stdio::inherit()
+            }
+        };
         let mut command = tokio::process::Command::new(cmd);
         command
             .args(args)
-            .stdin(Stdio::inherit())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
+            .stdin(if forward {
+                Stdio::null()
+            } else {
+                Stdio::inherit()
+            })
+            .stdout(stdio())
+            .stderr(stdio())
             .kill_on_drop(true);
 
         #[cfg(unix)]
         command.process_group(0);
 
-        let child = command.spawn()?;
+        let mut child = command.spawn()?;
+        if forward {
+            if let Some(stdout) = child.stdout.take() {
+                tokio::spawn(forward_lines(name.to_string(), "stdout", stdout));
+            }
+            if let Some(stderr) = child.stderr.take() {
+                tokio::spawn(forward_lines(name.to_string(), "stderr", stderr));
+            }
+        }
         let pgid = child
             .id()
             .ok_or_else(|| anyhow::anyhow!("{name} exited before its PID could be read"))?;
@@ -104,6 +125,18 @@ impl ProcessManager {
             let _ = proc.stop.send(());
             let _ = proc.monitor.await;
         }
+    }
+}
+
+async fn forward_lines(
+    name: String,
+    stream: &'static str,
+    reader: impl tokio::io::AsyncRead + Unpin,
+) {
+    use tokio::io::AsyncBufReadExt;
+    let mut lines = tokio::io::BufReader::new(reader).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        output::event(&name, serde_json::json!({ "stream": stream, "line": line }));
     }
 }
 
