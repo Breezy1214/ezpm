@@ -1,6 +1,6 @@
 mod common;
 
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 #[test]
@@ -153,6 +153,7 @@ fn serve_exits_nonzero_without_config() {
 #[test]
 fn serve_json_streams_only_json_events_and_exits_143_on_sigterm() {
     use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
 
     let dir = common::create_project();
     let mut child = Command::new(common::ezpm_bin())
