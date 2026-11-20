@@ -55,26 +55,30 @@ pub fn alias_menu() -> Result<()> {
 
 pub fn alias_add() -> Result<()> {
     let name = Text::new("Alias name (e.g., Client):").prompt()?;
-    if name.trim().is_empty() {
+    let name = name.trim().trim_start_matches('@').to_string();
+    if name.is_empty() {
         output::info("Aborted.");
         return Ok(());
+    }
+    if name.contains(|c: char| c.is_whitespace() || c == '/' || c == '\\') {
+        anyhow::bail!(
+            "Alias name '{}' must not contain whitespace or slashes",
+            name
+        );
     }
 
     let raw_path = Text::new("Path (e.g., src/client/):").prompt()?;
-    if raw_path.trim().is_empty() {
+    let raw_path = raw_path.trim().replace('\\', "/");
+    if raw_path.is_empty() {
         output::info("Aborted.");
         return Ok(());
     }
 
-    let path = if raw_path.ends_with('/') {
-        raw_path
-    } else {
-        format!("{}/", raw_path)
-    };
+    let path = format!("{}/", raw_path.trim_end_matches('/'));
 
-    let (cfg, _warnings) = config::load_config()?;
+    let (mut cfg, _warnings) = config::load_config()?;
 
-    let mut aliases: HashMap<String, String> = cfg.aliases.unwrap_or_default();
+    let mut aliases: HashMap<String, String> = cfg.aliases.take().unwrap_or_default();
 
     aliases.insert(name.clone(), path.clone());
 
@@ -84,12 +88,7 @@ pub fn alias_add() -> Result<()> {
         .and_then(|p| p.name.as_deref())
         .unwrap_or("project")
         .to_string();
-    let src_dir = cfg
-        .paths
-        .as_ref()
-        .and_then(|p| p.src.as_deref())
-        .unwrap_or("src")
-        .to_string();
+    let src_dir = cfg.src_dir();
     config::save_aliases_preserving_config(Path::new("."), &project_name, &src_dir, &aliases)?;
 
     config_gen::write_config_files(Path::new("."), &aliases)?;
@@ -109,9 +108,9 @@ pub fn alias_add() -> Result<()> {
 }
 
 pub fn alias_remove() -> Result<()> {
-    let (cfg, _warnings) = config::load_config()?;
+    let (mut cfg, _warnings) = config::load_config()?;
 
-    let mut aliases: HashMap<String, String> = cfg.aliases.unwrap_or_default();
+    let mut aliases: HashMap<String, String> = cfg.aliases.take().unwrap_or_default();
 
     if aliases.is_empty() {
         output::info("No aliases configured.");
@@ -126,7 +125,7 @@ pub fn alias_remove() -> Result<()> {
         .map(|name| format!("{} -> {}", name, aliases[name]))
         .collect();
 
-    let selected = MultiSelect::new("Select aliases to remove:", labels).prompt()?;
+    let selected = MultiSelect::new("Select aliases to remove:", labels).raw_prompt()?;
 
     if selected.is_empty() {
         output::info("No aliases selected.");
@@ -143,7 +142,7 @@ pub fn alias_remove() -> Result<()> {
 
     let names_to_remove: Vec<String> = selected
         .iter()
-        .map(|label| label.split(" -> ").next().unwrap_or("").to_string())
+        .map(|option| sorted_names[option.index].clone())
         .collect();
 
     for name in &names_to_remove {
@@ -156,12 +155,7 @@ pub fn alias_remove() -> Result<()> {
         .and_then(|p| p.name.as_deref())
         .unwrap_or("project")
         .to_string();
-    let src_dir = cfg
-        .paths
-        .as_ref()
-        .and_then(|p| p.src.as_deref())
-        .unwrap_or("src")
-        .to_string();
+    let src_dir = cfg.src_dir();
     config::save_aliases_preserving_config(Path::new("."), &project_name, &src_dir, &aliases)?;
 
     config_gen::write_config_files(Path::new("."), &aliases)?;

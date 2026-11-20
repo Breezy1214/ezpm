@@ -1,3 +1,4 @@
+pub mod atomic_file;
 pub mod config_gen;
 pub mod file_watcher;
 pub mod graph;

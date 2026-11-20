@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 
+use crate::services::atomic_file;
+
 #[derive(Debug, Deserialize, Serialize, Default, Clone)]
 pub struct CheckConfig {
     pub entry_points: Option<Vec<String>>,
@@ -26,6 +28,28 @@ pub struct EzpmConfig {
     pub serve: Option<ServeConfig>,
     pub rojo: Option<RojoConfig>,
     pub check: Option<CheckConfig>,
+}
+
+impl EzpmConfig {
+    pub fn src_dir(&self) -> String {
+        let src = self
+            .paths
+            .as_ref()
+            .and_then(|paths| paths.src.as_deref())
+            .map(normalize_relative)
+            .unwrap_or_default();
+        if src.is_empty() {
+            "src".to_string()
+        } else {
+            src
+        }
+    }
+}
+
+pub fn normalize_relative(path: &str) -> String {
+    let path = path.trim().replace('\\', "/");
+    let path = path.strip_prefix("./").unwrap_or(&path);
+    path.trim_end_matches('/').to_string()
 }
 
 #[derive(Debug, Deserialize, Serialize, Default, Clone)]
@@ -106,7 +130,7 @@ pub fn save_ezpm_toml(
 
     let toml_str = toml::to_string_pretty(&output)
         .map_err(|e| anyhow::anyhow!("Failed to serialize ezpm.toml: {}", e))?;
-    std::fs::write(dir.join("ezpm.toml"), toml_str)?;
+    atomic_file::write(&dir.join("ezpm.toml"), toml_str)?;
     Ok(())
 }
 
@@ -153,7 +177,7 @@ pub fn save_aliases_preserving_config(
 
     let mut aliases_table = toml::map::Map::new();
     let mut sorted_aliases: Vec<(&String, &String)> = aliases.iter().collect();
-    sorted_aliases.sort_by(|(a, _), (b, _)| a.cmp(b));
+    sorted_aliases.sort_by_key(|(name, _)| *name);
 
     for (name, path) in sorted_aliases {
         aliases_table.insert(name.clone(), toml::Value::String(path.clone()));
@@ -163,7 +187,7 @@ pub fn save_aliases_preserving_config(
 
     let toml_str = toml::to_string_pretty(&root)
         .map_err(|e| anyhow::anyhow!("Failed to serialize ezpm.toml: {}", e))?;
-    std::fs::write(toml_path, toml_str)?;
+    atomic_file::write(&toml_path, toml_str)?;
 
     Ok(())
 }
@@ -198,5 +222,26 @@ pub fn load_config() -> Result<(EzpmConfig, Vec<String>)> {
         load_config_from_str(&contents)
     } else {
         Ok((EzpmConfig::default(), vec![]))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_relative_strips_dot_prefix_and_trailing_slashes() {
+        assert_eq!(normalize_relative(" ./src/shared/ "), "src/shared");
+        assert_eq!(normalize_relative("game\\client\\"), "game/client");
+    }
+
+    #[test]
+    fn src_dir_defaults_when_missing_or_empty() {
+        let mut config = EzpmConfig::default();
+        assert_eq!(config.src_dir(), "src");
+        config.paths = Some(PathsConfig {
+            src: Some("/".to_string()),
+        });
+        assert_eq!(config.src_dir(), "src");
     }
 }

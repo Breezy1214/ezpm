@@ -1,9 +1,9 @@
 use anyhow::Result;
-use serde_json::json;
+use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::services::toolchain;
+use crate::services::{atomic_file, toolchain};
 
 pub fn get_lune_version_from_rokit_contents(contents: &str) -> Option<String> {
     let lune_spec = toolchain::find_tool_spec_in_contents(contents, "lune")?;
@@ -30,39 +30,48 @@ pub fn generate_luaurc(aliases: &HashMap<String, String>) -> String {
 }
 
 pub fn generate_luaurc_for_dir(aliases: &HashMap<String, String>, dir: &Path) -> String {
-    generate_luaurc_with_lune_version(aliases, get_lune_version_in_dir(dir).as_deref())
+    render_luaurc(dir, aliases, None)
 }
 
-fn generate_luaurc_with_lune_version(
-    aliases: &HashMap<String, String>,
-    lune_version: Option<&str>,
-) -> String {
-    let mut aliases_obj: serde_json::Map<String, serde_json::Value> =
-        serde_json::Map::with_capacity(aliases.len() + 1);
+fn aliases_value(aliases: &HashMap<String, String>, lune_version: Option<&str>) -> Value {
+    let mut aliases_obj = Map::with_capacity(aliases.len() + 1);
 
     if let Some(version) = lune_version {
         aliases_obj.insert(
             "lune".to_string(),
-            serde_json::Value::String(format!("~/.lune/.typedefs/{}", version)),
+            Value::String(format!("~/.lune/.typedefs/{}", version)),
         );
     }
 
     for (k, v) in aliases {
-        aliases_obj.insert(k.clone(), serde_json::Value::String(v.clone()));
+        aliases_obj.insert(k.clone(), Value::String(v.clone()));
     }
 
-    let luaurc = json!({
-        "aliases": aliases_obj
-    });
+    Value::Object(aliases_obj)
+}
 
-    let mut output = serde_json::to_string_pretty(&luaurc).unwrap();
+/// Only `aliases` is owned by ezpm; other keys in an `existing` .luaurc (languageMode,
+/// lint, ...) belong to the user and are kept.
+fn render_luaurc(dir: &Path, aliases: &HashMap<String, String>, existing: Option<&str>) -> String {
+    let aliases = aliases_value(aliases, get_lune_version_in_dir(dir).as_deref());
+    let mut root = existing
+        .and_then(|contents| serde_json::from_str::<Value>(contents).ok())
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({}));
+    root["aliases"] = aliases;
+
+    let mut output = serde_json::to_string_pretty(&root).expect("JSON values always serialize");
     output.push('\n');
     output
 }
 
 pub fn write_config_files(dir: &Path, aliases: &HashMap<String, String>) -> Result<()> {
-    let luaurc = generate_luaurc_for_dir(aliases, dir);
-    std::fs::write(dir.join(".luaurc"), luaurc)?;
+    let path = dir.join(".luaurc");
+    let existing = std::fs::read_to_string(&path).ok();
+    let luaurc = render_luaurc(dir, aliases, existing.as_deref());
+    if existing.as_deref() != Some(luaurc.as_str()) {
+        atomic_file::write(&path, luaurc)?;
+    }
 
     Ok(())
 }
@@ -122,5 +131,26 @@ mod tests {
             aliases_obj.get("lune").is_none(),
             "lune alias must be omitted when the project rokit.toml does not declare lune"
         );
+    }
+
+    #[test]
+    fn write_config_files_keeps_other_luaurc_settings() {
+        let dir = TempDir::new().expect("failed to create temp dir");
+        std::fs::write(
+            dir.path().join(".luaurc"),
+            r#"{"languageMode":"strict","aliases":{"Old":"src/old/"}}"#,
+        )
+        .expect("write .luaurc");
+        let mut aliases = HashMap::new();
+        aliases.insert("Client".to_string(), "src/client/".to_string());
+
+        write_config_files(dir.path(), &aliases).expect("write config files");
+
+        let parsed: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join(".luaurc")).expect("read .luaurc"),
+        )
+        .expect("output must be valid JSON");
+        assert_eq!(parsed["languageMode"], "strict");
+        assert_eq!(parsed["aliases"], json!({ "Client": "src/client/" }));
     }
 }

@@ -179,7 +179,7 @@ fn main() {
         )
         .expect("parse sourcemap")
     };
-    let fix_ctx = FixContext::new(context_dir.path(), &aliases, parse_sourcemap());
+    let fix_ctx = FixContext::new(context_dir.path(), "src", &aliases, parse_sourcemap());
 
     let small_content = small_luau_file();
     bench("process_file_content (6 requires)", iterations, || {
@@ -219,7 +219,7 @@ fn main() {
         "fix_single_file rebuild vs cached (6 requires)",
         iterations,
         || {
-            let rebuilt = FixContext::new(context_dir.path(), &aliases, parse_sourcemap());
+            let rebuilt = FixContext::new(context_dir.path(), "src", &aliases, parse_sourcemap());
             let _ = process_file_content(small_content, &rebuilt, None);
         },
         || {

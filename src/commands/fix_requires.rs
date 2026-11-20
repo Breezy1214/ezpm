@@ -13,9 +13,10 @@ use crate::{
 pub fn run(config: &EzpmConfig) -> Result<()> {
     let project_dir = std::env::current_dir().context("could not determine current directory")?;
     let aliases = config.aliases.as_ref().cloned().unwrap_or_default();
+    let src = config.src_dir();
     let rojo = RojoProjectSettings::from_config(config);
     let index = sourcemap::generate_index(&project_dir, &rojo.project)?;
-    let context = FixContext::new(&project_dir, &aliases, index);
+    let context = FixContext::new(&project_dir, &src, &aliases, index);
     let result = require_fixer::fix_requires_with_context(&context)?;
     print_result(&result);
     Ok(())

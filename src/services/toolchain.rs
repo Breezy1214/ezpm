@@ -1,6 +1,10 @@
 use anyhow::{Context, Result};
+use indicatif::ProgressBar;
 use std::path::Path;
+use std::process::Command;
 use std::sync::OnceLock;
+
+use crate::output;
 
 const EMBEDDED_ROKIT_TOML: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/rokit.toml"));
 const REQUIRED_RUNTIME_TOOL_NAMES: &[&str] = &["wally-package-types", "wally", "rojo"];
@@ -122,14 +126,14 @@ pub fn apply_tool_updates(contents: &str, updates: &[ToolUpdate]) -> String {
         .map(|line| {
             let trimmed = line.trim();
 
-            if trimmed.starts_with('[') && trimmed.ends_with(']') {
-                in_tools = trimmed == "[tools]";
+            if let Some(header) = table_header(trimmed) {
+                in_tools = header == "[tools]";
                 return line.to_string();
             }
 
             if in_tools && !trimmed.is_empty() && !trimmed.starts_with('#') {
                 if let Some((name_part, _)) = trimmed.split_once('=') {
-                    let name = name_part.trim();
+                    let name = tool_key(name_part);
                     if let Some(update) = updates.iter().find(|u| u.name == name) {
                         return line.replace(&update.old_spec, &update.new_spec);
                     }
@@ -169,6 +173,46 @@ pub fn rokit_bootstrap_hint() -> &'static str {
     "Install Rokit, then run `ezpm install`."
 }
 
+pub fn is_tool_available(tool: &str) -> bool {
+    Command::new(tool)
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+pub fn run_tool(mut cmd: Command, spinner: Option<&ProgressBar>) -> Result<bool> {
+    let tool = cmd.get_program().to_string_lossy().into_owned();
+
+    if output::is_verbose() {
+        let status =
+            suspend(spinner, || cmd.status()).with_context(|| missing_tool_context(&tool))?;
+        return Ok(status.success());
+    }
+
+    let out = cmd.output().with_context(|| missing_tool_context(&tool))?;
+    if !out.status.success() {
+        suspend(spinner, || {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            if !stderr.trim().is_empty() {
+                eprint!("{}", stderr);
+            }
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            if !stdout.trim().is_empty() {
+                print!("{}", stdout);
+            }
+        });
+    }
+    Ok(out.status.success())
+}
+
+fn suspend<R>(spinner: Option<&ProgressBar>, f: impl FnOnce() -> R) -> R {
+    match spinner {
+        Some(pb) => pb.suspend(f),
+        None => f(),
+    }
+}
+
 pub fn missing_tool_context(binary: &str) -> String {
     format!("Failed to run {binary}. {}", rokit_bootstrap_hint())
 }
@@ -194,8 +238,8 @@ fn parse_ordered_tool_names(contents: &str) -> Result<Vec<String>> {
             continue;
         }
 
-        if line.starts_with('[') && line.ends_with(']') {
-            in_tools = line == "[tools]";
+        if let Some(header) = table_header(line) {
+            in_tools = header == "[tools]";
             continue;
         }
 
@@ -206,7 +250,7 @@ fn parse_ordered_tool_names(contents: &str) -> Result<Vec<String>> {
         let (name, _) = line
             .split_once('=')
             .with_context(|| format!("invalid tool entry in [tools]: {line}"))?;
-        names.push(name.trim().to_string());
+        names.push(tool_key(name).to_string());
     }
 
     if names.is_empty() {
@@ -216,9 +260,55 @@ fn parse_ordered_tool_names(contents: &str) -> Result<Vec<String>> {
     Ok(names)
 }
 
+fn table_header(line: &str) -> Option<&str> {
+    let header = line.split('#').next().unwrap_or_default().trim_end();
+    (header.starts_with('[') && header.ends_with(']')).then_some(header)
+}
+
+fn tool_key(name: &str) -> &str {
+    name.trim().trim_matches(['"', '\''])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_quoted_tool_names_and_commented_header() {
+        let contents = "[tools] # managed by ezpm\n\"rojo\" = \"rojo-rbx/rojo@7.4.4\"\nselene = \"Kampfkarren/selene@0.28.0\"\n";
+        let tools = parse_tool_specs(contents).expect("rokit.toml parses");
+
+        assert_eq!(tools[0].name, "rojo");
+        assert_eq!(tools[0].spec, "rojo-rbx/rojo@7.4.4");
+        assert_eq!(tools[1].name, "selene");
+    }
+
+    #[test]
+    fn applies_updates_under_commented_header_and_quoted_keys() {
+        let contents = "[tools] # managed by ezpm\n\"rojo\" = \"rojo-rbx/rojo@7.0.0\"\nselene = \"Kampfkarren/selene@0.1.0\"\n";
+        let updates = [
+            ToolUpdate {
+                name: "rojo".to_string(),
+                old_spec: "rojo-rbx/rojo@7.0.0".to_string(),
+                new_spec: "rojo-rbx/rojo@7.4.4".to_string(),
+            },
+            ToolUpdate {
+                name: "selene".to_string(),
+                old_spec: "Kampfkarren/selene@0.1.0".to_string(),
+                new_spec: "Kampfkarren/selene@0.28.0".to_string(),
+            },
+        ];
+
+        let updated = apply_tool_updates(contents, &updates);
+        assert!(
+            updated.contains("\"rojo\" = \"rojo-rbx/rojo@7.4.4\""),
+            "{updated}"
+        );
+        assert!(
+            updated.contains("selene = \"Kampfkarren/selene@0.28.0\""),
+            "{updated}"
+        );
+    }
 
     #[test]
     fn embedded_rokit_manifest_parses() {

@@ -1,6 +1,6 @@
 mod common;
 
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 #[test]
@@ -20,21 +20,26 @@ Shared = "src/shared/"
     .expect("write config with a narrow source root");
     let source = dir.path().join("src/client/init.luau");
 
+    let log_path = dir.path().join("serve.log");
+    let log = std::fs::File::create(&log_path).expect("create serve log");
     let mut child = Command::new(common::ezpm_bin())
         .arg("serve")
+        .arg("--verbose")
+        .arg("--color")
+        .arg("never")
         .arg("--port")
         .arg("44876")
         .current_dir(dir.path())
         .env("EZPM_NO_UPDATE_CHECK", "1")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(log.try_clone().expect("clone serve log"))
+        .stderr(log)
         .spawn()
         .expect("failed to spawn ezpm serve");
 
+    // The initial require fix lands before the watcher starts, so wait for the banner.
     let ready_deadline = Instant::now() + Duration::from_secs(30);
     while Instant::now() < ready_deadline
-        && !std::fs::read_to_string(&source)
-            .is_ok_and(|contents| contents.contains("@game/ReplicatedStorage/Shared/util"))
+        && !std::fs::read_to_string(&log_path).is_ok_and(|log| log.contains("Press Ctrl-C to stop"))
     {
         std::thread::sleep(Duration::from_millis(100));
     }
@@ -115,14 +120,18 @@ Shared = "src/shared/"
         .output();
     let _ = child.wait();
 
-    assert!(rebuilt, "changed Lua file was not fixed");
+    let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+    assert!(
+        rebuilt,
+        "changed Lua file was not fixed\n--- serve output ---\n{log}"
+    );
     assert!(
         suffixed_scripts_fixed,
-        "requires inside .server/.client scripts were not fixed"
+        "requires inside .server/.client scripts were not fixed\n--- serve output ---\n{log}"
     );
     assert!(
         rename_fixed,
-        "requires were not repaired after module rename"
+        "requires were not repaired after module rename\n--- serve output ---\n{log}"
     );
 }
 

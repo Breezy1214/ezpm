@@ -7,13 +7,13 @@ use crate::{
     config::{self, EzpmConfig},
     output,
     services::{
-        config_gen,
+        atomic_file, config_gen,
         file_watcher::{FileChange, FileWatcher, WatchEvent, WatchTargets},
         port,
         process_manager::{ProcessEvent, ProcessManager},
         require_fixer::{self, is_lua_file},
         rojo_project::RojoProjectSettings,
-        sourcemap, toolchain,
+        selene, sourcemap, toolchain,
     },
 };
 use anyhow::Context;
@@ -125,7 +125,7 @@ fn sync_toolchain_versions(project_dir: &Path) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    std::fs::write(
+    atomic_file::write(
         &rokit_path,
         toolchain::apply_tool_updates(&contents, &updates),
     )
@@ -323,6 +323,10 @@ fn paired_rename(
     Some((from.to_path_buf(), to.to_path_buf()))
 }
 
+fn same_name((from, to): &(PathBuf, PathBuf)) -> bool {
+    from.file_name() == to.file_name()
+}
+
 fn detected_renames(changes: &[FileChange]) -> Vec<(PathBuf, PathBuf)> {
     let explicit = changes
         .iter()
@@ -345,7 +349,10 @@ fn detected_renames(changes: &[FileChange]) -> Vec<(PathBuf, PathBuf)> {
             FileChange::FileCreated(path) if is_lua_file(path) => Some(path.as_path()),
             _ => None,
         },
-    );
+    )
+    // Unrelated delete+create pairs must not trigger project-wide require rewrites;
+    // genuine renames are found by content in `infer_module_moves`.
+    .filter(same_name);
     let dir_move = || {
         paired_rename(
             changes,
@@ -358,6 +365,7 @@ fn detected_renames(changes: &[FileChange]) -> Vec<(PathBuf, PathBuf)> {
                 _ => None,
             },
         )
+        .filter(|pair| same_name(pair) || pair.0.parent() == pair.1.parent())
     };
 
     file_move.or_else(dir_move).into_iter().collect()
@@ -515,9 +523,12 @@ async fn handle_process_event(
     project: &Path,
 ) {
     match event {
-        ProcessEvent::Crashed { ref name, .. } if name == "rojo" => {
+        ProcessEvent::Exited { ref name, code } if name == "rojo" => {
             if *restart_count < 1 {
-                output::warn("Rojo exited unexpectedly — restarting...");
+                output::warn(&format!(
+                    "Rojo exited unexpectedly (exit code {}) — restarting...",
+                    code.map_or_else(|| "none".to_string(), |code| code.to_string())
+                ));
                 let port_str = port.to_string();
                 let project = project.to_string_lossy();
                 if let Err(e) = pm
@@ -534,7 +545,6 @@ async fn handle_process_event(
         ProcessEvent::Exited { name, code } => {
             output::verbose_line(&format!("Process '{}' exited with code {:?}", name, code));
         }
-        _ => {}
     }
 }
 
@@ -620,12 +630,7 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
     let config = config.unwrap_or_default();
     let mut rojo_settings = RojoProjectSettings::from_config(&config);
 
-    let src = config
-        .paths
-        .as_ref()
-        .and_then(|p| p.src.as_deref())
-        .unwrap_or("src")
-        .to_string();
+    let src = config.src_dir();
     let mut aliases: HashMap<String, String> = config.aliases.clone().unwrap_or_default();
     let file_changes_enabled = config
         .display
@@ -646,6 +651,7 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
         .context("failed to generate .luaurc from ezpm.toml")?;
 
     sync_toolchain_versions(&project_dir)?;
+    tokio::task::spawn_blocking(selene::generate_selene_roblox_std);
     let initial_sourcemap = {
         let pb = output::start_spinner("Generating sourcemap...");
         let t0 = Instant::now();
@@ -672,7 +678,8 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
         }
     };
 
-    let mut fix_ctx = require_fixer::FixContext::new(&project_dir, &aliases, initial_sourcemap);
+    let mut fix_ctx =
+        require_fixer::FixContext::new(&project_dir, &src, &aliases, initial_sourcemap);
     {
         let pb = output::start_spinner("Fixing require paths...");
         let t0 = Instant::now();
@@ -695,19 +702,23 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
         }
     }
 
-    let (mut watcher, mut watcher_rx) = {
+    let (watch_tx, mut watcher_rx) = FileWatcher::channel();
+    let mut watcher = {
         let pb = output::start_spinner("Starting file watcher...");
         let t0 = Instant::now();
-        let result =
-            FileWatcher::with_targets(watch_targets(&project_dir, &rojo_settings, &fix_ctx), &[]);
+        let result = FileWatcher::with_sender(
+            watch_targets(&project_dir, &rojo_settings, &fix_ctx),
+            &[],
+            watch_tx.clone(),
+        );
         pb.finish_and_clear();
         match result {
-            Ok((watcher, rx)) => {
+            Ok(watcher) => {
                 output::success(&format!(
                     "File watcher started ({})",
                     output::format_duration(t0.elapsed())
                 ));
-                (watcher, rx)
+                watcher
             }
             Err(e) => {
                 output::error(&format!("Start file watcher failed: {}", e));
@@ -769,14 +780,27 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
 
     loop {
         tokio::select! {
+            // On Windows Rojo shares the console and dies from the same Ctrl-C; checking
+            // the stop signal first keeps that exit from being treated as a crash.
+            biased;
+            signal = &mut stop_signal => {
+                output::info(match signal {
+                    StopSignal::Interrupt => "Stopping...",
+                    StopSignal::TerminalClosed => "Terminal closed — stopping...",
+                });
+                break;
+            }
             event = watcher_rx.recv() => {
                 match event {
                     Some(WatchEvent::Changes(mut changes)) => {
                         let topology_changed = changes_project_topology(&changes);
-                        if topology_changed {
-                            let files = require_fixer::lua_files(&src_path);
-                            let current_snapshot = snapshot_modules(&files);
-                            for inferred in infer_module_moves(&module_snapshot, &current_snapshot) {
+                        // Captured before the config/project branches below can replace the
+                        // context, so renames are resolved against the pre-batch sourcemap.
+                        let previous_fix_ctx = topology_changed.then(|| fix_ctx.clone());
+                        let current_snapshot = topology_changed
+                            .then(|| snapshot_modules(&require_fixer::lua_files(&src_path)));
+                        if let Some(snapshot) = &current_snapshot {
+                            for inferred in infer_module_moves(&module_snapshot, snapshot) {
                                 if !changes.contains(&inferred) {
                                     changes.push(inferred);
                                 }
@@ -802,12 +826,7 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
                                             "Could not regenerate .luaurc: {error}"
                                         )),
                                     }
-                                    let new_src = new_config
-                                        .paths
-                                        .as_ref()
-                                        .and_then(|paths| paths.src.as_deref())
-                                        .unwrap_or("src");
-                                    if new_src != src {
+                                    if new_config.src_dir() != src {
                                         output::warn(
                                             "Source path changes require restarting `ezpm serve`; keeping the current watcher.",
                                         );
@@ -819,17 +838,17 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
                                             run_fix_requires(&fix_ctx).await;
                                         }
                                         let new_settings = RojoProjectSettings::from_config(&new_config);
-                                        if new_settings != rojo_settings {
-                                            let Some(index) = refresh_sourcemap(
-                                                &project_dir,
-                                                &new_settings.project,
-                                            )
-                                            .await
-                                            else {
-                                                continue;
-                                            };
+                                        if new_settings == rojo_settings {
+                                            output::info(
+                                                "ezpm.toml changed; restart serve to apply non-Rojo settings.",
+                                            );
+                                        } else if let Some(index) =
+                                            refresh_sourcemap(&project_dir, &new_settings.project)
+                                                .await
+                                        {
                                             let new_fix_ctx = require_fixer::FixContext::new(
                                                 &project_dir,
+                                                &src,
                                                 &aliases,
                                                 index,
                                             );
@@ -838,8 +857,13 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
                                                 &new_settings,
                                                 &new_fix_ctx,
                                             );
-                                            match FileWatcher::with_targets(new_targets, &[]) {
-                                                Ok((new_watcher, new_rx)) => {
+                                            match FileWatcher::with_sender(
+                                                new_targets,
+                                                &[],
+                                                watch_tx.clone(),
+                                            ) {
+                                                Ok(new_watcher) => {
+                                                    watcher = new_watcher;
                                                     if let Err(error) = restart_rojo(
                                                         &mut process_manager,
                                                         &mut process_rx,
@@ -852,8 +876,6 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
                                                     } else {
                                                         rojo_restart_count = 0;
                                                     }
-                                                    watcher = new_watcher;
-                                                    watcher_rx = new_rx;
                                                     rojo_settings = new_settings;
                                                     fix_ctx = new_fix_ctx;
                                                     module_index = fix_ctx.module_index();
@@ -863,10 +885,6 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
                                                     "Could not update file watcher: {error}"
                                                 )),
                                             }
-                                        } else {
-                                            output::info(
-                                                "ezpm.toml changed; restart serve to apply non-Rojo settings.",
-                                            );
                                         }
                                     }
                                 }
@@ -881,18 +899,17 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
                             {
                                 fix_ctx = require_fixer::FixContext::new(
                                     &project_dir,
+                                    &src,
                                     &aliases,
                                     index,
                                 );
                                 module_index = fix_ctx.module_index();
-                                match FileWatcher::with_targets(
+                                match FileWatcher::with_sender(
                                     watch_targets(&project_dir, &rojo_settings, &fix_ctx),
                                     &[],
+                                    watch_tx.clone(),
                                 ) {
-                                    Ok((new_watcher, new_rx)) => {
-                                        watcher = new_watcher;
-                                        watcher_rx = new_rx;
-                                    }
+                                    Ok(new_watcher) => watcher = new_watcher,
                                     Err(error) => output::error(&format!(
                                         "Could not update file watcher: {error}"
                                     )),
@@ -923,19 +940,19 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
                             })
                             .collect::<Vec<_>>();
                         if !source_changes.is_empty() {
-                            let previous_fix_ctx = topology_changed.then(|| fix_ctx.clone());
                             if topology_changed {
-                                let Some(index) =
+                                // On failure keep the current context so the batch is still fixed.
+                                if let Some(index) =
                                     refresh_sourcemap(&project_dir, &rojo_settings.project).await
-                                else {
-                                    continue;
-                                };
-                                fix_ctx = require_fixer::FixContext::new(
-                                    &project_dir,
-                                    &aliases,
-                                    index,
-                                );
-                                module_index = fix_ctx.module_index();
+                                {
+                                    fix_ctx = require_fixer::FixContext::new(
+                                        &project_dir,
+                                        &src,
+                                        &aliases,
+                                        index,
+                                    );
+                                    module_index = fix_ctx.module_index();
+                                }
                             }
                             let context = ChangeContext {
                                 file_changes_enabled,
@@ -949,17 +966,14 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
                                 &mut failed_files,
                             )
                             .await;
-                            if topology_changed {
-                                module_snapshot =
-                                    snapshot_modules(&require_fixer::lua_files(&src_path));
-                            } else {
-                                refresh_changed_modules(&mut module_snapshot, &source_changes);
-                            }
                         }
+                        if let Some(snapshot) = current_snapshot {
+                            module_snapshot = snapshot;
+                        }
+                        refresh_changed_modules(&mut module_snapshot, &source_changes);
                     }
                     Some(WatchEvent::Error(msg)) => {
-                        output::error(&format!("File watcher error: {}", msg));
-                        break;
+                        output::warn(&format!("File watcher error: {}", msg));
                     }
                     None => break,
                 }
@@ -975,13 +989,6 @@ pub async fn run(config: Option<EzpmConfig>, cli_port: Option<u16>) -> anyhow::R
                     )
                     .await;
                 }
-            }
-            signal = &mut stop_signal => {
-                output::info(match signal {
-                    StopSignal::Interrupt => "Stopping...",
-                    StopSignal::TerminalClosed => "Terminal closed — stopping...",
-                });
-                break;
             }
         }
     }

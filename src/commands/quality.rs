@@ -1,184 +1,86 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::process::Command;
 
 use crate::output;
-use crate::services::toolchain;
+use crate::services::selene;
+use crate::services::toolchain::{self, is_tool_available, run_tool};
 
-fn is_tool_available(tool: &str) -> bool {
-    Command::new(tool)
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+fn stylua(src_path: &str, check: bool) -> Command {
+    let mut cmd = Command::new("stylua");
+    if check {
+        cmd.arg("--check");
+    }
+    cmd.arg(src_path);
+    cmd
 }
 
 pub fn lint(src_path: &str) -> Result<()> {
     let has_selene = is_tool_available("selene");
     let has_stylua = is_tool_available("stylua");
 
+    if !has_selene && !has_stylua {
+        output::hint(&toolchain::tool_install_hint("selene"));
+        anyhow::bail!("No linting tools installed (selene and stylua are both missing)");
+    }
     if !has_selene {
-        output::info("Skipping Selene (install Rokit and run `ezpm install`)");
+        output::warn("Skipping Selene (install Rokit and run `ezpm install`)");
     }
     if !has_stylua {
-        output::info("Skipping StyLua (install Rokit and run `ezpm install`)");
-    }
-
-    if !has_selene && !has_stylua {
-        output::info("No linting tools installed.");
-        return Ok(());
+        output::warn("Skipping StyLua (install Rokit and run `ezpm install`)");
     }
 
     let mut issues_found = false;
 
     if has_selene {
-        if output::is_verbose() {
-            let selene_status = Command::new("selene")
-                .arg(src_path)
-                .status()
-                .with_context(|| toolchain::missing_tool_context("selene"))?;
-
-            if !selene_status.success() {
-                output::error_block(
-                    "Selene lint failed",
-                    &format!("Violations found in {}", src_path),
-                    Some("Fix violations listed above, or run `ezpm format` to auto-fix style issues"),
-                );
-                issues_found = true;
-            }
-        } else {
-            let selene_out = Command::new("selene")
-                .arg(src_path)
-                .output()
-                .with_context(|| toolchain::missing_tool_context("selene"))?;
-
-            if !selene_out.status.success() {
-                let stderr = String::from_utf8_lossy(&selene_out.stderr);
-                if !stderr.trim().is_empty() {
-                    eprint!("{}", stderr);
-                }
-                let stdout = String::from_utf8_lossy(&selene_out.stdout);
-                if !stdout.trim().is_empty() {
-                    print!("{}", stdout);
-                }
-                output::error_block(
-                    "Selene lint failed",
-                    &format!("Violations found in {}", src_path),
-                    Some("Fix violations listed above, or run `ezpm format` to auto-fix style issues"),
-                );
-                issues_found = true;
-            }
+        selene::generate_selene_roblox_std();
+        let mut cmd = Command::new("selene");
+        cmd.arg(src_path);
+        if !run_tool(cmd, None)? {
+            output::error_block(
+                "Selene lint failed",
+                &format!("Violations found in {}", src_path),
+                Some("Fix violations listed above, or run `ezpm format` to auto-fix style issues"),
+            );
+            issues_found = true;
         }
     }
 
-    if has_stylua {
-        if output::is_verbose() {
-            let stylua_status = Command::new("stylua")
-                .arg("--check")
-                .arg(src_path)
-                .status()
-                .with_context(|| toolchain::missing_tool_context("stylua"))?;
-
-            if !stylua_status.success() {
-                output::error_block(
-                    "StyLua formatting check failed",
-                    &format!("Formatting violations found in {}", src_path),
-                    Some("Run `ezpm format` to auto-fix"),
-                );
-                issues_found = true;
-            }
-        } else {
-            let stylua_out = Command::new("stylua")
-                .arg("--check")
-                .arg(src_path)
-                .output()
-                .with_context(|| toolchain::missing_tool_context("stylua"))?;
-
-            if !stylua_out.status.success() {
-                let stderr = String::from_utf8_lossy(&stylua_out.stderr);
-                if !stderr.trim().is_empty() {
-                    eprint!("{}", stderr);
-                }
-                let stdout = String::from_utf8_lossy(&stylua_out.stdout);
-                if !stdout.trim().is_empty() {
-                    print!("{}", stdout);
-                }
-                output::error_block(
-                    "StyLua formatting check failed",
-                    &format!("Formatting violations found in {}", src_path),
-                    Some("Run `ezpm format` to auto-fix"),
-                );
-                issues_found = true;
-            }
-        }
+    if has_stylua && !run_tool(stylua(src_path, true), None)? {
+        output::error_block(
+            "StyLua formatting check failed",
+            &format!("Formatting violations found in {}", src_path),
+            Some("Run `ezpm format` to auto-fix"),
+        );
+        issues_found = true;
     }
 
     if issues_found {
         anyhow::bail!("lint found violations");
     }
-    output::success("All code quality checks passed!");
+    if has_selene && has_stylua {
+        output::success("All code quality checks passed!");
+    } else {
+        output::success("Available code quality checks passed.");
+    }
     Ok(())
 }
 
 pub fn format_code(src_path: &str, check: bool) -> Result<()> {
     if !is_tool_available("stylua") {
-        output::info("StyLua is not installed.");
         output::hint(&toolchain::tool_install_hint("stylua"));
-        return Ok(());
+        anyhow::bail!("StyLua is not installed");
     }
 
-    let mut cmd = Command::new("stylua");
-    if check {
-        cmd.arg("--check");
-    }
-    cmd.arg(src_path);
-
-    if output::is_verbose() {
-        let stylua_status = cmd
-            .status()
-            .with_context(|| toolchain::missing_tool_context("stylua"))?;
-        if !stylua_status.success() {
-            if check {
-                output::error_block(
-                    "Format check failed",
-                    &format!("Unformatted files found in {}", src_path),
-                    Some("Run `ezpm format` to auto-fix"),
-                );
-                anyhow::bail!("format check failed");
-            } else {
-                anyhow::bail!(
-                    "stylua formatting failed with exit code: {:?}",
-                    stylua_status.code()
-                );
-            }
+    if !run_tool(stylua(src_path, check), None)? {
+        if check {
+            output::error_block(
+                "Format check failed",
+                &format!("Unformatted files found in {}", src_path),
+                Some("Run `ezpm format` to auto-fix"),
+            );
+            anyhow::bail!("format check failed");
         }
-    } else {
-        let stylua_out = cmd
-            .output()
-            .with_context(|| toolchain::missing_tool_context("stylua"))?;
-
-        if !stylua_out.status.success() {
-            if check {
-                let stderr = String::from_utf8_lossy(&stylua_out.stderr);
-                if !stderr.trim().is_empty() {
-                    eprint!("{}", stderr);
-                }
-                let stdout = String::from_utf8_lossy(&stylua_out.stdout);
-                if !stdout.trim().is_empty() {
-                    print!("{}", stdout);
-                }
-                output::error_block(
-                    "Format check failed",
-                    &format!("Unformatted files found in {}", src_path),
-                    Some("Run `ezpm format` to auto-fix"),
-                );
-                anyhow::bail!("format check failed");
-            } else {
-                anyhow::bail!(
-                    "stylua formatting failed with exit code: {:?}",
-                    stylua_out.status.code()
-                );
-            }
-        }
+        anyhow::bail!("stylua formatting failed (see output above)");
     }
 
     if check {
