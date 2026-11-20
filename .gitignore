@@ -18,3 +18,5 @@ out/
 vscode-ezpm/.npm-cache
 vscode-ezpm/*.vsix
 graphify-out
+tasks/lessons.md
+tasks/todo.md
